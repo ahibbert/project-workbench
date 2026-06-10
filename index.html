@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+      name="description"
+      content="A playful project workbench for research software, statistical modelling, data questions, writing, and experiments."
+    >
+    <title>Aydin Hibbert | Project Workbench</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#projects">Skip to projects</a>
+
+    <header class="site-header" aria-label="Primary">
+      <a class="brand" href="#top" aria-label="Aydin Hibbert home">
+        <span class="brand-mark" aria-hidden="true">AH</span>
+        <span>Aydin Hibbert</span>
+      </a>
+      <nav class="nav-links" aria-label="Page sections">
+        <a href="#projects">Projects</a>
+        <a href="#updates">Updates</a>
+        <a href="#data-questions">Data Questions</a>
+        <a href="#pipeline">Pipeline</a>
+        <a href="#bio">Bio</a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="hero section-band" aria-labelledby="intro-title">
+        <div class="hero-copy">
+          <p class="eyebrow">Research software / data questions / statistical models</p>
+          <h1 id="intro-title">A playful workbench for things I am building, testing, and thinking through.</h1>
+          <p class="intro">
+            I work around statistical modelling, applied data analysis, research software,
+            and writing that tries to make technical ideas more usable. This is a home for
+            finished work, active drafts, and a few experiments that are still finding their shape.
+          </p>
+          <div class="hero-actions" aria-label="Primary links">
+            <a class="button primary" href="#projects">Browse projects</a>
+            <a class="button" href="https://github.com/ahibbert">GitHub</a>
+            <a class="button" href="#data-questions">Data Questions</a>
+          </div>
+        </div>
+
+        <div class="workbench-visual" aria-label="Animated abstract workbench map">
+          <canvas id="workbench-canvas" width="720" height="520"></canvas>
+          <div class="visual-labels" aria-hidden="true">
+            <span class="pin pin-one">models</span>
+            <span class="pin pin-two">papers</span>
+            <span class="pin pin-three">data</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="now-title">
+        <div class="section-heading compact-heading">
+          <p class="eyebrow">Currently interested in</p>
+          <h2 id="now-title">Questions, tools, and useful statistical mess.</h2>
+        </div>
+        <div class="interest-strip" id="interest-strip"></div>
+      </section>
+
+      <section class="section updates-band" id="updates" aria-labelledby="updates-title">
+        <div class="section-heading">
+          <p class="eyebrow">Latest</p>
+          <h2 id="updates-title">Recent updates</h2>
+          <p>
+            A small changelog for what has moved recently: public drafts, package work,
+            ideas becoming projects, and things worth checking back on.
+          </p>
+        </div>
+        <div class="updates-list" id="updates-list"></div>
+      </section>
+
+      <section class="section" id="projects" aria-labelledby="projects-title">
+        <div class="section-heading">
+          <p class="eyebrow">Featured work</p>
+          <h2 id="projects-title">Project launcher</h2>
+          <p>
+            A mix of packages, papers, tools, writing, and project-shaped ideas.
+            Expand a card for the short project brief, or jump straight to the useful thing.
+          </p>
+        </div>
+        <div class="card-grid" id="project-grid"></div>
+      </section>
+
+      <section class="section muted-band" id="data-questions" aria-labelledby="data-title">
+        <div class="section-heading">
+          <p class="eyebrow">Public drafts</p>
+          <h2 id="data-title">Data Questions</h2>
+          <p>
+            Answering questions I am interested in with data. These are intentionally
+            public drafts: readable enough to share, honest enough to wear a big draft label.
+          </p>
+        </div>
+        <div class="data-toolbar">
+          <a class="button primary" href="https://github.com/ahibbert/australian-data-review">Australian Data Review repo</a>
+          <span class="draft-notice">All entries default to WORK IN PROGRESS until explicitly marked published.</span>
+        </div>
+        <div class="card-grid data-grid" id="data-grid"></div>
+      </section>
+
+      <section class="section" id="pipeline" aria-labelledby="pipeline-title">
+        <div class="section-heading">
+          <p class="eyebrow">Backlog and motion</p>
+          <h2 id="pipeline-title">Project pipeline</h2>
+          <p>
+            A lightweight board for ideas, active work, paused threads, and public outputs.
+          </p>
+        </div>
+        <div class="pipeline" id="pipeline-board"></div>
+      </section>
+
+      <section class="section bio-section" id="bio" aria-labelledby="bio-title">
+        <div class="bio-card">
+          <div>
+            <p class="eyebrow">Bio</p>
+            <h2 id="bio-title">A little context, without turning this into a CV page.</h2>
+          </div>
+          <p>
+            I am interested in practical statistical modelling, research software, and
+            data work that makes uncertainty, dependence, and model behaviour easier to
+            reason about. I tend to enjoy projects that sit between analysis, tooling,
+            communication, and applied problem-solving.
+          </p>
+          <p>
+            This page keeps personal details deliberately broad. It should give enough
+            context to understand the work without listing private locations, dates,
+            employers, or other specifics that do not need to be public.
+          </p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>Built as a living workbench.</span>
+      <a href="#top">Back to top</a>
+    </footer>
+
+    <script src="script.js"></script>
+  </body>
+</html>
