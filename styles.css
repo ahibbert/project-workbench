@@ -79,7 +79,7 @@ a {
   border: 2px solid var(--ink);
   border-radius: 50%;
   background: #f2c14e;
-  font-size: 0.72rem;
+  font-size: 0.62rem;
 }
 
 .nav-links {
@@ -215,9 +215,16 @@ h3 {
   border-radius: 999px;
   padding: 0.3rem 0.55rem;
   background: #fffdf8;
+  color: var(--ink);
   font-size: 0.78rem;
   font-weight: 800;
+  text-decoration: none;
   box-shadow: 0 8px 20px rgba(32, 33, 36, 0.12);
+}
+
+.pin:hover {
+  transform: translateY(-1px);
+  background: #fff;
 }
 
 .pin-one {
@@ -233,6 +240,34 @@ h3 {
 .pin-three {
   left: 47%;
   bottom: 14%;
+}
+
+.pin-four {
+  left: 21%;
+  bottom: 25%;
+}
+
+.map-caption {
+  position: absolute;
+  right: 1rem;
+  bottom: 1rem;
+  max-width: 15rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.7rem;
+  background: rgba(255, 253, 248, 0.9);
+  box-shadow: 0 10px 24px rgba(32, 33, 36, 0.1);
+}
+
+.map-caption strong,
+.map-caption span {
+  display: block;
+}
+
+.map-caption span {
+  margin-top: 0.15rem;
+  color: var(--muted);
+  font-size: 0.84rem;
 }
 
 .section-heading {
@@ -274,7 +309,6 @@ h3 {
 }
 
 .project-card,
-.pipeline-column,
 .bio-card {
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -326,6 +360,18 @@ h3 {
   border-color: rgba(88, 115, 102, 0.35);
   color: var(--sage);
   background: #eef6f1;
+}
+
+.status-chip.in-progress {
+  border-color: rgba(183, 131, 47, 0.35);
+  color: var(--gold);
+  background: #fff8e8;
+}
+
+.status-chip.under-review {
+  border-color: rgba(100, 85, 138, 0.35);
+  color: var(--violet);
+  background: #f3f0fb;
 }
 
 .project-card p {
@@ -463,44 +509,6 @@ h3 {
   text-align: center;
 }
 
-.pipeline {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 1rem;
-}
-
-.pipeline-column {
-  min-height: 15rem;
-  padding: 0.9rem;
-}
-
-.pipeline-column h3 {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  border-bottom: 1px solid var(--line);
-  padding-bottom: 0.6rem;
-}
-
-.count {
-  color: var(--muted);
-  font-size: 0.78rem;
-}
-
-.pipeline-item {
-  margin-top: 0.75rem;
-  border-left: 4px solid var(--gold);
-  border-radius: 0 var(--radius) var(--radius) 0;
-  padding: 0.7rem;
-  background: #fffaf0;
-}
-
-.pipeline-item p {
-  margin: 0.3rem 0 0;
-  color: var(--muted);
-  font-size: 0.9rem;
-}
-
 .bio-section {
   padding-top: 0;
 }
@@ -547,8 +555,7 @@ h3 {
   }
 
   .card-grid,
-  .interest-strip,
-  .pipeline {
+  .interest-strip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -577,9 +584,36 @@ h3 {
     height: 340px;
   }
 
+  .map-caption {
+    top: 0.75rem;
+    right: 0.75rem;
+    bottom: auto;
+    left: 0.75rem;
+    max-width: none;
+  }
+
+  .pin-one {
+    left: 10%;
+    top: 42%;
+  }
+
+  .pin-two {
+    right: 8%;
+    top: 43%;
+  }
+
+  .pin-three {
+    left: 52%;
+    bottom: 13%;
+  }
+
+  .pin-four {
+    left: 10%;
+    bottom: 22%;
+  }
+
   .card-grid,
-  .interest-strip,
-  .pipeline {
+  .interest-strip {
     grid-template-columns: 1fr;
   }
 

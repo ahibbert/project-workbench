@@ -14,7 +14,6 @@ Most editable content lives in `script.js`:
 - `projects`
 - `dataQuestions`
 - `latestUpdates`
-- `pipelineItems`
 - `interests`
 
 The Australian Data Review clone now lives at `./australian-data-review`. The

@@ -7,22 +7,21 @@
       name="description"
       content="A playful project workbench for research software, statistical modelling, data questions, writing, and experiments."
     >
-    <title>Aydin Hibbert | Project Workbench</title>
+    <title>Aydin Sareff-Hibbert | Project Workbench</title>
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
     <a class="skip-link" href="#projects">Skip to projects</a>
 
     <header class="site-header" aria-label="Primary">
-      <a class="brand" href="#top" aria-label="Aydin Hibbert home">
-        <span class="brand-mark" aria-hidden="true">AH</span>
-        <span>Aydin Hibbert</span>
+      <a class="brand" href="#top" aria-label="Aydin Sareff-Hibbert home">
+        <span class="brand-mark" aria-hidden="true">ASH</span>
+        <span>Aydin Sareff-Hibbert</span>
       </a>
       <nav class="nav-links" aria-label="Page sections">
         <a href="#projects">Projects</a>
         <a href="#updates">Updates</a>
         <a href="#data-questions">Data Questions</a>
-        <a href="#pipeline">Pipeline</a>
         <a href="#bio">Bio</a>
       </nav>
     </header>
@@ -44,12 +43,17 @@
           </div>
         </div>
 
-        <div class="workbench-visual" aria-label="Animated abstract workbench map">
+        <div class="workbench-visual" aria-label="Interactive workbench map">
           <canvas id="workbench-canvas" width="720" height="520"></canvas>
-          <div class="visual-labels" aria-hidden="true">
-            <span class="pin pin-one">models</span>
-            <span class="pin pin-two">papers</span>
-            <span class="pin pin-three">data</span>
+          <div class="visual-labels">
+            <a class="pin pin-one" href="#projects">models</a>
+            <a class="pin pin-two" href="#updates">workflow</a>
+            <a class="pin pin-three" href="#data-questions">data</a>
+            <a class="pin pin-four" href="#projects">AI eval</a>
+          </div>
+          <div class="map-caption">
+            <strong>Work map</strong>
+            <span>Use the chips to jump between the main threads.</span>
           </div>
         </div>
       </section>
@@ -100,17 +104,6 @@
           <span class="draft-notice">All entries default to WORK IN PROGRESS until explicitly marked published.</span>
         </div>
         <div class="card-grid data-grid" id="data-grid"></div>
-      </section>
-
-      <section class="section" id="pipeline" aria-labelledby="pipeline-title">
-        <div class="section-heading">
-          <p class="eyebrow">Backlog and motion</p>
-          <h2 id="pipeline-title">Project pipeline</h2>
-          <p>
-            A lightweight board for ideas, active work, paused threads, and public outputs.
-          </p>
-        </div>
-        <div class="pipeline" id="pipeline-board"></div>
       </section>
 
       <section class="section bio-section" id="bio" aria-labelledby="bio-title">

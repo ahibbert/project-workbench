@@ -5,7 +5,7 @@ const projects = [
   {
     title: "gamlss.longitudinal",
     type: "Package",
-    status: "Published",
+    status: "In progress",
     description:
       "An R package for fitting longitudinal GAMLSS models with flexible margins and copula dependence.",
     detail: {
@@ -19,9 +19,9 @@ const projects = [
     ],
   },
   {
-    title: "Copula based joint regression models for correlated data",
+    title: "Copula-based joint regression models for correlated data",
     type: "Paper",
-    status: "Published",
+    status: "Under review",
     description:
       "A bivariate comparison of copula-based, mixed model, and estimating equation approaches for correlated regression.",
     detail: {
@@ -42,7 +42,7 @@ const projects = [
       "Public drafts answering questions I am interested in with data, starting from Australian Data Review work.",
     detail: {
       why: "A public place to work through data questions without pretending every note is final.",
-      next: "Replace starter cards with real repo entries once the repo inventory is accessible here.",
+      next: "Keep turning Australian Data Review posts into readable public notes with caveats visible.",
       audience: "Curious readers who want concise analysis with caveats visible.",
     },
     links: [
@@ -52,30 +52,17 @@ const projects = [
     ],
   },
   {
-    title: "Research software notes",
-    type: "Writing",
+    title: "LLM statistician review bench",
+    type: "Idea",
     status: "Idea",
     description:
-      "Short notes about model diagnostics, package design, and making statistical workflows easier to inspect.",
+      "An experiment comparing LLM-generated statistical or biostatistical reviews against paper reviews and expert expectations.",
     detail: {
-      why: "Some ideas are too practical for papers and too useful to leave buried in code comments.",
-      next: "Collect a few short notes before deciding whether they become posts, docs, or examples.",
-      audience: "People building or using analysis software.",
+      why: "LLMs are already being used around analysis, but we need sharper ways to test what they catch, miss, and overstate.",
+      next: "Design a small benchmark using papers, reviews, and rubric-based scoring for statistical reasoning.",
+      audience: "Data scientists, statisticians, reviewers, and anyone trying to use AI without outsourcing judgement.",
     },
-    links: [["Pipeline", "#pipeline"]],
-  },
-  {
-    title: "Homelab experiments",
-    type: "Fun",
-    status: "Idea",
-    description:
-      "A small place for server experiments, dashboards, automation, and local tools that might become useful.",
-    detail: {
-      why: "A low-stakes sandbox for infrastructure, automation, and dashboards.",
-      next: "Decide which experiments are worth documenting publicly.",
-      audience: "Mostly me, plus anyone who enjoys useful personal infrastructure.",
-    },
-    links: [["Pipeline", "#pipeline"]],
+    links: [["Project brief", "#projects"]],
   },
   {
     title: "Data review tooling",
@@ -162,62 +149,31 @@ const dataQuestions = [
 const latestUpdates = [
   {
     date: "Today",
-    title: "Added expandable project briefs",
+    title: "Released the detailed gamlss.longitudinal workflow",
     description:
-      "Project and Data Questions cards now include short details about why the work exists, who it is for, and what comes next.",
+      "A detailed worked example is now available on the gamlss.longitudinal GitHub Pages site.",
+    links: [["Read the workflow", "https://ahibbert.github.io/gamlss.longitudinal/articles/native-simulation-workflow.html"]],
   },
   {
     date: "Today",
     title: "Connected Australian Data Review posts",
     description:
       "Data Questions now features the real Australian Data Review posts from the local Quarto repo.",
+    links: [["Browse Data Questions", "#data-questions"]],
   },
   {
     date: "Today",
-    title: "Added a lightweight project pipeline",
+    title: "Added expandable project briefs",
     description:
-      "Ideas, active work, published items, and paused threads can be tracked without turning the page into a formal roadmap.",
-  },
-];
-
-const pipelineItems = [
-  {
-    title: "Import Australian Data Review entries",
-    status: "Published",
-    description: "Real post entries are now listed from the local Australian Data Review repo.",
-  },
-  {
-    title: "Reusable data note template",
-    status: "In progress",
-    description: "Create a repeatable shape for question, chart, interpretation, and caveats.",
-  },
-  {
-    title: "Expandable project briefs",
-    status: "Published",
-    description: "Each project card now has a compact details panel.",
-  },
-  {
-    title: "Latest updates section",
-    status: "Published",
-    description: "The homepage now has a small changelog for recent movement.",
-  },
-  {
-    title: "gamlss.longitudinal docs",
-    status: "Published",
-    description: "Package guide and workflow articles are available through the project docs.",
-  },
-  {
-    title: "Longer research-software writing",
-    status: "Paused",
-    description: "Collect rough ideas before deciding whether they belong as posts, notes, or package docs.",
+      "Project and Data Questions cards now include short details about why the work exists, who it is for, and what comes next.",
   },
 ];
 
 const interests = [
-  "Longitudinal models with flexible distributional shape",
-  "Readable uncertainty and diagnostics",
-  "Public data questions with clear caveats",
-  "Small tools that make research workflows less brittle",
+  "Longitudinal models with flexible distribution and dependence",
+  "Policy questions we can inform with data",
+  "Making statistical modelling more accessible and usable",
+  "The impact of AI on data science and statistics",
 ];
 
 const statusClass = (status) => status.toLowerCase().replace(/\s+/g, "-");
@@ -332,6 +288,9 @@ function renderUpdates() {
       const description = document.createElement("p");
       description.textContent = item.description;
       content.append(title, description);
+      if (item.links) {
+        content.append(createLinks(item.links));
+      }
 
       article.append(date, content);
       return article;
@@ -351,42 +310,6 @@ function renderInterests() {
   );
 }
 
-function renderPipeline() {
-  const statuses = ["Idea", "In progress", "Published", "Paused"];
-  const board = document.querySelector("#pipeline-board");
-
-  const columns = statuses.map((status) => {
-    const items = pipelineItems.filter((item) => item.status === status);
-    const column = document.createElement("section");
-    column.className = "pipeline-column";
-    column.setAttribute("aria-label", `${status} items`);
-
-    const heading = document.createElement("h3");
-    heading.textContent = status;
-
-    const count = document.createElement("span");
-    count.className = "count";
-    count.textContent = String(items.length);
-    heading.append(count);
-    column.append(heading);
-
-    items.forEach((item) => {
-      const card = document.createElement("article");
-      card.className = "pipeline-item";
-      const title = document.createElement("strong");
-      title.textContent = item.title;
-      const description = document.createElement("p");
-      description.textContent = item.description;
-      card.append(title, description);
-      column.append(card);
-    });
-
-    return column;
-  });
-
-  board.replaceChildren(...columns);
-}
-
 function drawWorkbench() {
   const canvas = document.querySelector("#workbench-canvas");
   const ctx = canvas.getContext("2d");
@@ -399,10 +322,10 @@ function drawWorkbench() {
   const width = rect.width;
   const height = rect.height;
   const nodes = [
-    { x: width * 0.18, y: height * 0.28, r: 42, color: "#587366", label: "R" },
+    { x: width * 0.18, y: height * 0.28, r: 42, color: "#587366", label: "M" },
     { x: width * 0.55, y: height * 0.2, r: 56, color: "#2f5f91", label: "G" },
     { x: width * 0.75, y: height * 0.58, r: 48, color: "#b4473f", label: "D" },
-    { x: width * 0.34, y: height * 0.72, r: 52, color: "#b7832f", label: "?" },
+    { x: width * 0.34, y: height * 0.72, r: 52, color: "#b7832f", label: "AI" },
     { x: width * 0.52, y: height * 0.52, r: 34, color: "#64558a", label: "W" },
   ];
 
@@ -443,12 +366,11 @@ function drawWorkbench() {
   ctx.fillStyle = "rgba(32, 33, 36, 0.72)";
   ctx.font = "700 14px system-ui";
   ctx.textAlign = "left";
-  ctx.fillText("loose map of useful work", 22, height - 24);
+  ctx.fillText("clickable map of useful work", 22, height - 24);
 }
 
 renderProjects();
 renderUpdates();
 renderInterests();
-renderPipeline();
 drawWorkbench();
 window.addEventListener("resize", drawWorkbench);
