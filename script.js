@@ -1,5 +1,8 @@
 const australianDataReviewRepo = "https://github.com/ahibbert/australian-data-review";
-const australianDataReviewSite = "https://ahibbert.github.io/australian-data-review";
+const australianDataReviewSite = "http://datareview.aydins-workbench.com";
+const blogSite = "https://blog.aydins-workbench.com";
+const gamlssLongitudinalSite = "http://gamlsslongitudinal.aydins-workbench.com";
+const gamlssPlaygroundSite = "https://gamlss.aydins-workbench.com";
 
 const projects = [
   {
@@ -15,7 +18,23 @@ const projects = [
     },
     links: [
       ["GitHub", "https://github.com/ahibbert/gamlss.longitudinal"],
-      ["Docs", "https://ahibbert.github.io/gamlss.longitudinal/articles/site-guide.html"],
+      ["Docs", `${gamlssLongitudinalSite}/articles/site-guide.html`],
+    ],
+  },
+  {
+    title: "GAMLSS Playground",
+    type: "Tool",
+    status: "In progress",
+    description:
+      "A live R-backed tool for exploring exact GAMLSS distribution shapes with sliders, density/CDF/quantile views, and exportable grids.",
+    detail: {
+      why: "To make distributional-regression families easier to inspect without regenerating examples by hand.",
+      next: "Keep broadening distribution coverage and polish traceable teaching/research workflows.",
+      audience: "Researchers and students who already know enough statistics to care about distribution parameters.",
+    },
+    links: [
+      ["Launch tool", gamlssPlaygroundSite],
+      ["GitHub", "https://github.com/ahibbert/gamlss-playground"],
     ],
   },
   {
@@ -49,6 +68,22 @@ const projects = [
       ["Section", "#data-questions"],
       ["Site", australianDataReviewSite],
       ["Repo", australianDataReviewRepo],
+    ],
+  },
+  {
+    title: "Blog",
+    type: "Writing",
+    status: "Draft",
+    description:
+      "A lightweight writing space for statistical modelling notes, research-software reflections, data questions, and project-adjacent thinking.",
+    detail: {
+      why: "Some thoughts need a public notebook before they are polished enough to become papers, package docs, or formal project pages.",
+      next: "Write the first short opening note and start collecting recurring threads.",
+      audience: "People following the workbench, collaborators, and future me.",
+    },
+    links: [
+      ["Read", blogSite],
+      ["GitHub", "https://github.com/ahibbert/blog"],
     ],
   },
   {
@@ -149,10 +184,20 @@ const dataQuestions = [
 const latestUpdates = [
   {
     date: "Today",
+    title: "Brought the workbench under one domain",
+    description:
+      "The main site, blog, GAMLSS Playground, Australian Data Review, and gamlss.longitudinal docs now have their own aydins-workbench.com addresses.",
+    links: [
+      ["Blog", blogSite],
+      ["GAMLSS Playground", gamlssPlaygroundSite],
+    ],
+  },
+  {
+    date: "Today",
     title: "Released the detailed gamlss.longitudinal workflow",
     description:
       "A detailed worked example is now available on the gamlss.longitudinal GitHub Pages site.",
-    links: [["Read the workflow", "https://ahibbert.github.io/gamlss.longitudinal/articles/native-simulation-workflow.html"]],
+    links: [["Read the workflow", `${gamlssLongitudinalSite}/articles/native-simulation-workflow.html`]],
   },
   {
     date: "Today",

@@ -16,6 +16,10 @@ Most editable content lives in `script.js`:
 - `latestUpdates`
 - `interests`
 
-The Australian Data Review clone now lives at `./australian-data-review`. The
-Data Questions cards in `script.js` link to the rendered Quarto site and each
-post's source folder.
+The main public site lives at <https://aydins-workbench.com>. Project subdomains
+currently include:
+
+- <https://blog.aydins-workbench.com>
+- <https://gamlss.aydins-workbench.com>
+- <http://datareview.aydins-workbench.com>
+- <http://gamlsslongitudinal.aydins-workbench.com>
