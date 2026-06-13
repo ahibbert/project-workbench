@@ -22,7 +22,7 @@
         <a href="#top">Home</a>
         <a href="https://blog.aydins-workbench.com">Blog</a>
         <a href="https://gamlss.aydins-workbench.com">GAMLSS Playground</a>
-        <a href="http://gamlsslongitudinal.aydins-workbench.com">gamlss.longitudinal</a>
+        <a href="https://gamlsslongitudinal.aydins-workbench.com">gamlss.longitudinal</a>
       </nav>
     </header>
 
@@ -40,7 +40,7 @@
             <a class="button primary" href="#projects">Browse featured work</a>
             <a class="button" href="https://blog.aydins-workbench.com">Blog</a>
             <a class="button" href="https://gamlss.aydins-workbench.com">GAMLSS Playground</a>
-            <a class="button" href="http://gamlsslongitudinal.aydins-workbench.com">gamlss.longitudinal</a>
+            <a class="button" href="https://gamlsslongitudinal.aydins-workbench.com">gamlss.longitudinal</a>
           </div>
         </div>
 
@@ -67,19 +67,32 @@
               <g class="map-node" style="--node-color: #2f5f91">
                 <circle class="node-shadow" cx="390" cy="120" r="58"></circle>
                 <circle class="node-disc" cx="390" cy="120" r="58"></circle>
-                <text x="390" y="120">GP</text>
+                <g class="map-icon distribution-icon" aria-hidden="true">
+                  <path d="M350 146 H430"></path>
+                  <path d="M354 145 C365 145 368 92 390 92 C412 92 415 145 426 145"></path>
+                  <path d="M363 145 C374 145 377 113 390 113 C403 113 406 145 417 145"></path>
+                  <path d="M365 132 H415"></path>
+                </g>
               </g>
             </a>
             <a
               class="map-link"
-              href="http://gamlsslongitudinal.aydins-workbench.com"
+              href="https://gamlsslongitudinal.aydins-workbench.com"
               data-tooltip="gamlss.longitudinal: package homepage and workflows"
               aria-label="Open gamlss.longitudinal homepage"
             >
               <g class="map-node" style="--node-color: #587366">
                 <circle class="node-shadow" cx="170" cy="160" r="50"></circle>
                 <circle class="node-disc" cx="170" cy="160" r="50"></circle>
-                <text x="170" y="160">GL</text>
+                <g class="map-icon longitudinal-icon" aria-hidden="true">
+                  <path d="M138 179 C150 151 161 176 174 144 C187 112 199 145 204 127"></path>
+                  <circle cx="140" cy="178" r="4"></circle>
+                  <circle cx="158" cy="164" r="4"></circle>
+                  <circle cx="174" cy="144" r="4"></circle>
+                  <circle cx="192" cy="134" r="4"></circle>
+                  <path d="M137 190 H206"></path>
+                  <path d="M137 128 V190"></path>
+                </g>
               </g>
             </a>
             <a
@@ -91,7 +104,13 @@
               <g class="map-node" style="--node-color: #b4473f">
                 <circle class="node-shadow" cx="540" cy="300" r="50"></circle>
                 <circle class="node-disc" cx="540" cy="300" r="50"></circle>
-                <text x="540" y="300">B</text>
+                <g class="map-icon writing-icon" aria-hidden="true">
+                  <path d="M509 326 H555"></path>
+                  <path d="M513 316 H552"></path>
+                  <path d="M516 306 H548"></path>
+                  <path d="M553 269 L570 286 L537 319 L520 324 L525 307 Z"></path>
+                  <path d="M548 274 L565 291"></path>
+                </g>
               </g>
             </a>
             <a
@@ -103,7 +122,12 @@
               <g class="map-node" style="--node-color: #b7832f">
                 <circle class="node-shadow" cx="275" cy="374" r="54"></circle>
                 <circle class="node-disc" cx="275" cy="374" r="54"></circle>
-                <text x="275" y="374">P</text>
+                <g class="map-icon scholar-icon" aria-hidden="true">
+                  <path d="M234 364 L275 344 L316 364 L275 384 Z"></path>
+                  <path d="M250 374 V391 C260 400 291 400 300 391 V374"></path>
+                  <path d="M316 364 V389"></path>
+                  <circle cx="316" cy="396" r="4"></circle>
+                </g>
               </g>
             </a>
           </svg>
@@ -127,21 +151,21 @@
         <div class="card-grid" id="project-grid"></div>
       </section>
 
-      <section class="section muted-band" id="data-questions" aria-labelledby="data-title">
+      <section class="section muted-band" id="latest-posts" aria-labelledby="posts-title">
         <div class="section-heading">
-          <p class="eyebrow">Public drafts</p>
-          <h2 id="data-title">Data Questions</h2>
+          <p class="eyebrow">Latest writing</p>
+          <h2 id="posts-title">From the blog</h2>
           <p>
-            Answering questions I am interested in with data. These are intentionally
-            public drafts: readable enough to share, honest enough to wear a big draft label.
+            The newest notes from the combined blog: public data questions, modelling
+            work, and project-adjacent writing.
           </p>
         </div>
         <div class="data-toolbar">
-          <a class="button primary" href="http://datareview.aydins-workbench.com">Australian Data Review</a>
-          <a class="button" href="https://github.com/ahibbert/australian-data-review">Repo</a>
-          <span class="draft-notice">All entries default to WORK IN PROGRESS until explicitly marked published.</span>
+          <a class="button primary" href="https://blog.aydins-workbench.com#posts">See more posts</a>
+          <a class="button" href="https://github.com/ahibbert/blog">Blog repo</a>
+          <span class="draft-notice">Most notes are public drafts unless they explicitly say otherwise.</span>
         </div>
-        <div class="card-grid data-grid" id="data-grid"></div>
+        <div class="card-grid data-grid" id="posts-grid"></div>
       </section>
 
       <section class="section bio-section" id="bio" aria-labelledby="bio-title">

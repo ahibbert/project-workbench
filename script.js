@@ -1,8 +1,8 @@
-const australianDataReviewRepo = "https://github.com/ahibbert/australian-data-review";
-const australianDataReviewSite = "http://datareview.aydins-workbench.com";
 const blogSite = "https://blog.aydins-workbench.com";
-const gamlssLongitudinalSite = "http://gamlsslongitudinal.aydins-workbench.com";
+const copulaPlaygroundSite = "https://copula.aydins-workbench.com";
+const gamlssLongitudinalSite = "https://gamlsslongitudinal.aydins-workbench.com";
 const gamlssPlaygroundSite = "https://gamlss.aydins-workbench.com";
+const quantileLensSite = "https://quantile.aydins-workbench.com";
 
 const projects = [
   {
@@ -38,6 +38,38 @@ const projects = [
     ],
   },
   {
+    title: "Quantile Lens",
+    type: "Tool",
+    status: "v2 prototype",
+    description:
+      "A browser-only visual explainer for how covariates can move GAMLSS-style parameter roles, quantiles, and threshold risk.",
+    detail: {
+      why: "To make distributional effects interpretable before modelling terminology gets in the way.",
+      next: "Review the v2 mixer, then decide whether to add exports, exact R-backed families, or fitted-model examples.",
+      audience: "Applied learners who need to see why the average is not the whole story.",
+    },
+    links: [
+      ["Launch tool", quantileLensSite],
+      ["GitHub", "https://github.com/ahibbert/quantile-lens"],
+    ],
+  },
+  {
+    title: "Copula Playground",
+    type: "Tool",
+    status: "v2 prototype",
+    description:
+      "A browser-only playground for separating GAMLSS-like margins, pseudo-observations, copula scale, and observed values.",
+    detail: {
+      why: "To make dependence shape visible, especially when similar broad association hides different extreme behaviour.",
+      next: "Review the v2 margin and pseudo-observation workflow, then decide where exact simulation and package/paper links should deepen.",
+      audience: "Applied learners and collaborators thinking about dependence beyond correlation.",
+    },
+    links: [
+      ["Launch tool", copulaPlaygroundSite],
+      ["GitHub", "https://github.com/ahibbert/copula-playground"],
+    ],
+  },
+  {
     title: "Copula-based joint regression models for correlated data",
     type: "Paper",
     status: "Under review",
@@ -51,39 +83,6 @@ const projects = [
     links: [
       ["arXiv", "https://arxiv.org/abs/2410.11892"],
       ["Code", "https://github.com/ahibbert/bivariate-copula-for-correlated-data"],
-    ],
-  },
-  {
-    title: "Data Questions",
-    type: "Data notebook",
-    status: "Draft",
-    description:
-      "Public drafts answering questions I am interested in with data, starting from Australian Data Review work.",
-    detail: {
-      why: "A public place to work through data questions without pretending every note is final.",
-      next: "Keep turning Australian Data Review posts into readable public notes with caveats visible.",
-      audience: "Curious readers who want concise analysis with caveats visible.",
-    },
-    links: [
-      ["Section", "#data-questions"],
-      ["Site", australianDataReviewSite],
-      ["Repo", australianDataReviewRepo],
-    ],
-  },
-  {
-    title: "Blog",
-    type: "Writing",
-    status: "Draft",
-    description:
-      "A lightweight writing space for statistical modelling notes, research-software reflections, data questions, and project-adjacent thinking.",
-    detail: {
-      why: "Some thoughts need a public notebook before they are polished enough to become papers, package docs, or formal project pages.",
-      next: "Write the first short opening note and start collecting recurring threads.",
-      audience: "People following the workbench, collaborators, and future me.",
-    },
-    links: [
-      ["Read", blogSite],
-      ["GitHub", "https://github.com/ahibbert/blog"],
     ],
   },
   {
@@ -101,53 +100,53 @@ const projects = [
   },
 ];
 
-const dataQuestions = [
+const latestPosts = [
   {
-    title: "Modelling NDIS Plan Budgets and Utilisation",
-    type: "Analysis",
+    title: "A First Pass At Australian Dwelling Prices",
+    type: "Blog post",
     status: "Draft",
     description:
-      "A reproducible first pass at explaining NDIS average support budgets and plan utilisation using public NDIS and ABS regional data.",
+      "A small reproducible look at ABS dwelling values, state mean prices, and the housing policy questions they raise.",
     detail: {
-      question: "What explains variation in average annualised NDIS support budgets and plan utilisation?",
-      source: "Public NDIS datasets plus ABS regional context.",
-      next: "Keep checking the modelling assumptions, caveats, and presentation before treating it as polished.",
+      date: "11 June 2026",
+      theme: "Housing, cost of living, ABS data",
+      note: "A compact data question with caveats kept visible.",
     },
     links: [
-      ["Post", `${australianDataReviewSite}/posts/ndis-budget-utilisation-prediction/`],
-      ["Source", `${australianDataReviewRepo}/tree/main/posts/ndis-budget-utilisation-prediction`],
+      ["Post", `${blogSite}/posts/housing-prices-first-pass/`],
+      ["More posts", `${blogSite}#posts`],
     ],
   },
   {
-    title: "Australian Data Sources Worth Watching",
-    type: "Reference",
+    title: "Are NDIS Participant Outcomes Changing?",
+    type: "Blog post",
     status: "Draft",
     description:
-      "A curated starting list for Australian health and policy analysis, including source links and topic ideas.",
+      "A simpler look at national NDIS participant outcome levels and changes after plan reassessment.",
     detail: {
-      question: "Which public Australian datasets are useful starting points for health and policy analysis?",
-      source: "AIHW, ABS, NDIS, data.gov.au, Productivity Commission, and related public sources.",
-      next: "Turn promising topic ideas into individual question-led posts.",
+      date: "10 June 2026",
+      theme: "NDIS outcomes, disability, Australia",
+      note: "Descriptive movement is kept separate from causal interpretation.",
     },
     links: [
-      ["Post", `${australianDataReviewSite}/posts/australian-data-sources/`],
-      ["Source", `${australianDataReviewRepo}/tree/main/posts/australian-data-sources`],
+      ["Post", `${blogSite}/posts/ndis-outcomes-spend-service-access/`],
+      ["More posts", `${blogSite}#posts`],
     ],
   },
   {
-    title: "Starting an Australian Data Blog",
-    type: "Methods",
+    title: "Did Bulk Billing Changes Shift Access?",
+    type: "Blog post",
     status: "Draft",
     description:
-      "A short editorial note describing the compact question, dataset, chart, caveat, and interpretation format.",
+      "An early reproducible look at whether expanded GP bulk billing incentives changed access patterns by age, socioeconomic area, geography, and PHN.",
     detail: {
-      question: "What shape should these public data notes take?",
-      source: "Australian Data Notes editorial template.",
-      next: "Use the format consistently as more posts are added.",
+      date: "28 May 2026",
+      theme: "Medicare, bulk billing, health policy",
+      note: "An early look at policy signal, timing artefact, and reporting noise.",
     },
     links: [
-      ["Post", `${australianDataReviewSite}/posts/welcome/`],
-      ["Source", `${australianDataReviewRepo}/tree/main/posts/welcome`],
+      ["Post", `${blogSite}/posts/bulk-billing-changes-impact/`],
+      ["More posts", `${blogSite}#posts`],
     ],
   },
 ];
@@ -171,12 +170,12 @@ function createLinks(links) {
   return wrapper;
 }
 
-function createDetails(detail) {
+function createDetails(detail, summaryLabel = "Project brief") {
   const details = document.createElement("details");
   details.className = "project-details";
 
   const summary = document.createElement("summary");
-  summary.textContent = "Project brief";
+  summary.textContent = summaryLabel;
   details.append(summary);
 
   const grid = document.createElement("div");
@@ -232,7 +231,7 @@ function createProjectCard(item, options = {}) {
 
   card.append(top, status, description);
   if (item.detail) {
-    card.append(createDetails(item.detail));
+    card.append(createDetails(item.detail, options.summaryLabel));
   }
   card.append(createLinks(item.links));
   return card;
@@ -240,10 +239,10 @@ function createProjectCard(item, options = {}) {
 
 function renderProjects() {
   const projectGrid = document.querySelector("#project-grid");
-  const dataGrid = document.querySelector("#data-grid");
+  const postsGrid = document.querySelector("#posts-grid");
   projectGrid.replaceChildren(...projects.map((item) => createProjectCard(item)));
-  dataGrid.replaceChildren(
-    ...dataQuestions.map((item) => createProjectCard(item, { showDraftBanner: true }))
+  postsGrid.replaceChildren(
+    ...latestPosts.map((item) => createProjectCard(item, { summaryLabel: "Post details" }))
   );
 }
 
