@@ -99,19 +99,6 @@ const projects = [
     },
     links: [["Project brief", "#projects"]],
   },
-  {
-    title: "Data review tooling",
-    type: "Tool",
-    status: "In progress",
-    description:
-      "Lightweight helpers for turning data questions into reproducible summaries, charts, and public draft pages.",
-    detail: {
-      why: "The Data Questions section needs repeatable structure as the number of drafts grows.",
-      next: "Create a simple template for question, data source, chart, caveats, and status.",
-      audience: "Future data-note authors, including future me.",
-    },
-    links: [["Data Questions", "#data-questions"]],
-  },
 ];
 
 const dataQuestions = [
@@ -163,62 +150,6 @@ const dataQuestions = [
       ["Source", `${australianDataReviewRepo}/tree/main/posts/welcome`],
     ],
   },
-  {
-    title: "Question-led data note template",
-    type: "Template",
-    status: "In progress",
-    description:
-      "A repeatable shape for turning a question, dataset, chart, interpretation, and caveats into a public note.",
-    detail: {
-      question: "What is the minimum structure that makes a draft useful without making it feel finished?",
-      source: "The local Australian Data Review Quarto site.",
-      next: "Use this as the authoring pattern for future entries.",
-    },
-    links: [
-      ["Site", australianDataReviewSite],
-      ["Repo", australianDataReviewRepo],
-    ],
-  },
-];
-
-const latestUpdates = [
-  {
-    date: "Today",
-    title: "Brought the workbench under one domain",
-    description:
-      "The main site, blog, GAMLSS Playground, Australian Data Review, and gamlss.longitudinal docs now have their own aydins-workbench.com addresses.",
-    links: [
-      ["Blog", blogSite],
-      ["GAMLSS Playground", gamlssPlaygroundSite],
-    ],
-  },
-  {
-    date: "Today",
-    title: "Released the detailed gamlss.longitudinal workflow",
-    description:
-      "A detailed worked example is now available on the gamlss.longitudinal GitHub Pages site.",
-    links: [["Read the workflow", `${gamlssLongitudinalSite}/articles/native-simulation-workflow.html`]],
-  },
-  {
-    date: "Today",
-    title: "Connected Australian Data Review posts",
-    description:
-      "Data Questions now features the real Australian Data Review posts from the local Quarto repo.",
-    links: [["Browse Data Questions", "#data-questions"]],
-  },
-  {
-    date: "Today",
-    title: "Added expandable project briefs",
-    description:
-      "Project and Data Questions cards now include short details about why the work exists, who it is for, and what comes next.",
-  },
-];
-
-const interests = [
-  "Longitudinal models with flexible distribution and dependence",
-  "Policy questions we can inform with data",
-  "Making statistical modelling more accessible and usable",
-  "The impact of AI on data science and statistics",
 ];
 
 const statusClass = (status) => status.toLowerCase().replace(/\s+/g, "-");
@@ -316,106 +247,43 @@ function renderProjects() {
   );
 }
 
-function renderUpdates() {
-  const list = document.querySelector("#updates-list");
-  list.replaceChildren(
-    ...latestUpdates.map((item) => {
-      const article = document.createElement("article");
-      article.className = "update-item";
+function setupMapTooltips() {
+  const visual = document.querySelector(".workbench-visual");
+  const tooltip = document.querySelector("#map-tooltip");
+  const links = document.querySelectorAll(".map-link");
 
-      const date = document.createElement("span");
-      date.className = "update-date";
-      date.textContent = item.date;
+  if (!visual || !tooltip || links.length === 0) {
+    return;
+  }
 
-      const content = document.createElement("div");
-      const title = document.createElement("strong");
-      title.textContent = item.title;
-      const description = document.createElement("p");
-      description.textContent = item.description;
-      content.append(title, description);
-      if (item.links) {
-        content.append(createLinks(item.links));
-      }
+  function positionTooltip(link) {
+    const visualRect = visual.getBoundingClientRect();
+    const circleRect = link.querySelector(".node-disc").getBoundingClientRect();
+    const left = circleRect.left - visualRect.left + circleRect.width / 2;
+    const top = circleRect.top - visualRect.top - 10;
 
-      article.append(date, content);
-      return article;
-    })
-  );
-}
+    tooltip.style.left = `${left}px`;
+    tooltip.style.top = `${Math.max(48, top)}px`;
+  }
 
-function renderInterests() {
-  const strip = document.querySelector("#interest-strip");
-  strip.replaceChildren(
-    ...interests.map((interest) => {
-      const item = document.createElement("div");
-      item.className = "interest-item";
-      item.textContent = interest;
-      return item;
-    })
-  );
-}
+  function showTooltip(link) {
+    tooltip.textContent = link.dataset.tooltip;
+    positionTooltip(link);
+    tooltip.classList.add("is-visible");
+  }
 
-function drawWorkbench() {
-  const canvas = document.querySelector("#workbench-canvas");
-  const ctx = canvas.getContext("2d");
-  const ratio = window.devicePixelRatio || 1;
-  const rect = canvas.getBoundingClientRect();
-  canvas.width = Math.max(1, Math.floor(rect.width * ratio));
-  canvas.height = Math.max(1, Math.floor(rect.height * ratio));
-  ctx.scale(ratio, ratio);
+  function hideTooltip() {
+    tooltip.classList.remove("is-visible");
+  }
 
-  const width = rect.width;
-  const height = rect.height;
-  const nodes = [
-    { x: width * 0.18, y: height * 0.28, r: 42, color: "#587366", label: "M" },
-    { x: width * 0.55, y: height * 0.2, r: 56, color: "#2f5f91", label: "G" },
-    { x: width * 0.75, y: height * 0.58, r: 48, color: "#b4473f", label: "D" },
-    { x: width * 0.34, y: height * 0.72, r: 52, color: "#b7832f", label: "AI" },
-    { x: width * 0.52, y: height * 0.52, r: 34, color: "#64558a", label: "W" },
-  ];
-
-  ctx.clearRect(0, 0, width, height);
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = "rgba(32, 33, 36, 0.34)";
-  ctx.setLineDash([8, 8]);
-  ctx.beginPath();
-  nodes.forEach((node, index) => {
-    const next = nodes[(index + 1) % nodes.length];
-    ctx.moveTo(node.x, node.y);
-    ctx.lineTo(next.x, next.y);
+  links.forEach((link) => {
+    link.addEventListener("pointerenter", () => showTooltip(link));
+    link.addEventListener("pointermove", () => positionTooltip(link));
+    link.addEventListener("pointerleave", hideTooltip);
+    link.addEventListener("focus", () => showTooltip(link));
+    link.addEventListener("blur", hideTooltip);
   });
-  ctx.stroke();
-  ctx.setLineDash([]);
-
-  nodes.forEach((node) => {
-    ctx.beginPath();
-    ctx.arc(node.x + 8, node.y + 10, node.r, 0, Math.PI * 2);
-    ctx.fillStyle = "rgba(32, 33, 36, 0.12)";
-    ctx.fill();
-
-    ctx.beginPath();
-    ctx.arc(node.x, node.y, node.r, 0, Math.PI * 2);
-    ctx.fillStyle = node.color;
-    ctx.fill();
-    ctx.lineWidth = 2;
-    ctx.strokeStyle = "#202124";
-    ctx.stroke();
-
-    ctx.fillStyle = "#fffdf8";
-    ctx.font = "800 24px system-ui";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(node.label, node.x, node.y);
-  });
-
-  ctx.fillStyle = "rgba(32, 33, 36, 0.72)";
-  ctx.font = "700 14px system-ui";
-  ctx.textAlign = "left";
-  ctx.fillText("clickable map of useful work", 22, height - 24);
 }
 
 renderProjects();
-renderUpdates();
-renderInterests();
-drawWorkbench();
-window.addEventListener("resize", drawWorkbench);
+setupMapTooltips();

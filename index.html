@@ -18,13 +18,11 @@
         <span class="brand-mark" aria-hidden="true">ASH</span>
         <span>Aydin Sareff-Hibbert</span>
       </a>
-      <nav class="nav-links" aria-label="Page sections">
-        <a href="#projects">Projects</a>
-        <a href="#updates">Updates</a>
-        <a href="#data-questions">Data Questions</a>
+      <nav class="nav-links" aria-label="Main pages">
+        <a href="#top">Home</a>
         <a href="https://blog.aydins-workbench.com">Blog</a>
-        <a href="https://gamlss.aydins-workbench.com">GAMLSS tool</a>
-        <a href="#bio">Bio</a>
+        <a href="https://gamlss.aydins-workbench.com">GAMLSS Playground</a>
+        <a href="http://gamlsslongitudinal.aydins-workbench.com">gamlss.longitudinal</a>
       </nav>
     </header>
 
@@ -39,46 +37,82 @@
             finished work, active drafts, and a few experiments that are still finding their shape.
           </p>
           <div class="hero-actions" aria-label="Primary links">
-            <a class="button primary" href="#projects">Browse projects</a>
+            <a class="button primary" href="#projects">Browse featured work</a>
             <a class="button" href="https://blog.aydins-workbench.com">Blog</a>
             <a class="button" href="https://gamlss.aydins-workbench.com">GAMLSS Playground</a>
-            <a class="button" href="https://github.com/ahibbert">GitHub</a>
+            <a class="button" href="http://gamlsslongitudinal.aydins-workbench.com">gamlss.longitudinal</a>
           </div>
         </div>
 
         <div class="workbench-visual" aria-label="Interactive workbench map">
-          <canvas id="workbench-canvas" width="720" height="520"></canvas>
-          <div class="visual-labels">
-            <a class="pin pin-one" href="#projects">models</a>
-            <a class="pin pin-two" href="#updates">workflow</a>
-            <a class="pin pin-three" href="#data-questions">data</a>
-            <a class="pin pin-four" href="#projects">AI eval</a>
-          </div>
+          <svg
+            class="workbench-map"
+            id="workbench-map"
+            viewBox="0 0 720 520"
+            role="img"
+            aria-labelledby="workbench-map-title workbench-map-desc"
+          >
+            <title id="workbench-map-title">Clickable work map</title>
+            <desc id="workbench-map-desc">
+              Four linked circles for the GAMLSS Playground, gamlss.longitudinal,
+              the blog, and publication profiles.
+            </desc>
+            <path class="map-thread" d="M170 160 L390 120 L540 300 L275 374 Z M390 120 L275 374" />
+            <a
+              class="map-link"
+              href="https://gamlss.aydins-workbench.com"
+              data-tooltip="GAMLSS Playground: interactive distribution exploration"
+              aria-label="Open GAMLSS Playground"
+            >
+              <g class="map-node" style="--node-color: #2f5f91">
+                <circle class="node-shadow" cx="390" cy="120" r="58"></circle>
+                <circle class="node-disc" cx="390" cy="120" r="58"></circle>
+                <text x="390" y="120">GP</text>
+              </g>
+            </a>
+            <a
+              class="map-link"
+              href="http://gamlsslongitudinal.aydins-workbench.com"
+              data-tooltip="gamlss.longitudinal: package homepage and workflows"
+              aria-label="Open gamlss.longitudinal homepage"
+            >
+              <g class="map-node" style="--node-color: #587366">
+                <circle class="node-shadow" cx="170" cy="160" r="50"></circle>
+                <circle class="node-disc" cx="170" cy="160" r="50"></circle>
+                <text x="170" y="160">GL</text>
+              </g>
+            </a>
+            <a
+              class="map-link"
+              href="https://blog.aydins-workbench.com"
+              data-tooltip="Blog: notes, drafts, and project-adjacent thinking"
+              aria-label="Open the blog"
+            >
+              <g class="map-node" style="--node-color: #b4473f">
+                <circle class="node-shadow" cx="540" cy="300" r="50"></circle>
+                <circle class="node-disc" cx="540" cy="300" r="50"></circle>
+                <text x="540" y="300">B</text>
+              </g>
+            </a>
+            <a
+              class="map-link"
+              href="https://scholar.google.com/citations?hl=en&amp;user=oTwuhNoAAAAJ"
+              data-tooltip="Papers: publication list on Google Scholar"
+              aria-label="Open publication list on Google Scholar"
+            >
+              <g class="map-node" style="--node-color: #b7832f">
+                <circle class="node-shadow" cx="275" cy="374" r="54"></circle>
+                <circle class="node-disc" cx="275" cy="374" r="54"></circle>
+                <text x="275" y="374">P</text>
+              </g>
+            </a>
+          </svg>
+          <div class="map-tooltip" id="map-tooltip" role="status" aria-live="polite"></div>
           <div class="map-caption">
             <strong>Work map</strong>
-            <span>Use the chips to jump between the main threads.</span>
+            <span>Hover or tap a circle to jump into the main threads.</span>
           </div>
         </div>
-      </section>
-
-      <section class="section" aria-labelledby="now-title">
-        <div class="section-heading compact-heading">
-          <p class="eyebrow">Currently interested in</p>
-          <h2 id="now-title">Questions, tools, and useful statistical mess.</h2>
-        </div>
-        <div class="interest-strip" id="interest-strip"></div>
-      </section>
-
-      <section class="section updates-band" id="updates" aria-labelledby="updates-title">
-        <div class="section-heading">
-          <p class="eyebrow">Latest</p>
-          <h2 id="updates-title">Recent updates</h2>
-          <p>
-            A small changelog for what has moved recently: public drafts, package work,
-            ideas becoming projects, and things worth checking back on.
-          </p>
-        </div>
-        <div class="updates-list" id="updates-list"></div>
       </section>
 
       <section class="section" id="projects" aria-labelledby="projects-title">
@@ -123,9 +157,11 @@
             communication, and applied problem-solving.
           </p>
           <p>
-            This page keeps personal details deliberately broad. It should give enough
-            context to understand the work without listing private locations, dates,
-            employers, or other specifics that do not need to be public.
+            For publications and scholarly identifiers, see my
+            <a class="text-link" href="https://orcid.org/0009-0002-6621-8793">ORCID</a>
+            or
+            <a class="text-link" href="https://scholar.google.com/citations?hl=en&amp;user=oTwuhNoAAAAJ">Google Scholar</a>
+            profiles.
           </p>
         </div>
       </section>
