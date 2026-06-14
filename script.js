@@ -1,8 +1,6 @@
 const blogSite = "https://blog.aydins-workbench.com";
-const copulaPlaygroundSite = "https://copula.aydins-workbench.com";
 const gamlssLongitudinalSite = "https://gamlsslongitudinal.aydins-workbench.com";
 const gamlssPlaygroundSite = "https://gamlss.aydins-workbench.com";
-const quantileLensSite = "https://quantile.aydins-workbench.com";
 
 const projects = [
   {
@@ -22,51 +20,22 @@ const projects = [
     ],
   },
   {
-    title: "GAMLSS Playground",
+    title: "Distribution Playground",
     type: "Tool",
     status: "In progress",
     description:
-      "A live R-backed tool for exploring exact GAMLSS distribution shapes with sliders, density/CDF/quantile views, and exportable grids.",
+      "A shared R-backed home for GAMLSS distribution shapes, copula dependence, and quantile comparison tools.",
     detail: {
-      why: "To make distributional-regression families easier to inspect without regenerating examples by hand.",
-      next: "Keep broadening distribution coverage and polish traceable teaching/research workflows.",
-      audience: "Researchers and students who already know enough statistics to care about distribution parameters.",
+      why: "To make distributional-regression ideas easier to inspect without regenerating examples by hand.",
+      next: "Review the hosted GAMLSS, Copula, and Quantiles sub-tools, then deepen the examples and exports.",
+      audience: "Researchers, students, and applied collaborators who need distribution shape and dependence to be visible.",
     },
     links: [
-      ["Launch tool", gamlssPlaygroundSite],
+      ["Launch playground", gamlssPlaygroundSite],
+      ["GAMLSS", `${gamlssPlaygroundSite}/gamlss/`],
+      ["Copula", `${gamlssPlaygroundSite}/copula/`],
+      ["Quantiles", `${gamlssPlaygroundSite}/quantile/`],
       ["GitHub", "https://github.com/ahibbert/gamlss-playground"],
-    ],
-  },
-  {
-    title: "Quantile Lens",
-    type: "Tool",
-    status: "v2 prototype",
-    description:
-      "A browser-only visual explainer for how covariates can move GAMLSS-style parameter roles, quantiles, and threshold risk.",
-    detail: {
-      why: "To make distributional effects interpretable before modelling terminology gets in the way.",
-      next: "Review the v2 mixer, then decide whether to add exports, exact R-backed families, or fitted-model examples.",
-      audience: "Applied learners who need to see why the average is not the whole story.",
-    },
-    links: [
-      ["Launch tool", quantileLensSite],
-      ["GitHub", "https://github.com/ahibbert/quantile-lens"],
-    ],
-  },
-  {
-    title: "Copula Playground",
-    type: "Tool",
-    status: "v2 prototype",
-    description:
-      "A browser-only playground for separating GAMLSS-like margins, pseudo-observations, copula scale, and observed values.",
-    detail: {
-      why: "To make dependence shape visible, especially when similar broad association hides different extreme behaviour.",
-      next: "Review the v2 margin and pseudo-observation workflow, then decide where exact simulation and package/paper links should deepen.",
-      audience: "Applied learners and collaborators thinking about dependence beyond correlation.",
-    },
-    links: [
-      ["Launch tool", copulaPlaygroundSite],
-      ["GitHub", "https://github.com/ahibbert/copula-playground"],
     ],
   },
   {
