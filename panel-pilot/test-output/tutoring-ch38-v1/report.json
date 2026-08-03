@@ -1,0 +1,15 @@
+[
+  {
+    "chapter_id": 38,
+    "chapter": "38",
+    "name": "Chapter 38",
+    "source_pages": 7,
+    "tested_pages": 7,
+    "panels": 64,
+    "raw_panels": 15,
+    "fallback": false,
+    "quiet_ratio": 0.3736,
+    "active_ratio": 0.6264,
+    "max_panel_h": 0.0141
+  }
+]

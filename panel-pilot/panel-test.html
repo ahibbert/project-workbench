@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>Panel Pilot Test Lab</title>
+    <link rel="stylesheet" href="styles.css?v=8">
+  </head>
+  <body class="test-body">
+    <main class="test-shell">
+      <header class="test-header">
+        <div>
+          <p class="kicker">Panel Pilot</p>
+          <h1>Detection Test Lab</h1>
+        </div>
+        <a class="test-link" href="./">Reader</a>
+      </header>
+
+      <section class="panel test-controls">
+        <div class="panel-heading">
+          <h2>Test Source</h2>
+          <span class="small-count" id="test-version">Detector</span>
+        </div>
+
+        <label class="field">
+          <span>Comick comic URL</span>
+          <input id="test-comic-url" type="url" inputmode="url" value="https://comick.live/comic/00-sousou-no-frieren">
+        </label>
+
+        <div class="test-grid">
+          <label class="field">
+            <span>Chapter</span>
+            <input id="test-chapter" type="text" inputmode="decimal" value="1">
+          </label>
+          <label class="field">
+            <span>Max pages</span>
+            <input id="test-page-limit" type="number" min="1" step="1" placeholder="All">
+          </label>
+          <label class="field">
+            <span>Reading order</span>
+            <select id="test-direction">
+              <option value="rtl" selected>Right to left</option>
+              <option value="ltr">Left to right</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="button-row">
+          <button id="test-load" type="button">Load Chapter</button>
+          <button id="test-run" type="button" disabled>Run Detection</button>
+          <button id="test-export" type="button" disabled>Export JSON</button>
+          <button id="test-clear" type="button" disabled>Clear Expected</button>
+        </div>
+        <p class="note" id="test-note">Load Frieren chapter 1, then run detection. Enter expected panel counts to score each page.</p>
+      </section>
+
+      <section class="test-summary" aria-live="polite">
+        <div>
+          <strong id="summary-pages">0</strong>
+          <span>pages</span>
+        </div>
+        <div>
+          <strong id="summary-labeled">0</strong>
+          <span>labeled</span>
+        </div>
+        <div>
+          <strong id="summary-matches">0</strong>
+          <span>matches</span>
+        </div>
+        <div>
+          <strong id="summary-accuracy">-</strong>
+          <span>accuracy</span>
+        </div>
+      </section>
+
+      <section class="test-results" id="test-results"></section>
+    </main>
+
+    <script src="script.js?v=14"></script>
+    <script src="panel-test.js?v=6"></script>
+  </body>
+</html>

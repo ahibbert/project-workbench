@@ -1,0 +1,489 @@
+[
+  {
+    "chapter_id": 3561,
+    "chapter": 1.0,
+    "name": "Issue #1",
+    "source_pages": 36,
+    "tested_pages": 30,
+    "pages": [
+      {
+        "page": 1,
+        "width": 1988,
+        "height": 3056,
+        "mode": "manga",
+        "strategy": "recursive",
+        "panels": 1,
+        "candidate_counts": {
+          "recursive": 1,
+          "connected": 8,
+          "split": 34
+        },
+        "suspicious": [
+          "single-large-panel"
+        ],
+        "order_violations": []
+      },
+      {
+        "page": 2,
+        "width": 1988,
+        "height": 3156,
+        "mode": "manga",
+        "strategy": "split",
+        "panels": 4,
+        "candidate_counts": {
+          "recursive": 13,
+          "connected": 0,
+          "split": 4
+        },
+        "suspicious": [],
+        "order_violations": []
+      },
+      {
+        "page": 3,
+        "width": 3975,
+        "height": 3056,
+        "mode": "manga",
+        "strategy": "split",
+        "panels": 4,
+        "candidate_counts": {
+          "recursive": 20,
+          "connected": 0,
+          "split": 4
+        },
+        "suspicious": [],
+        "order_violations": []
+      },
+      {
+        "page": 4,
+        "width": 1988,
+        "height": 3056,
+        "mode": "manga",
+        "strategy": "recursive",
+        "panels": 6,
+        "candidate_counts": {
+          "recursive": 6,
+          "connected": 0,
+          "split": 4
+        },
+        "suspicious": [],
+        "order_violations": []
+      },
+      {
+        "page": 5,
+        "width": 1988,
+        "height": 3056,
+        "mode": "manga",
+        "strategy": "recursive",
+        "panels": 1,
+        "candidate_counts": {
+          "recursive": 1,
+          "connected": 6,
+          "split": 4
+        },
+        "suspicious": [
+          "single-large-panel"
+        ],
+        "order_violations": []
+      },
+      {
+        "page": 6,
+        "width": 1988,
+        "height": 3056,
+        "mode": "manga",
+        "strategy": "recursive",
+        "panels": 3,
+        "candidate_counts": {
+          "recursive": 3,
+          "connected": 1,
+          "split": 9
+        },
+        "suspicious": [],
+        "order_violations": []
+      },
+      {
+        "page": 7,
+        "width": 3975,
+        "height": 3056,
+        "mode": "manga",
+        "strategy": "recursive",
+        "panels": 1,
+        "candidate_counts": {
+          "recursive": 1,
+          "connected": 7,
+          "split": 2
+        },
+        "suspicious": [
+          "single-large-panel"
+        ],
+        "order_violations": []
+      },
+      {
+        "page": 8,
+        "width": 1988,
+        "height": 3156,
+        "mode": "manga",
+        "strategy": "recursive",
+        "panels": 2,
+        "candidate_counts": {
+          "recursive": 2,
+          "connected": 12,
+          "split": 18
+        },
+        "suspicious": [],
+        "order_violations": []
+      },
+      {
+        "page": 9,
+        "width": 1988,
+        "height": 3056,
+        "mode": "manga",
+        "strategy": "recursive",
+        "panels": 1,
+        "candidate_counts": {
+          "recursive": 1,
+          "connected": 10,
+          "split": 7
+        },
+        "suspicious": [
+          "single-large-panel"
+        ],
+        "order_violations": []
+      },
+      {
+        "page": 10,
+        "width": 1988,
+        "height": 3156,
+        "mode": "manga",
+        "strategy": "connected",
+        "panels": 7,
+        "candidate_counts": {
+          "recursive": 1,
+          "connected": 7,
+          "split": 4
+        },
+        "suspicious": [],
+        "order_violations": []
+      },
+      {
+        "page": 11,
+        "width": 1988,
+        "height": 3056,
+        "mode": "manga",
+        "strategy": "recursive",
+        "panels": 1,
+        "candidate_counts": {
+          "recursive": 1,
+          "connected": 12,
+          "split": 4
+        },
+        "suspicious": [
+          "single-large-panel"
+        ],
+        "order_violations": []
+      },
+      {
+        "page": 12,
+        "width": 1988,
+        "height": 3056,
+        "mode": "manga",
+        "strategy": "recursive",
+        "panels": 1,
+        "candidate_counts": {
+          "recursive": 1,
+          "connected": 14,
+          "split": 6
+        },
+        "suspicious": [
+          "single-large-panel"
+        ],
+        "order_violations": []
+      },
+      {
+        "page": 13,
+        "width": 1988,
+        "height": 3056,
+        "mode": "manga",
+        "strategy": "recursive",
+        "panels": 3,
+        "candidate_counts": {
+          "recursive": 3,
+          "connected": 11,
+          "split": 14
+        },
+        "suspicious": [],
+        "order_violations": []
+      },
+      {
+        "page": 14,
+        "width": 3975,
+        "height": 3056,
+        "mode": "manga",
+        "strategy": "recursive",
+        "panels": 1,
+        "candidate_counts": {
+          "recursive": 1,
+          "connected": 8,
+          "split": 2
+        },
+        "suspicious": [
+          "single-large-panel"
+        ],
+        "order_violations": []
+      },
+      {
+        "page": 15,
+        "width": 1988,
+        "height": 3056,
+        "mode": "manga",
+        "strategy": "recursive",
+        "panels": 2,
+        "candidate_counts": {
+          "recursive": 2,
+          "connected": 10,
+          "split": 5
+        },
+        "suspicious": [],
+        "order_violations": []
+      },
+      {
+        "page": 16,
+        "width": 1988,
+        "height": 3056,
+        "mode": "manga",
+        "strategy": "recursive",
+        "panels": 1,
+        "candidate_counts": {
+          "recursive": 1,
+          "connected": 13,
+          "split": 2
+        },
+        "suspicious": [
+          "single-large-panel"
+        ],
+        "order_violations": []
+      },
+      {
+        "page": 17,
+        "width": 1988,
+        "height": 3056,
+        "mode": "manga",
+        "strategy": "recursive",
+        "panels": 2,
+        "candidate_counts": {
+          "recursive": 2,
+          "connected": 14,
+          "split": 4
+        },
+        "suspicious": [],
+        "order_violations": []
+      },
+      {
+        "page": 18,
+        "width": 1988,
+        "height": 3056,
+        "mode": "manga",
+        "strategy": "recursive",
+        "panels": 2,
+        "candidate_counts": {
+          "recursive": 2,
+          "connected": 13,
+          "split": 8
+        },
+        "suspicious": [],
+        "order_violations": []
+      },
+      {
+        "page": 19,
+        "width": 1988,
+        "height": 3056,
+        "mode": "manga",
+        "strategy": "recursive",
+        "panels": 1,
+        "candidate_counts": {
+          "recursive": 1,
+          "connected": 8,
+          "split": 20
+        },
+        "suspicious": [
+          "single-large-panel"
+        ],
+        "order_violations": []
+      },
+      {
+        "page": 20,
+        "width": 1988,
+        "height": 3056,
+        "mode": "manga",
+        "strategy": "recursive",
+        "panels": 1,
+        "candidate_counts": {
+          "recursive": 1,
+          "connected": 11,
+          "split": 16
+        },
+        "suspicious": [
+          "single-large-panel"
+        ],
+        "order_violations": []
+      },
+      {
+        "page": 21,
+        "width": 1988,
+        "height": 3156,
+        "mode": "manga",
+        "strategy": "recursive",
+        "panels": 2,
+        "candidate_counts": {
+          "recursive": 2,
+          "connected": 6,
+          "split": 3
+        },
+        "suspicious": [],
+        "order_violations": []
+      },
+      {
+        "page": 22,
+        "width": 1988,
+        "height": 3056,
+        "mode": "manga",
+        "strategy": "recursive",
+        "panels": 2,
+        "candidate_counts": {
+          "recursive": 2,
+          "connected": 10,
+          "split": 6
+        },
+        "suspicious": [],
+        "order_violations": []
+      },
+      {
+        "page": 23,
+        "width": 1988,
+        "height": 3056,
+        "mode": "manga",
+        "strategy": "recursive",
+        "panels": 3,
+        "candidate_counts": {
+          "recursive": 3,
+          "connected": 8,
+          "split": 4
+        },
+        "suspicious": [],
+        "order_violations": []
+      },
+      {
+        "page": 24,
+        "width": 1988,
+        "height": 3056,
+        "mode": "manga",
+        "strategy": "recursive",
+        "panels": 3,
+        "candidate_counts": {
+          "recursive": 3,
+          "connected": 5,
+          "split": 4
+        },
+        "suspicious": [],
+        "order_violations": []
+      },
+      {
+        "page": 25,
+        "width": 3975,
+        "height": 3056,
+        "mode": "manga",
+        "strategy": "recursive",
+        "panels": 1,
+        "candidate_counts": {
+          "recursive": 1,
+          "connected": 8,
+          "split": 11
+        },
+        "suspicious": [
+          "single-large-panel"
+        ],
+        "order_violations": []
+      },
+      {
+        "page": 26,
+        "width": 1988,
+        "height": 3056,
+        "mode": "manga",
+        "strategy": "recursive",
+        "panels": 1,
+        "candidate_counts": {
+          "recursive": 1,
+          "connected": 15,
+          "split": 14
+        },
+        "suspicious": [
+          "single-large-panel"
+        ],
+        "order_violations": []
+      },
+      {
+        "page": 27,
+        "width": 1988,
+        "height": 3056,
+        "mode": "manga",
+        "strategy": "recursive",
+        "panels": 2,
+        "candidate_counts": {
+          "recursive": 2,
+          "connected": 9,
+          "split": 6
+        },
+        "suspicious": [],
+        "order_violations": []
+      },
+      {
+        "page": 28,
+        "width": 1988,
+        "height": 3056,
+        "mode": "manga",
+        "strategy": "recursive-over-ordered-connected",
+        "panels": 1,
+        "candidate_counts": {
+          "recursive": 1,
+          "connected": 6,
+          "split": 6
+        },
+        "suspicious": [
+          "single-large-panel"
+        ],
+        "order_violations": []
+      },
+      {
+        "page": 29,
+        "width": 1988,
+        "height": 3056,
+        "mode": "manga",
+        "strategy": "recursive",
+        "panels": 2,
+        "candidate_counts": {
+          "recursive": 2,
+          "connected": 8,
+          "split": 5
+        },
+        "suspicious": [],
+        "order_violations": []
+      },
+      {
+        "page": 30,
+        "width": 1988,
+        "height": 3056,
+        "mode": "manga",
+        "strategy": "recursive",
+        "panels": 5,
+        "candidate_counts": {
+          "recursive": 5,
+          "connected": 11,
+          "split": 6
+        },
+        "suspicious": [],
+        "order_violations": []
+      }
+    ],
+    "suspicious_pages": 13,
+    "avg_panels": 2.23
+  }
+]

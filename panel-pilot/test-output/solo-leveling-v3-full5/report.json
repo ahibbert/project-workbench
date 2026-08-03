@@ -1,0 +1,67 @@
+[
+  {
+    "chapter_id": 338,
+    "chapter": 0.0,
+    "name": "Chapter 0",
+    "source_pages": 17,
+    "tested_pages": 17,
+    "panels": 28,
+    "raw_panels": 11,
+    "fallback": false,
+    "quiet_ratio": 0.3551,
+    "active_ratio": 0.6449,
+    "max_panel_h": 0.0319
+  },
+  {
+    "chapter_id": 339,
+    "chapter": 1.0,
+    "name": "Chapter 1",
+    "source_pages": 28,
+    "tested_pages": 28,
+    "panels": 56,
+    "raw_panels": 12,
+    "fallback": false,
+    "quiet_ratio": 0.2328,
+    "active_ratio": 0.7672,
+    "max_panel_h": 0.0194
+  },
+  {
+    "chapter_id": 340,
+    "chapter": 2.0,
+    "name": "Chapter 2",
+    "source_pages": 25,
+    "tested_pages": 25,
+    "panels": 40,
+    "raw_panels": 12,
+    "fallback": false,
+    "quiet_ratio": 0.27,
+    "active_ratio": 0.73,
+    "max_panel_h": 0.0227
+  },
+  {
+    "chapter_id": 341,
+    "chapter": 3.0,
+    "name": "Chapter 3",
+    "source_pages": 34,
+    "tested_pages": 34,
+    "panels": 68,
+    "raw_panels": 14,
+    "fallback": false,
+    "quiet_ratio": 0.223,
+    "active_ratio": 0.777,
+    "max_panel_h": 0.0157
+  },
+  {
+    "chapter_id": 342,
+    "chapter": 4.0,
+    "name": "Chapter 4",
+    "source_pages": 35,
+    "tested_pages": 35,
+    "panels": 72,
+    "raw_panels": 11,
+    "fallback": false,
+    "quiet_ratio": 0.223,
+    "active_ratio": 0.777,
+    "max_panel_h": 0.0159
+  }
+]

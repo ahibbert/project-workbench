@@ -1,0 +1,28 @@
+[
+  {
+    "chapter_id": 338,
+    "chapter": 0.0,
+    "name": "Chapter 0",
+    "source_pages": 17,
+    "tested_pages": 12,
+    "panels": 18,
+    "raw_panels": 11,
+    "fallback": false,
+    "quiet_ratio": 0.3962,
+    "active_ratio": 0.6038,
+    "max_panel_h": 0.0441
+  },
+  {
+    "chapter_id": 339,
+    "chapter": 1.0,
+    "name": "Chapter 1",
+    "source_pages": 28,
+    "tested_pages": 12,
+    "panels": 26,
+    "raw_panels": 18,
+    "fallback": false,
+    "quiet_ratio": 0.2364,
+    "active_ratio": 0.7636,
+    "max_panel_h": 0.0429
+  }
+]
