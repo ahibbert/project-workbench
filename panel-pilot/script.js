@@ -1849,17 +1849,27 @@ async function finishChapterAndLoadNext() {
 }
 
 function nextSuwayomiChapterAfter(chapterId) {
-  const chapters = state.chapterView.length ? state.chapterView : visibleChapters();
+  const chapters = chapterSequenceFor(chapterId);
   const index = chapters.findIndex((chapter) => Number(chapter.id) === Number(chapterId));
   return index >= 1 ? chapters[index - 1] : null;
 }
 
 function downloadAheadChapters(chapterId) {
-  const chapters = state.chapterView.length ? state.chapterView : visibleChapters();
+  const chapters = chapterSequenceFor(chapterId);
   const currentIndex = chapters.findIndex((chapter) => Number(chapter.id) === Number(chapterId));
   if (currentIndex < 0) return [];
   const firstIndex = Math.max(0, currentIndex - downloadAheadChapterCount);
   return chapters.slice(firstIndex, currentIndex + 1).reverse();
+}
+
+function chapterSequenceFor(chapterId) {
+  const current = state.chapters.find((chapter) => Number(chapter.id) === Number(chapterId));
+  const currentScanlator = scanlatorName(current);
+  if (current && currentScanlator) {
+    const sameScanlator = state.chapters.filter((chapter) => scanlatorName(chapter) === currentScanlator);
+    if (sameScanlator.some((chapter) => Number(chapter.id) === Number(chapterId))) return sameScanlator;
+  }
+  return state.chapterView.length ? state.chapterView : visibleChapters();
 }
 
 async function ensureDownloadAhead(chapterId) {
