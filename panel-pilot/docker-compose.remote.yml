@@ -49,6 +49,7 @@ services:
       - SUWAYOMI_INTERNAL_URL=http://suwayomi:4567
       - PANEL_PILOT_LIBRARY_PATH=/app/data/library.json
       - PANEL_PILOT_REPORTS_PATH=/app/data/panel-reports
+      - PANEL_PILOT_DOWNLOAD_BUFFER_PATH=/app/data/download-buffer.json
       - PANEL_PILOT_MANGA_DETECTOR_URL=http://manga-detector:8091
       - PANEL_PILOT_MANGA_DETECTOR_CACHE_VERSION=v1-yolo26n-1024
       - PANEL_PILOT_MANGA_DETECTOR_CACHE_PATH=/app/data/detector-cache

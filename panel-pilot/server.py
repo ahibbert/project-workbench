@@ -23,10 +23,12 @@ USER_AGENT = (
 )
 LIBRARY_PATH = os.environ.get("PANEL_PILOT_LIBRARY_PATH", "/app/data/library.json")
 REPORTS_PATH = os.environ.get("PANEL_PILOT_REPORTS_PATH", "/app/data/panel-reports")
+DOWNLOAD_BUFFER_PATH = os.environ.get("PANEL_PILOT_DOWNLOAD_BUFFER_PATH", "/app/data/download-buffer.json")
 LIBRARY_LIMIT = 5000
 LIBRARY_LOCK = threading.Lock()
 REPORT_LOCK = threading.Lock()
 DETECTOR_CACHE_LOCK = threading.Lock()
+DOWNLOAD_BUFFER_MANAGER = None
 SESSION_COOKIE = "panel_pilot_session"
 SESSION_MAX_AGE = int(os.environ.get("PANEL_PILOT_SESSION_MAX_AGE", str(30 * 24 * 60 * 60)))
 
@@ -131,6 +133,180 @@ def decode_readcomiconline_path(raw_path, replacements=None):
     decoded = base64.b64decode(core).decode("utf-8", errors="replace")
     decoded = decoded[:13] + decoded[17:]
     return f"https://2.bp.blogspot.com/{decoded[:-2]}{suffix}{query}"
+
+
+class DownloadBufferManager:
+    INTER_CHAPTER_DELAY = 90
+    RETRY_BASE_DELAY = 3 * 60
+    RETRY_MAX_DELAY = 6 * 60 * 60
+
+    def __init__(self, path=DOWNLOAD_BUFFER_PATH):
+        self.path = path
+        self.lock = threading.Lock()
+        self.wake = threading.Event()
+        self.tasks = self.load_tasks()
+        self.active_chapter_id = None
+        self.thread = threading.Thread(target=self.run, name="panel-pilot-download-buffer", daemon=True)
+
+    def start(self):
+        self.thread.start()
+
+    def load_tasks(self):
+        try:
+            with open(self.path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return []
+        tasks = []
+        seen = set()
+        for item in payload.get("tasks", []):
+            try:
+                chapter_id = int(item.get("chapterId"))
+            except (TypeError, ValueError):
+                continue
+            if chapter_id < 1 or chapter_id in seen:
+                continue
+            seen.add(chapter_id)
+            tasks.append({
+                "chapterId": chapter_id,
+                "attempts": max(0, int(item.get("attempts") or 0)),
+                "notBefore": max(0, float(item.get("notBefore") or 0)),
+            })
+        return tasks
+
+    def save_locked(self):
+        directory = os.path.dirname(self.path) or "."
+        os.makedirs(directory, exist_ok=True)
+        temporary_path = ""
+        try:
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=directory, delete=False) as handle:
+                temporary_path = handle.name
+                json.dump({"format": 1, "tasks": self.tasks}, handle, separators=(",", ":"))
+            os.replace(temporary_path, self.path)
+        finally:
+            if temporary_path and os.path.exists(temporary_path):
+                os.unlink(temporary_path)
+
+    def enqueue(self, chapter_ids):
+        added = 0
+        with self.lock:
+            existing = {item["chapterId"] for item in self.tasks}
+            if self.active_chapter_id:
+                existing.add(self.active_chapter_id)
+            for raw_id in chapter_ids:
+                try:
+                    chapter_id = int(raw_id)
+                except (TypeError, ValueError):
+                    continue
+                if chapter_id < 1 or chapter_id in existing:
+                    continue
+                self.tasks.append({"chapterId": chapter_id, "attempts": 0, "notBefore": 0})
+                existing.add(chapter_id)
+                added += 1
+            if added:
+                self.save_locked()
+            status = self.status_locked()
+        self.wake.set()
+        return {**status, "added": added}
+
+    def status_locked(self):
+        return {
+            "activeChapterId": self.active_chapter_id,
+            "queued": len(self.tasks),
+            "nextAttemptAt": min((item["notBefore"] for item in self.tasks), default=0),
+        }
+
+    def status(self):
+        with self.lock:
+            return self.status_locked()
+
+    def graphql(self, query, variables=None, timeout=30):
+        base = os.environ.get("SUWAYOMI_INTERNAL_URL", "http://localhost:4567").strip().rstrip("/")
+        body = json.dumps({"query": query, "variables": variables or {}}).encode("utf-8")
+        headers = {"Accept": "application/json", "Content-Type": "application/json", "User-Agent": USER_AGENT}
+        username = os.environ.get("SUWAYOMI_AUTH_USER", "").strip()
+        password = os.environ.get("SUWAYOMI_AUTH_PASSWORD", "")
+        if username and password:
+            token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+            headers["Authorization"] = f"Basic {token}"
+        request = Request(f"{base}/api/graphql", data=body, headers=headers, method="POST")
+        with urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        if payload.get("errors"):
+            raise RuntimeError(" / ".join(item.get("message", "Suwayomi error") for item in payload["errors"]))
+        return payload.get("data") or {}
+
+    def chapter_download_state(self, chapter_id):
+        data = self.graphql(
+            "query($id:Int!){chapter(id:$id){id isDownloaded} downloadStatus{state}}",
+            {"id": chapter_id},
+        )
+        return bool(data.get("chapter", {}).get("isDownloaded")), data.get("downloadStatus", {}).get("state")
+
+    def download_chapter(self, chapter_id):
+        self.graphql(
+            "mutation($input:EnqueueChapterDownloadsInput!){enqueueChapterDownloads(input:$input){downloadStatus{state}}}",
+            {"input": {"ids": [chapter_id]}},
+        )
+        self.graphql(
+            "mutation($input:StartDownloaderInput!){startDownloader(input:$input){downloadStatus{state}}}",
+            {"input": {}},
+        )
+        for poll in range(45):
+            if self.wake.wait(4):
+                self.wake.clear()
+            downloaded, downloader_state = self.chapter_download_state(chapter_id)
+            if downloaded:
+                return True
+            if poll >= 1 and downloader_state == "STOPPED":
+                return False
+        return False
+
+    def complete_active(self, chapter_id, downloaded):
+        now = time.time()
+        with self.lock:
+            self.active_chapter_id = None
+            if downloaded:
+                cooldown_until = now + self.INTER_CHAPTER_DELAY
+                for item in self.tasks:
+                    item["notBefore"] = max(item["notBefore"], cooldown_until)
+            else:
+                task = next((item for item in self.tasks if item["chapterId"] == chapter_id), None)
+                if task:
+                    task["attempts"] += 1
+                    delay = min(self.RETRY_MAX_DELAY, self.RETRY_BASE_DELAY * (2 ** min(task["attempts"] - 1, 8)))
+                    retry_at = now + delay
+                    for item in self.tasks:
+                        item["notBefore"] = max(item["notBefore"], retry_at)
+            self.save_locked()
+
+    def run(self):
+        while True:
+            with self.lock:
+                now = time.time()
+                due = next((item for item in self.tasks if item["notBefore"] <= now), None)
+                wait_seconds = min((max(1, item["notBefore"] - now) for item in self.tasks), default=60)
+                if due:
+                    chapter_id = due["chapterId"]
+                    self.active_chapter_id = chapter_id
+                else:
+                    chapter_id = None
+            if chapter_id is None:
+                self.wake.wait(min(wait_seconds, 60))
+                self.wake.clear()
+                continue
+
+            downloaded = False
+            try:
+                already_downloaded, _ = self.chapter_download_state(chapter_id)
+                downloaded = already_downloaded or self.download_chapter(chapter_id)
+            except Exception as error:
+                print(f"Download buffer chapter {chapter_id} paused: {error}", flush=True)
+
+            with self.lock:
+                if downloaded:
+                    self.tasks = [item for item in self.tasks if item["chapterId"] != chapter_id]
+            self.complete_active(chapter_id, downloaded)
 
 
 class PanelPilotHandler(SimpleHTTPRequestHandler):
@@ -289,6 +465,9 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/panel-report":
                 self.handle_panel_report_post()
                 return
+            if parsed.path == "/api/download-buffer":
+                self.handle_download_buffer_post()
+                return
             if parsed.path == "/api/detect/manga":
                 self.handle_manga_detection()
                 return
@@ -351,6 +530,19 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def handle_download_buffer_post(self):
+        if not DOWNLOAD_BUFFER_MANAGER:
+            self.send_json({"error": "Download buffer is unavailable"}, status=503)
+            return
+        length = int(self.headers.get("Content-Length", "0"))
+        if length < 1 or length > 65536:
+            raise ValueError("Download buffer request is empty or too large")
+        payload = json.loads(self.rfile.read(length).decode("utf-8"))
+        chapter_ids = payload.get("chapterIds")
+        if not isinstance(chapter_ids, list):
+            raise ValueError("chapterIds must be a list")
+        self.send_json(DOWNLOAD_BUFFER_MANAGER.enqueue(chapter_ids))
+
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path == "/login":
@@ -373,6 +565,9 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
                 return
             if parsed.path == "/api/suwayomi/asset":
                 self.handle_suwayomi_asset(parsed)
+                return
+            if parsed.path == "/api/download-buffer/status":
+                self.send_json(DOWNLOAD_BUFFER_MANAGER.status() if DOWNLOAD_BUFFER_MANAGER else {"queued": 0})
                 return
             if parsed.path == "/api/library":
                 self.handle_library_get()
@@ -754,7 +949,10 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
 
 
 def main():
+    global DOWNLOAD_BUFFER_MANAGER
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8012
+    DOWNLOAD_BUFFER_MANAGER = DownloadBufferManager()
+    DOWNLOAD_BUFFER_MANAGER.start()
     server = ThreadingHTTPServer(("0.0.0.0", port), PanelPilotHandler)
     print(f"Panel Pilot server running on http://0.0.0.0:{port}", flush=True)
     server.serve_forever()

@@ -80,11 +80,13 @@ Panel Pilot also writes page progress and completed chapters back to Suwayomi.
 It refreshes Suwayomi's library on startup and marks a manga as in-library when
 you start reading it, so Suwayomi-backed titles use one shared library across
 Panel Pilot and Tachimanga.
-While reading, it asks Suwayomi to keep the current and next 10 chapters
-downloaded, prepares upcoming pages in parallel, and preloads the next chapter.
-Chapter-page requests and image loads use bounded retries, and manga model
-results are cached on the Panel Pilot server so revisiting a page does not
-rerun the model.
+While reading, it asks a persistent Panel Pilot server queue to keep the current
+and next 10 chapters downloaded in Suwayomi, prepares upcoming pages in
+parallel, and preloads the next chapter. The server downloads one chapter at a
+time, waits between chapters, and exponentially backs off after source errors;
+it keeps working after the PWA closes or the server restarts. Chapter-page
+requests and image loads also use bounded retries, and manga model results are
+cached so revisiting a page does not rerun the model.
 To share that progress with Tachimanga, enable **Enhanced Tracking → Suwayomi**
 in Tachimanga. Tachimanga can then use MangaBaka as a regular tracker; connect
 MangaBaka in Tachimanga's Tracking settings. Panel Pilot's Settings page has a
