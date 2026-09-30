@@ -5,7 +5,7 @@ const sourceIndexStoreKey = "panel-pilot-source-index";
 const sourceIndexTtlMs = 24 * 60 * 60 * 1000;
 const sourceIndexPageLimit = 6;
 const sourceIndexRequestTimeoutMs = 12000;
-const appVersion = "v96";
+const appVersion = "v97";
 const appBuildTime = "2026-09-30";
 const detectorVersion = "detector v18-ml-manga";
 const pageImageRetryDelaysMs = [0, 350, 1200];
@@ -280,6 +280,7 @@ const state = {
   librarySavePromise: null,
   librarySavePending: false,
   pendingResume: null,
+  readerErrorRetryAction: null,
   chapterPageUrls: [],
   pages: [],
   pageIndex: 0,
@@ -1744,7 +1745,7 @@ async function openReaderFromNav() {
     const message = friendlySourceErrorMessage(error);
     setConnection(state.connected, `Could not resume ${item.mangaTitle}: ${message}`, "bad");
     setActiveView("reader");
-    showReaderError(`Could not resume ${item.mangaTitle}`, message);
+    showReaderError(`Could not resume ${item.mangaTitle}`, message, openReaderFromNav);
   } finally {
     el.navReader.removeAttribute("aria-busy");
   }
@@ -1959,23 +1960,43 @@ async function syncLibraryAndProgress() {
 
 function hideReaderError() {
   if (el.readerError) el.readerError.hidden = true;
+  state.readerErrorRetryAction = null;
 }
 
 function hideReaderComplete() {
   if (el.readerComplete) el.readerComplete.hidden = true;
 }
 
-function showReaderError(title, message) {
+function showReaderError(title, message, retryAction = null) {
   if (!el.readerError) return;
   hideReaderComplete();
   el.readerErrorTitle.textContent = title;
   el.readerErrorMessage.textContent = message;
+  state.readerErrorRetryAction = typeof retryAction === "function" ? retryAction : null;
   if (el.readerErrorBack) {
     const destination = state.previousView === "browse" ? "Browse" : state.previousView === "settings" ? "Settings" : "Library";
     el.readerErrorBack.textContent = `Back to ${destination}`;
   }
   el.readerError.hidden = false;
   setReaderChromeVisible(true);
+}
+
+async function retryReaderError() {
+  const retryAction = state.readerErrorRetryAction;
+  const previousTitle = el.readerErrorTitle?.textContent || "Could not continue reading";
+  hideReaderError();
+  setBusy(el.readerErrorRetry, true, "Retrying");
+  try {
+    if (retryAction) {
+      await retryAction();
+    } else {
+      await loadChapterPages();
+    }
+  } catch (error) {
+    showReaderError(previousTitle, friendlySourceErrorMessage(error), retryAction);
+  } finally {
+    setBusy(el.readerErrorRetry, false);
+  }
 }
 
 function showReaderComplete(message = "There isn’t another chapter ready from this release group.") {
@@ -2629,7 +2650,7 @@ async function loadChapterPages(options = {}) {
   } catch (error) {
     const message = friendlySourceErrorMessage(error);
     setConnection(false, `Could not load chapter pages: ${message}`, "bad");
-    showReaderError("Could not open this chapter", message);
+    showReaderError("Could not open this chapter", message, () => loadChapterPages(options));
     setReaderLoading(false);
   } finally {
     setBusy(el.loadChapterPages, false);
@@ -4917,7 +4938,11 @@ async function recoverRenderedPageImage(page, pageIndex) {
     })
     .catch((error) => {
       if (state.pages[pageIndex] === page && state.pageIndex === pageIndex) {
-        showReaderError("Could not load this page", friendlySourceErrorMessage(error));
+        showReaderError(
+          "Could not load this page",
+          friendlySourceErrorMessage(error),
+          () => recoverRenderedPageImage(page, pageIndex)
+        );
       }
       return null;
     })
@@ -5250,7 +5275,11 @@ async function moveToAdjacentPage(delta) {
     updateAfterNavigation();
   } catch (error) {
     setConnection(state.connected, `Could not prepare page: ${error.message}`, "bad");
-    showReaderError("Could not prepare this page", friendlySourceErrorMessage(error));
+    showReaderError(
+      "Could not prepare this page",
+      friendlySourceErrorMessage(error),
+      () => moveToAdjacentPage(delta)
+    );
   } finally {
     if (requestId === state.navigationRequestId) {
       setReaderNavigationPending(false);
@@ -5817,7 +5846,7 @@ function wireEvents() {
   el.navReader?.addEventListener("click", openReaderFromNav);
   el.readerBack?.addEventListener("click", leaveReaderView);
   el.readerLoadingCancel?.addEventListener("click", cancelReaderLoading);
-  el.readerErrorRetry?.addEventListener("click", loadChapterPages);
+  el.readerErrorRetry?.addEventListener("click", retryReaderError);
   el.readerErrorBack?.addEventListener("click", leaveReaderView);
   el.readerCompleteNext?.addEventListener("click", () => {
     hideReaderComplete();

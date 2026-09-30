@@ -1,4 +1,4 @@
-const cacheName = "panel-pilot-v96";
+const cacheName = "panel-pilot-v97";
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(cacheName));
