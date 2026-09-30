@@ -122,6 +122,11 @@ a {
 }
 
 .nav-links a:nth-child(4) {
+  min-height: 2.45rem;
+  padding-inline: 1rem;
+}
+
+.nav-links a:nth-child(5) {
   min-height: 2.75rem;
   padding-inline: 1rem;
 }

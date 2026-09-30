@@ -1,6 +1,7 @@
 const blogSite = "https://blog.aydins-workbench.com";
 const gamlssLongitudinalSite = "https://gamlsslongitudinal.aydins-workbench.com";
 const gamlssPlaygroundSite = "https://gamlss.aydins-workbench.com";
+const longitudinalExplorerSite = `${gamlssPlaygroundSite}/longitudinal/`;
 
 const projects = [
   {
@@ -17,6 +18,7 @@ const projects = [
     links: [
       ["GitHub", "https://github.com/ahibbert/gamlss.longitudinal"],
       ["Docs", `${gamlssLongitudinalSite}/articles/site-guide.html`],
+      ["Visual explorer", longitudinalExplorerSite],
     ],
   },
   {
@@ -24,10 +26,10 @@ const projects = [
     type: "Tool",
     status: "In progress",
     description:
-      "A shared R-backed home for GAMLSS distribution shapes, copula dependence, and quantile comparison tools.",
+      "A shared R-backed home for GAMLSS distribution shapes, copula dependence, quantile comparison, and longitudinal simulation tools.",
     detail: {
       why: "To make distributional-regression ideas easier to inspect without regenerating examples by hand.",
-      next: "Review the hosted GAMLSS, Copula, and Quantiles sub-tools, then deepen the examples and exports.",
+      next: "Review the hosted GAMLSS, Copula, Quantiles, and Longitudinal sub-tools, then deepen the examples and exports.",
       audience: "Researchers, students, and applied collaborators who need distribution shape and dependence to be visible.",
     },
     links: [
@@ -35,6 +37,7 @@ const projects = [
       ["GAMLSS", `${gamlssPlaygroundSite}/gamlss/`],
       ["Copula", `${gamlssPlaygroundSite}/copula/`],
       ["Quantiles", `${gamlssPlaygroundSite}/quantile/`],
+      ["Longitudinal", longitudinalExplorerSite],
       ["GitHub", "https://github.com/ahibbert/gamlss-playground"],
     ],
   },

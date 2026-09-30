@@ -19,6 +19,7 @@ currently include:
 
 - <https://blog.aydins-workbench.com>
 - <https://gamlss.aydins-workbench.com>
+- <https://gamlss.aydins-workbench.com/longitudinal/>
 - <https://gamlsslongitudinal.aydins-workbench.com>
 - <https://quantile.aydins-workbench.com>
 - <https://copula.aydins-workbench.com>
