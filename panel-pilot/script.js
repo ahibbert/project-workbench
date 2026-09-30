@@ -5,7 +5,7 @@ const sourceIndexStoreKey = "panel-pilot-source-index";
 const sourceIndexTtlMs = 24 * 60 * 60 * 1000;
 const sourceIndexPageLimit = 6;
 const sourceIndexRequestTimeoutMs = 12000;
-const appVersion = "v90";
+const appVersion = "v91";
 const appBuildTime = "2026-09-30";
 const detectorVersion = "detector v18-ml-manga";
 const allSourcesValue = "__all__";
@@ -143,6 +143,11 @@ const el = {
   readerLoading: document.querySelector("#reader-loading"),
   readerLoadingBar: document.querySelector("#reader-loading-bar"),
   readerLoadingText: document.querySelector("#reader-loading-text"),
+  readerError: document.querySelector("#reader-error"),
+  readerErrorTitle: document.querySelector("#reader-error-title"),
+  readerErrorMessage: document.querySelector("#reader-error-message"),
+  readerErrorRetry: document.querySelector("#reader-error-retry"),
+  readerErrorBack: document.querySelector("#reader-error-back"),
   chapterTitle: document.querySelector("#chapter-title"),
   pageStat: document.querySelector("#page-stat"),
   panelStat: document.querySelector("#panel-stat"),
@@ -493,6 +498,9 @@ async function graphQL(query, variables = {}, options = {}) {
 
 function friendlySourceErrorMessage(error) {
   const message = error?.message || "Unknown error";
+  if (/api rate limit exceeded|rate limit|mangahub\.io/i.test(message)) {
+    return "This source has temporarily rate-limited chapter pages. Try again later or switch this title to another source.";
+  }
   if (
     /cloudflare|403|502|unexpected json token|json input:\s*<|had '<'|<html|graphQL request failed with HTTP 200/i.test(message)
   ) {
@@ -1527,8 +1535,10 @@ async function openReaderFromNav() {
     await selectLibraryManga(item, true);
     if (!state.activeChapter || !state.pages.length) setActiveView(returnView);
   } catch (error) {
-    setConnection(state.connected, `Could not resume ${item.mangaTitle}: ${friendlySourceErrorMessage(error)}`, "bad");
-    setActiveView(returnView);
+    const message = friendlySourceErrorMessage(error);
+    setConnection(state.connected, `Could not resume ${item.mangaTitle}: ${message}`, "bad");
+    setActiveView("reader");
+    showReaderError(`Could not resume ${item.mangaTitle}`, message);
   } finally {
     el.navReader.removeAttribute("aria-busy");
   }
@@ -1673,6 +1683,18 @@ async function syncLibraryAndProgress() {
   } finally {
     setBusy(el.syncProgress, false);
   }
+}
+
+function hideReaderError() {
+  if (el.readerError) el.readerError.hidden = true;
+}
+
+function showReaderError(title, message) {
+  if (!el.readerError) return;
+  el.readerErrorTitle.textContent = title;
+  el.readerErrorMessage.textContent = message;
+  el.readerError.hidden = false;
+  setReaderChromeVisible(true);
 }
 
 function rememberReadingProgress() {
@@ -2001,6 +2023,7 @@ async function loadChapterPages() {
   }
 
   setActiveView("reader");
+  hideReaderError();
   setReaderChromeVisible(true);
   setBusy(el.loadChapterPages, true, "Loading");
   setReaderLoading(true, "Fetching chapter pages...", 12);
@@ -2031,7 +2054,9 @@ async function loadChapterPages() {
     rememberReadingProgress();
     setConnection(true, `Loaded ${pages.length} pages. Panel detection is running locally.`, "good");
   } catch (error) {
-    setConnection(false, `Could not load chapter pages: ${friendlySourceErrorMessage(error)}`, "bad");
+    const message = friendlySourceErrorMessage(error);
+    setConnection(false, `Could not load chapter pages: ${message}`, "bad");
+    showReaderError("Could not open this chapter", message);
     setReaderLoading(false);
   } finally {
     setBusy(el.loadChapterPages, false);
@@ -2057,6 +2082,7 @@ async function resolveChapterPages(fetchPayload) {
 
 async function loadChapter(pageUrls, title) {
   cancelReaderNavigation();
+  hideReaderError();
   setActiveView("reader");
   setReaderLoading(true, "Preparing chapter...", 28);
   const generation = state.prepareGeneration + 1;
@@ -4475,6 +4501,7 @@ async function moveToAdjacentPage(delta) {
     updateAfterNavigation();
   } catch (error) {
     setConnection(state.connected, `Could not prepare page: ${error.message}`, "bad");
+    showReaderError("Could not prepare this page", friendlySourceErrorMessage(error));
   } finally {
     if (requestId === state.navigationRequestId) {
       setReaderNavigationPending(false);
@@ -4779,8 +4806,8 @@ function setReadingDirection(direction) {
   el.ltrOrder.setAttribute("aria-pressed", direction === "ltr" ? "true" : "false");
   const previousGlyph = el.prevPanel?.querySelector("span");
   const nextGlyph = el.nextPanel?.querySelector("span");
-  if (previousGlyph) previousGlyph.textContent = direction === "rtl" ? ">" : "<";
-  if (nextGlyph) nextGlyph.textContent = direction === "rtl" ? "<" : ">";
+  if (previousGlyph) previousGlyph.textContent = "←";
+  if (nextGlyph) nextGlyph.textContent = "→";
   saveSettings();
 }
 
@@ -4921,17 +4948,25 @@ function handleStageTap(event) {
   const xRatio = clamp((event.clientX - bounds.left) / bounds.width, 0, 1);
   const yRatio = clamp((event.clientY - bounds.top) / bounds.height, 0, 1);
 
-  if (state.readerFocus) {
-    const chromeZone = yRatio < 0.18 || yRatio > 0.82 || (xRatio >= 0.34 && xRatio <= 0.66);
-    if (chromeZone) {
-      toggleReaderChrome();
-      return;
-    }
+  const action = readerTapAction(xRatio, yRatio);
+  if (action === "forward") {
+    movePanel(1);
+    if (state.readerFocus && state.readerChromeVisible) setReaderChromeVisible(false);
+    return;
   }
+  if (action === "back") {
+    movePanel(-1);
+    if (state.readerFocus && state.readerChromeVisible) setReaderChromeVisible(false);
+    return;
+  }
+  toggleReaderChrome();
+}
 
-  const forward = state.readingDirection === "rtl" ? xRatio < 0.5 : xRatio >= 0.5;
-  movePanel(forward ? 1 : -1);
-  if (state.readerFocus && state.readerChromeVisible) setReaderChromeVisible(false);
+function readerTapAction(xRatio, yRatio) {
+  const sideZone = xRatio < 0.34 || xRatio > 0.66;
+  if (sideZone) return "forward";
+  if (yRatio > 0.72) return "back";
+  return "controls";
 }
 
 function wireEvents() {
@@ -4946,6 +4981,8 @@ function wireEvents() {
   });
   el.navReader?.addEventListener("click", openReaderFromNav);
   el.readerBack?.addEventListener("click", leaveReaderView);
+  el.readerErrorRetry?.addEventListener("click", loadChapterPages);
+  el.readerErrorBack?.addEventListener("click", leaveReaderView);
   el.testConnection.addEventListener("click", testConnection);
   el.loadSources.addEventListener("click", loadSources);
   el.clearAppCache?.addEventListener("click", clearAppCache);
@@ -5046,11 +5083,11 @@ function wireEvents() {
     if (isTextEntryTarget(event.target)) return;
     if (event.key === "ArrowRight") {
       event.preventDefault();
-      movePanel(state.readingDirection === "rtl" ? -1 : 1);
+      movePanel(1);
     }
     if (event.key === "ArrowLeft") {
       event.preventDefault();
-      movePanel(state.readingDirection === "rtl" ? 1 : -1);
+      movePanel(-1);
     }
     if (event.key === " ") {
       event.preventDefault();
@@ -5070,6 +5107,7 @@ window.PanelPilot = {
   detectPanels,
   fullPagePanel,
   loadImage,
+  readerTapAction,
   sortPanels,
 };
 

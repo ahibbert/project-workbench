@@ -12,7 +12,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>Panel Pilot</title>
     <link rel="manifest" href="manifest.webmanifest">
-    <link rel="stylesheet" href="styles.css?v=46">
+    <link rel="stylesheet" href="styles.css?v=47">
   </head>
   <body>
     <main class="app-shell">
@@ -48,14 +48,26 @@
           </div>
         </div>
 
+        <div class="reader-error" id="reader-error" role="alert" aria-live="assertive" hidden>
+          <div class="reader-error-card">
+            <p class="kicker">Reader paused</p>
+            <strong id="reader-error-title">Could not open this chapter</strong>
+            <p id="reader-error-message">The current source did not respond.</p>
+            <div class="reader-error-actions">
+              <button class="text-button primary" id="reader-error-retry" type="button">Try again</button>
+              <button class="text-button" id="reader-error-back" type="button">Back to library</button>
+            </div>
+          </div>
+        </div>
+
         <div class="reader-controls" aria-label="Reader controls">
-          <button class="icon-button" id="prev-panel" type="button" title="Previous panel" aria-label="Previous panel">
-            <span aria-hidden="true">&lt;</span>
+          <button class="text-button" id="toggle-fit" type="button">Full page</button>
+          <button class="text-button reader-step-back" id="prev-panel" type="button" title="Previous panel" aria-label="Previous panel">
+            <span aria-hidden="true">←</span> Back one
           </button>
-          <button class="icon-button primary" id="next-panel" type="button" title="Next panel" aria-label="Next panel">
+          <button class="reader-next-accessible" id="next-panel" type="button" title="Next panel" aria-label="Next panel">
             <span aria-hidden="true">&gt;</span>
           </button>
-          <button class="text-button" id="toggle-fit" type="button">Full page</button>
           <details class="reader-options">
             <summary aria-label="More reader controls" title="More reader controls">
               <span aria-hidden="true">•••</span>
@@ -282,6 +294,6 @@
 
     <div class="app-toast" id="app-toast" role="status" aria-live="polite" hidden></div>
 
-    <script src="script.js?v=90"></script>
+    <script src="script.js?v=91"></script>
   </body>
 </html>
