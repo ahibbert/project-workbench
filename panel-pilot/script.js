@@ -5,9 +5,13 @@ const sourceIndexStoreKey = "panel-pilot-source-index";
 const sourceIndexTtlMs = 24 * 60 * 60 * 1000;
 const sourceIndexPageLimit = 6;
 const sourceIndexRequestTimeoutMs = 12000;
-const appVersion = "v91";
+const appVersion = "v92";
 const appBuildTime = "2026-09-30";
 const detectorVersion = "detector v18-ml-manga";
+const pageImageRetryDelaysMs = [0, 350, 1200];
+const chapterFetchRetryDelaysMs = [0, 700, 1800];
+const backgroundPageConcurrency = 2;
+const nextChapterPreparedPageCount = 3;
 const allSourcesValue = "__all__";
 const defaultComickChapter = {
   label: "Frieren chapter 1",
@@ -252,6 +256,8 @@ const state = {
   activeChapter: null,
   prepareGeneration: 0,
   backgroundPreparing: false,
+  nextChapterPrefetch: null,
+  nextChapterPrefetchTimer: null,
   mangaModelAvailable: null,
   navigationPending: false,
   navigationRequestId: 0,
@@ -1582,6 +1588,23 @@ function libraryItemsAllowedByNsfw() {
   return state.libraryItems;
 }
 
+function waitFor(delayMs) {
+  return new Promise((resolve) => window.setTimeout(resolve, Math.max(0, delayMs)));
+}
+
+async function withRetry(task, delays = [0]) {
+  let lastError = null;
+  for (let attempt = 0; attempt < delays.length; attempt += 1) {
+    if (delays[attempt] > 0) await waitFor(delays[attempt]);
+    try {
+      return await task(attempt);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error("Request failed");
+}
+
 function sortLibraryItems(items) {
   return [...items].sort((a, b) => {
     if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1;
@@ -1763,17 +1786,16 @@ async function syncSuwayomiProgress({ completed = false, manual = false } = {}) 
     if (manual) setSyncStatus("Not reading", "Open a Suwayomi chapter before syncing.", "bad");
     return false;
   }
-  if (state.suwayomiSyncPromise) {
-    if (!completed && !manual) return false;
-    await state.suwayomiSyncPromise.catch(() => null);
-  }
-
   const chapter = state.chapters.find((item) => Number(item.id) === chapterId);
   const localPage = completed
     ? Math.max(0, state.chapterPageUrls.length - 1)
     : currentSuwayomiPageIndex();
   const lastPageRead = Math.max(localPage, Number(chapter?.lastPageRead) || 0);
   const syncKey = `${chapterId}:${lastPageRead}:${completed ? "read" : "progress"}`;
+  if (state.suwayomiSyncPromise) {
+    if (!completed && !manual) return false;
+    await state.suwayomiSyncPromise.catch(() => null);
+  }
   if (!manual && syncKey === state.lastSuwayomiSyncKey) return true;
 
   state.suwayomiSyncing = true;
@@ -1808,9 +1830,90 @@ async function syncSuwayomiProgress({ completed = false, manual = false } = {}) 
 async function finishChapterAndLoadNext() {
   if (state.activeChapter?.type === "suwayomi") {
     window.clearTimeout(state.suwayomiSyncTimer);
-    await syncSuwayomiProgress({ completed: true }).catch(() => false);
+    void syncSuwayomiProgress({ completed: true }).catch(() => false);
   }
   await loadNextChapter();
+}
+
+function nextSuwayomiChapterAfter(chapterId) {
+  const chapters = state.chapterView.length ? state.chapterView : visibleChapters();
+  const index = chapters.findIndex((chapter) => Number(chapter.id) === Number(chapterId));
+  return index >= 1 ? chapters[index - 1] : null;
+}
+
+function clearNextChapterPrefetch() {
+  window.clearTimeout(state.nextChapterPrefetchTimer);
+  state.nextChapterPrefetchTimer = null;
+  state.nextChapterPrefetch = null;
+}
+
+function scheduleNextChapterPrefetch(generation = state.prepareGeneration) {
+  if (state.activeChapter?.type !== "suwayomi") return;
+  const fromChapterId = Number(state.activeChapter.chapterId);
+  const chapter = nextSuwayomiChapterAfter(fromChapterId);
+  if (!chapter) return;
+
+  const record = {
+    generation,
+    fromChapterId,
+    chapterId: Number(chapter.id),
+    chapter,
+    promise: null,
+  };
+  state.nextChapterPrefetch = record;
+  state.nextChapterPrefetchTimer = window.setTimeout(() => {
+    if (state.nextChapterPrefetch !== record || generation !== state.prepareGeneration) return;
+    record.promise = prefetchSuwayomiChapter(record).catch(() => null);
+  }, 900);
+}
+
+async function prefetchSuwayomiChapter(record) {
+  const data = await fetchChapterPagePayload(record.chapterId);
+  if (state.nextChapterPrefetch !== record || record.generation !== state.prepareGeneration) return null;
+  const chapterPayload = data.fetchChapterPages?.chapter;
+  const sourcePages = await resolveChapterPages(data.fetchChapterPages, { quiet: true });
+  if (!sourcePages.length) throw new Error("Source returned no readable page URLs.");
+  const pageUrls = sourcePages.map(normalizeSuwayomiPageUrl);
+  const entries = makeChapterPageEntries(pageUrls);
+  const firstImage = await loadImage(pageUrls[0]);
+  if (state.nextChapterPrefetch !== record || record.generation !== state.prepareGeneration) return null;
+  const mode = detectPanelModeFromImage(firstImage, activeChapterSourceLabel()) || state.panelMode;
+
+  if (mode !== "webtoon") {
+    await preparePageEntry(entries[0], 0, entries.length, {
+      mode,
+      direction: state.readingDirection,
+      quiet: true,
+      image: firstImage,
+    });
+    const rest = entries.slice(1, nextChapterPreparedPageCount);
+    rest.forEach((page) => {
+      const preparation = preparePageEntry(page, page.index, entries.length, {
+        mode,
+        direction: state.readingDirection,
+        quiet: true,
+      }).catch(() => null);
+      page.preparePromise = preparation;
+      page.preparePromiseMode = mode;
+      page.preparePromiseDirection = state.readingDirection;
+      void preparation.finally(() => {
+        if (page.preparePromise === preparation) {
+          page.preparePromise = null;
+          page.preparePromiseMode = "";
+          page.preparePromiseDirection = "";
+        }
+      });
+    });
+  }
+
+  return {
+    chapter: record.chapter,
+    chapterPayload,
+    pageUrls,
+    preparedPages: entries,
+    firstImage,
+    mode,
+  };
 }
 
 function libraryItemKey(item) {
@@ -2029,7 +2132,7 @@ async function loadChapterPages() {
   setReaderLoading(true, "Fetching chapter pages...", 12);
   try {
     await ensureCurrentMangaInSuwayomiLibrary().catch(() => false);
-    const data = await graphQL(queries.fetchPages, { input: { chapterId } });
+    const data = await fetchChapterPagePayload(chapterId);
     const chapter = data.fetchChapterPages?.chapter;
     const pages = await resolveChapterPages(data.fetchChapterPages);
     if (!pages.length) throw new Error("Source returned no readable page URLs.");
@@ -2063,14 +2166,22 @@ async function loadChapterPages() {
   }
 }
 
-async function resolveChapterPages(fetchPayload) {
+function fetchChapterPagePayload(chapterId, { retries = true } = {}) {
+  const delays = retries ? chapterFetchRetryDelaysMs : [0];
+  return withRetry(
+    () => graphQL(queries.fetchPages, { input: { chapterId } }, { timeoutMs: 45000 }),
+    delays
+  );
+}
+
+async function resolveChapterPages(fetchPayload, { quiet = false } = {}) {
   const pages = fetchPayload?.pages || [];
   if (pages.length) return pages;
 
   const chapter = fetchPayload?.chapter;
   const sourceName = `${chapter?.manga?.source?.name || ""} ${chapter?.manga?.source?.displayName || ""}`;
   if (/readcomiconline/i.test(sourceName) && chapter?.realUrl) {
-    setReaderLoading(true, "ReadComicOnline needs a local page fallback...", 18);
+    if (!quiet) setReaderLoading(true, "ReadComicOnline needs a local page fallback...", 18);
     const payload = await localJson(`/api/readcomiconline/chapter?url=${encodeURIComponent(chapter.realUrl)}`);
     if (payload.pages?.length) {
       return payload.pages;
@@ -2080,8 +2191,9 @@ async function resolveChapterPages(fetchPayload) {
   return [];
 }
 
-async function loadChapter(pageUrls, title) {
+async function loadChapter(pageUrls, title, options = {}) {
   cancelReaderNavigation();
+  clearNextChapterPrefetch();
   hideReaderError();
   setActiveView("reader");
   setReaderLoading(true, "Preparing chapter...", 28);
@@ -2098,7 +2210,8 @@ async function loadChapter(pageUrls, title) {
 
   try {
     setReaderLoading(true, "Checking page shape...", 24);
-    const firstImage = await loadImage(pageUrls[0]);
+    const preparedPages = Array.isArray(options.preparedPages) ? options.preparedPages : null;
+    const firstImage = options.firstImage || preparedPages?.[0]?.image || await loadImage(pageUrls[0]);
     if (generation !== state.prepareGeneration) return;
     autoSelectPanelMode(firstImage);
     if (
@@ -2109,7 +2222,18 @@ async function loadChapter(pageUrls, title) {
       state.panelMode = normalizedResumePanelMode(state.pendingResume);
       updatePanelModeControls();
     }
-    state.pages = state.panelMode === "webtoon" ? [] : makeChapterPageEntries(pageUrls);
+    const reusablePreparedPages =
+      state.panelMode !== "webtoon" &&
+      preparedPages?.length === pageUrls.length &&
+      preparedPages.every((page, index) => (
+        page.url === pageUrls[index] &&
+        (!page.detected || (page.panelMode === state.panelMode && page.readingDirection === state.readingDirection))
+      ));
+    state.pages = state.panelMode === "webtoon"
+      ? []
+      : reusablePreparedPages
+        ? preparedPages
+        : makeChapterPageEntries(pageUrls);
 
     if (state.panelMode === "webtoon") {
       state.pages = [
@@ -2132,6 +2256,7 @@ async function loadChapter(pageUrls, title) {
     } else {
       prepareChapterInBackground(generation);
     }
+    scheduleNextChapterPrefetch(generation);
     if (isReaderFocusAvailable()) {
       setReaderFocus(true);
       setReaderChromeVisible(false);
@@ -2216,6 +2341,12 @@ function makeChapterPageEntries(pageUrls) {
     naturalHeight: 0,
     detected: false,
     panelMode: "",
+    readingDirection: "",
+    preparePromise: null,
+    preparePromiseMode: "",
+    preparePromiseDirection: "",
+    renderUrl: "",
+    loadAttempts: 0,
   }));
 }
 
@@ -2226,38 +2357,60 @@ async function preparePage(index, options = {}) {
   const preloadedImage = typeof options === "object" ? options.image : null;
   if (generation !== state.prepareGeneration) return null;
   const page = state.pages[index];
-  if (!page || (page.detected && page.panelMode === state.panelMode && !force)) return page;
+  if (!page || (page.detected && page.panelMode === state.panelMode && page.readingDirection === state.readingDirection && !force)) return page;
+  if (
+    page.preparePromise &&
+    page.preparePromiseMode === state.panelMode &&
+    page.preparePromiseDirection === state.readingDirection &&
+    !force
+  ) return page.preparePromise;
 
-  const pageLabel = `page ${index + 1} of ${state.pages.length}`;
+  const preparation = preparePageEntry(page, index, state.pages.length, {
+    mode: state.panelMode,
+    direction: state.readingDirection,
+    quiet,
+    image: preloadedImage,
+  }).then((preparedPage) => generation === state.prepareGeneration ? preparedPage : null);
+  page.preparePromise = preparation;
+  page.preparePromiseMode = state.panelMode;
+  page.preparePromiseDirection = state.readingDirection;
+  try {
+    return await preparation;
+  } finally {
+    if (page.preparePromise === preparation) {
+      page.preparePromise = null;
+      page.preparePromiseMode = "";
+      page.preparePromiseDirection = "";
+    }
+  }
+}
+
+async function preparePageEntry(page, index, totalPages, options = {}) {
+  const mode = options.mode || "manga";
+  const direction = options.direction || "rtl";
+  const quiet = Boolean(options.quiet);
+  const pageLabel = `page ${index + 1} of ${totalPages}`;
   const baseProgress = index === 0 ? 46 : 18;
   if (!quiet) setReaderLoading(true, `Loading image for ${pageLabel}...`, baseProgress);
-  const image = preloadedImage || await loadImage(page.url);
-  if (generation !== state.prepareGeneration) return null;
+  const image = options.image || page.image || await loadImage(page.url);
+  page.loadAttempts = image.panelPilotLoadAttempts || 1;
   page.image = image;
+  page.renderUrl = image.currentSrc || image.src || page.url;
   page.naturalWidth = image.naturalWidth;
   page.naturalHeight = image.naturalHeight;
-  const modeLabel =
-    state.panelMode === "webtoon"
-      ? "Detecting webtoon panels"
-      : state.panelMode === "comic"
-        ? "Detecting comic regions"
-        : "Detecting panels";
+  const modeLabel = mode === "webtoon" ? "Detecting webtoon panels" : mode === "comic" ? "Detecting comic regions" : "Detecting panels";
   if (!quiet) setReaderLoading(true, `${modeLabel} on ${pageLabel}...`, Math.max(baseProgress + 28, 58));
   const detectedPanels =
-    state.panelMode === "webtoon"
+    mode === "webtoon"
       ? makeWebtoonPanels(image)
-      : state.panelMode === "comic"
-        ? await detectComicPanels(image, state.readingDirection).catch(() => [
-            fullPagePanel(page.naturalWidth, page.naturalHeight),
-          ])
-      : await detectPanels(image, state.readingDirection).catch(() => [
-          fullPagePanel(page.naturalWidth, page.naturalHeight),
-        ]);
+      : mode === "comic"
+        ? await detectComicPanels(image, direction).catch(() => [fullPagePanel(page.naturalWidth, page.naturalHeight)])
+        : await detectPanels(image, direction).catch(() => [fullPagePanel(page.naturalWidth, page.naturalHeight)]);
   page.panels = sanitizePanels(detectedPanels, page.naturalWidth, page.naturalHeight);
-  if (generation !== state.prepareGeneration) return null;
   if (!quiet) setReaderLoading(true, `Finishing ${pageLabel}...`, 88);
   page.detected = true;
-  page.panelMode = state.panelMode;
+  page.panelMode = mode;
+  page.readingDirection = direction;
   return page;
 }
 
@@ -2265,9 +2418,18 @@ async function prepareChapterInBackground(generation = state.prepareGeneration) 
   if (state.backgroundPreparing) return;
   state.backgroundPreparing = true;
   try {
-    for (let index = 1; index < state.pages.length; index += 1) {
+    const indexes = state.pages
+      .map((_, index) => index)
+      .filter((index) => index !== state.pageIndex)
+      .sort((a, b) => {
+        const aBehind = a < state.pageIndex ? 1 : 0;
+        const bBehind = b < state.pageIndex ? 1 : 0;
+        return aBehind - bBehind || Math.abs(a - state.pageIndex) - Math.abs(b - state.pageIndex);
+      });
+    for (let offset = 0; offset < indexes.length; offset += backgroundPageConcurrency) {
       if (generation !== state.prepareGeneration) return;
-      await preparePage(index, { quiet: true, generation }).catch(() => null);
+      const batch = indexes.slice(offset, offset + backgroundPageConcurrency);
+      await Promise.all(batch.map((index) => preparePage(index, { quiet: true, generation }).catch(() => null)));
       if (generation === state.prepareGeneration) renderPanelStrip();
       await yieldToBrowser();
     }
@@ -2322,20 +2484,63 @@ function yieldToBrowser() {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-function loadImage(src) {
+async function loadImage(src, options = {}) {
+  const delays = options.retry === false ? [0] : pageImageRetryDelaysMs;
+  return withRetry(async (attempt) => {
+    const image = await loadImageAttempt(retryImageUrl(src, attempt), src);
+    image.panelPilotLoadAttempts = attempt + 1;
+    return image;
+  }, delays);
+}
+
+function retryImageUrl(src, attempt) {
+  if (!attempt) return src;
+  try {
+    const url = new URL(src, location.href);
+    if (url.origin !== location.origin) return src;
+    url.searchParams.set("pp_retry", `${Date.now()}-${attempt}`);
+    return url.toString();
+  } catch {
+    return src;
+  }
+}
+
+function loadImageAttempt(src, originalSrc) {
   return new Promise((resolve, reject) => {
-    const image = new Image();
-    if (/^https?:/i.test(src) && !src.startsWith(location.origin)) {
-      image.crossOrigin = "anonymous";
-    }
-    image.onload = () => resolve(image);
-    image.onerror = () => {
-      const fallback = new Image();
-      fallback.onload = () => resolve(fallback);
-      fallback.onerror = () => reject(new Error(`Could not load image: ${src}`));
-      fallback.src = src;
+    const needsCors = /^https?:/i.test(src) && !src.startsWith(location.origin);
+    const candidates = needsCors ? ["anonymous", ""] : [""];
+    let candidateIndex = 0;
+
+    const tryCandidate = () => {
+      const image = new Image();
+      if (candidates[candidateIndex]) image.crossOrigin = candidates[candidateIndex];
+      const timeout = window.setTimeout(() => {
+        image.onload = null;
+        image.onerror = null;
+        image.src = "";
+        tryNext(new Error(`Timed out loading image: ${originalSrc}`));
+      }, 25000);
+      const finish = (callback) => {
+        window.clearTimeout(timeout);
+        image.onload = null;
+        image.onerror = null;
+        callback();
+      };
+      image.onload = () => finish(() => resolve(image));
+      image.onerror = () => finish(() => tryNext(new Error(`Could not load image: ${originalSrc}`)));
+      image.src = src;
     };
-    image.src = src;
+
+    const tryNext = (error) => {
+      candidateIndex += 1;
+      if (candidateIndex < candidates.length) {
+        tryCandidate();
+        return;
+      }
+      reject(error);
+    };
+
+    tryCandidate();
   });
 }
 
@@ -4185,10 +4390,36 @@ function renderCurrentPage() {
     el.stageStrip.dataset.signature = "";
   }
   el.stageImage.hidden = false;
-  el.stageImage.src = page.url;
+  el.stageImage.src = page.renderUrl || page.image?.currentSrc || page.image?.src || page.url;
   el.stageImage.alt = `${el.chapterTitle.textContent}, page ${state.pageIndex + 1}`;
   el.stageImage.onload = () => fitStage();
+  el.stageImage.onerror = () => recoverRenderedPageImage(page, state.pageIndex);
   if (el.stageImage.complete) fitStage();
+}
+
+async function recoverRenderedPageImage(page, pageIndex) {
+  if (!page || page.renderRecoveryPromise) return page?.renderRecoveryPromise;
+  const recovery = loadImage(page.url)
+    .then((image) => {
+      page.image = image;
+      page.renderUrl = image.currentSrc || image.src || page.url;
+      page.loadAttempts = image.panelPilotLoadAttempts || page.loadAttempts;
+      if (state.pages[pageIndex] === page && state.pageIndex === pageIndex) {
+        el.stageImage.src = page.renderUrl;
+      }
+      return image;
+    })
+    .catch((error) => {
+      if (state.pages[pageIndex] === page && state.pageIndex === pageIndex) {
+        showReaderError("Could not load this page", friendlySourceErrorMessage(error));
+      }
+      return null;
+    })
+    .finally(() => {
+      if (page.renderRecoveryPromise === recovery) page.renderRecoveryPromise = null;
+    });
+  page.renderRecoveryPromise = recovery;
+  return recovery;
 }
 
 function ensureStageStrip() {
@@ -4552,14 +4783,37 @@ async function loadNextComickChapter() {
 }
 
 async function loadNextSuwayomiChapter() {
-  const chapters = state.chapterView.length ? state.chapterView : visibleChapters();
-  const index = chapters.findIndex((chapter) => Number(chapter.id) === Number(state.activeChapter.chapterId));
-  if (index < 1) {
+  const currentChapterId = Number(state.activeChapter.chapterId);
+  const chapter = nextSuwayomiChapterAfter(currentChapterId);
+  if (!chapter) {
     setConnection(state.connected, "No next Suwayomi chapter is loaded in the chapter list.", "bad");
     return;
   }
 
-  const chapter = chapters[index - 1];
+  const prefetch = state.nextChapterPrefetch;
+  if (prefetch?.fromChapterId === currentChapterId && prefetch.chapterId === Number(chapter.id)) {
+    window.clearTimeout(state.nextChapterPrefetchTimer);
+    if (!prefetch.promise) prefetch.promise = prefetchSuwayomiChapter(prefetch).catch(() => null);
+    const prepared = await prefetch.promise;
+    if (prepared) {
+      el.chapterId.value = chapter.id;
+      el.chapterTitle.textContent = chapter.name || `Chapter ${chapter.chapterNumber || chapter.sourceOrder || chapter.id}`;
+      state.pendingResume = null;
+      state.activeChapter = { type: "suwayomi", chapterId: Number(chapter.id), chapter };
+      if (isPanelMode(prepared.mode)) {
+        state.panelMode = prepared.mode;
+        updatePanelModeControls();
+      }
+      await loadChapter(prepared.pageUrls, el.chapterTitle.textContent, {
+        preparedPages: prepared.preparedPages,
+        firstImage: prepared.firstImage,
+      });
+      rememberReadingProgress();
+      setConnection(true, `Loaded ${prepared.pageUrls.length} pages. The next pages are preparing in the background.`, "good");
+      return;
+    }
+  }
+
   el.chapterId.value = chapter.id;
   el.chapterTitle.textContent = chapter.name || `Chapter ${chapter.chapterNumber || chapter.sourceOrder || chapter.id}`;
   await loadChapterPages();

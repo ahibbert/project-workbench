@@ -26,6 +26,7 @@ REPORTS_PATH = os.environ.get("PANEL_PILOT_REPORTS_PATH", "/app/data/panel-repor
 LIBRARY_LIMIT = 5000
 LIBRARY_LOCK = threading.Lock()
 REPORT_LOCK = threading.Lock()
+DETECTOR_CACHE_LOCK = threading.Lock()
 SESSION_COOKIE = "panel_pilot_session"
 SESSION_MAX_AGE = int(os.environ.get("PANEL_PILOT_SESSION_MAX_AGE", str(30 * 24 * 60 * 60)))
 
@@ -308,20 +309,47 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         content_type = self.headers.get("Content-Type", "application/octet-stream")
         if not content_type.startswith("image/"):
             raise ValueError("Manga detector expects an image")
+        image_bytes = self.rfile.read(length)
+        cache_version = os.environ.get("PANEL_PILOT_MANGA_DETECTOR_CACHE_VERSION", "v1")
+        cache_key = hashlib.sha256(cache_version.encode("utf-8") + b"\0" + image_bytes).hexdigest()
+        cache_dir = os.environ.get("PANEL_PILOT_MANGA_DETECTOR_CACHE_PATH", "/app/data/detector-cache")
+        cache_path = os.path.join(cache_dir, f"{cache_key}.json")
+        try:
+            with open(cache_path, "rb") as handle:
+                self.send_detector_payload(handle.read(), "hit")
+                return
+        except FileNotFoundError:
+            pass
         request = Request(
             f"{detector_base}/v1/manga/panels",
-            data=self.rfile.read(length),
+            data=image_bytes,
             headers={"Content-Type": content_type, "Accept": "application/json"},
             method="POST",
         )
         with urlopen(request, timeout=30) as response:
             payload = response.read()
-            self.send_response(response.status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
+            if response.status == 200:
+                os.makedirs(cache_dir, exist_ok=True)
+                with DETECTOR_CACHE_LOCK:
+                    temporary_path = ""
+                    try:
+                        with tempfile.NamedTemporaryFile(dir=cache_dir, delete=False) as handle:
+                            temporary_path = handle.name
+                            handle.write(payload)
+                        os.replace(temporary_path, cache_path)
+                    finally:
+                        if temporary_path and os.path.exists(temporary_path):
+                            os.unlink(temporary_path)
+            self.send_detector_payload(payload, "miss", status=response.status)
+
+    def send_detector_payload(self, payload, cache_state, status=200):
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Panel-Pilot-Detector-Cache", cache_state)
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
 
     def do_GET(self):
         parsed = urlparse(self.path)
