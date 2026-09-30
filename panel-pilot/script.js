@@ -5,13 +5,14 @@ const sourceIndexStoreKey = "panel-pilot-source-index";
 const sourceIndexTtlMs = 24 * 60 * 60 * 1000;
 const sourceIndexPageLimit = 6;
 const sourceIndexRequestTimeoutMs = 12000;
-const appVersion = "v92";
+const appVersion = "v93";
 const appBuildTime = "2026-09-30";
 const detectorVersion = "detector v18-ml-manga";
 const pageImageRetryDelaysMs = [0, 350, 1200];
 const chapterFetchRetryDelaysMs = [0, 700, 1800];
 const backgroundPageConcurrency = 2;
 const nextChapterPreparedPageCount = 3;
+const downloadAheadChapterCount = 10;
 const allSourcesValue = "__all__";
 const defaultComickChapter = {
   label: "Frieren chapter 1",
@@ -129,6 +130,16 @@ const queries = {
       }
     }
   }`,
+  enqueueChapterDownloads: `mutation ENQUEUE_CHAPTER_DOWNLOADS($input: EnqueueChapterDownloadsInput!) {
+    enqueueChapterDownloads(input: $input) {
+      downloadStatus { state }
+    }
+  }`,
+  startDownloader: `mutation START_DOWNLOADER($input: StartDownloaderInput!) {
+    startDownloader(input: $input) {
+      downloadStatus { state }
+    }
+  }`,
 };
 
 const el = {
@@ -214,6 +225,7 @@ const el = {
   syncProgress: document.querySelector("#sync-progress"),
   syncState: document.querySelector("#sync-state"),
   syncNote: document.querySelector("#sync-note"),
+  offlineNote: document.querySelector("#offline-note"),
   appToast: document.querySelector("#app-toast"),
   rtlOrder: document.querySelector("#rtl-order"),
   ltrOrder: document.querySelector("#ltr-order"),
@@ -258,6 +270,7 @@ const state = {
   backgroundPreparing: false,
   nextChapterPrefetch: null,
   nextChapterPrefetchTimer: null,
+  downloadAheadQueued: new Set(),
   mangaModelAvailable: null,
   navigationPending: false,
   navigationRequestId: 0,
@@ -1841,6 +1854,39 @@ function nextSuwayomiChapterAfter(chapterId) {
   return index >= 1 ? chapters[index - 1] : null;
 }
 
+function downloadAheadChapters(chapterId) {
+  const chapters = state.chapterView.length ? state.chapterView : visibleChapters();
+  const currentIndex = chapters.findIndex((chapter) => Number(chapter.id) === Number(chapterId));
+  if (currentIndex < 0) return [];
+  const firstIndex = Math.max(0, currentIndex - downloadAheadChapterCount);
+  return chapters.slice(firstIndex, currentIndex + 1).reverse();
+}
+
+async function ensureDownloadAhead(chapterId) {
+  const candidates = downloadAheadChapters(chapterId);
+  const chapters = candidates.filter((chapter) => (
+    !chapter.isDownloaded && !state.downloadAheadQueued.has(Number(chapter.id))
+  ));
+  if (!chapters.length) {
+    if (el.offlineNote) el.offlineNote.textContent = `Offline buffer: the next ${downloadAheadChapterCount} chapters are already downloaded or queued.`;
+    return;
+  }
+
+  const ids = chapters.map((chapter) => Number(chapter.id));
+  ids.forEach((id) => state.downloadAheadQueued.add(id));
+  if (el.offlineNote) el.offlineNote.textContent = `Offline buffer: queueing ${ids.length} chapter${ids.length === 1 ? "" : "s"} in Suwayomi…`;
+  try {
+    await graphQL(queries.enqueueChapterDownloads, { input: { ids } }, { timeoutMs: 15000 });
+    await graphQL(queries.startDownloader, { input: {} }, { timeoutMs: 10000 }).catch(() => null);
+    if (el.offlineNote) {
+      el.offlineNote.textContent = `Offline buffer: Suwayomi is keeping the current and next ${downloadAheadChapterCount} chapters ready.`;
+    }
+  } catch (error) {
+    ids.forEach((id) => state.downloadAheadQueued.delete(id));
+    if (el.offlineNote) el.offlineNote.textContent = `Offline buffer will retry later: ${friendlySourceErrorMessage(error)}`;
+  }
+}
+
 function clearNextChapterPrefetch() {
   window.clearTimeout(state.nextChapterPrefetchTimer);
   state.nextChapterPrefetchTimer = null;
@@ -2155,6 +2201,7 @@ async function loadChapterPages() {
       el.chapterTitle.textContent || listedChapter?.name || chapter?.name || `Chapter ${chapterId}`
     );
     rememberReadingProgress();
+    void ensureDownloadAhead(chapterId);
     setConnection(true, `Loaded ${pages.length} pages. Panel detection is running locally.`, "good");
   } catch (error) {
     const message = friendlySourceErrorMessage(error);
@@ -4809,6 +4856,7 @@ async function loadNextSuwayomiChapter() {
         firstImage: prepared.firstImage,
       });
       rememberReadingProgress();
+      void ensureDownloadAhead(chapter.id);
       setConnection(true, `Loaded ${prepared.pageUrls.length} pages. The next pages are preparing in the background.`, "good");
       return;
     }
