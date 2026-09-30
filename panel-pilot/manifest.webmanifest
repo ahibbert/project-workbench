@@ -2,6 +2,8 @@
   "name": "Panel Pilot",
   "short_name": "Panel Pilot",
   "description": "A Suwayomi-backed panel-by-panel manga reader prototype.",
+  "id": "/",
+  "scope": "/",
   "start_url": ".",
   "display": "standalone",
   "background_color": "#ffffff",

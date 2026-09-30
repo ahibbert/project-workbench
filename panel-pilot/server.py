@@ -135,15 +135,55 @@ def decode_readcomiconline_path(raw_path, replacements=None):
     return f"https://2.bp.blogspot.com/{decoded[:-2]}{suffix}{query}"
 
 
+def detect_manga_image(image_bytes, content_type="application/octet-stream"):
+    detector_base = os.environ.get("PANEL_PILOT_MANGA_DETECTOR_URL", "").strip().rstrip("/")
+    if not detector_base:
+        raise RuntimeError("Manga model service is not configured")
+    cache_version = os.environ.get("PANEL_PILOT_MANGA_DETECTOR_CACHE_VERSION", "v1")
+    cache_key = hashlib.sha256(cache_version.encode("utf-8") + b"\0" + image_bytes).hexdigest()
+    cache_dir = os.environ.get("PANEL_PILOT_MANGA_DETECTOR_CACHE_PATH", "/app/data/detector-cache")
+    cache_path = os.path.join(cache_dir, f"{cache_key}.json")
+    try:
+        with open(cache_path, "rb") as handle:
+            return handle.read(), "hit", 200
+    except FileNotFoundError:
+        pass
+    request = Request(
+        f"{detector_base}/v1/manga/panels",
+        data=image_bytes,
+        headers={"Content-Type": content_type, "Accept": "application/json"},
+        method="POST",
+    )
+    with urlopen(request, timeout=30) as response:
+        payload = response.read()
+        status = response.status
+    if status == 200:
+        os.makedirs(cache_dir, exist_ok=True)
+        with DETECTOR_CACHE_LOCK:
+            temporary_path = ""
+            try:
+                with tempfile.NamedTemporaryFile(dir=cache_dir, delete=False) as handle:
+                    temporary_path = handle.name
+                    handle.write(payload)
+                os.replace(temporary_path, cache_path)
+            finally:
+                if temporary_path and os.path.exists(temporary_path):
+                    os.unlink(temporary_path)
+    return payload, "miss", status
+
+
 class DownloadBufferManager:
     INTER_CHAPTER_DELAY = 90
     RETRY_BASE_DELAY = 3 * 60
     RETRY_MAX_DELAY = 6 * 60 * 60
+    MAX_ATTEMPTS = 6
 
     def __init__(self, path=DOWNLOAD_BUFFER_PATH):
         self.path = path
         self.lock = threading.Lock()
         self.wake = threading.Event()
+        self.failures = []
+        self.prepared_chapters = set()
         self.tasks = self.load_tasks()
         self.active_chapter_id = None
         self.thread = threading.Thread(target=self.run, name="panel-pilot-download-buffer", daemon=True)
@@ -157,6 +197,11 @@ class DownloadBufferManager:
                 payload = json.load(handle)
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             return []
+        detector_version = os.environ.get("PANEL_PILOT_MANGA_DETECTOR_CACHE_VERSION", "v1")
+        if payload.get("preparedVersion") == detector_version:
+            self.prepared_chapters = {
+                int(value) for value in payload.get("preparedChapters", []) if str(value).isdigit()
+            }
         tasks = []
         seen = set()
         for item in payload.get("tasks", []):
@@ -171,7 +216,18 @@ class DownloadBufferManager:
                 "chapterId": chapter_id,
                 "attempts": max(0, int(item.get("attempts") or 0)),
                 "notBefore": max(0, float(item.get("notBefore") or 0)),
+                "lastError": str(item.get("lastError") or "")[:500],
             })
+        self.failures = [
+            {
+                "chapterId": int(item.get("chapterId")),
+                "attempts": max(0, int(item.get("attempts") or 0)),
+                "lastError": str(item.get("lastError") or "")[:500],
+                "failedAt": max(0, float(item.get("failedAt") or 0)),
+            }
+            for item in payload.get("failures", [])[-100:]
+            if isinstance(item, dict) and str(item.get("chapterId", "")).isdigit()
+        ]
         return tasks
 
     def save_locked(self):
@@ -181,7 +237,13 @@ class DownloadBufferManager:
         try:
             with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=directory, delete=False) as handle:
                 temporary_path = handle.name
-                json.dump({"format": 1, "tasks": self.tasks}, handle, separators=(",", ":"))
+                json.dump({
+                    "format": 3,
+                    "tasks": self.tasks,
+                    "failures": self.failures[-100:],
+                    "preparedVersion": os.environ.get("PANEL_PILOT_MANGA_DETECTOR_CACHE_VERSION", "v1"),
+                    "preparedChapters": sorted(self.prepared_chapters)[-1000:],
+                }, handle, separators=(",", ":"))
             os.replace(temporary_path, self.path)
         finally:
             if temporary_path and os.path.exists(temporary_path):
@@ -200,7 +262,10 @@ class DownloadBufferManager:
                     continue
                 if chapter_id < 1 or chapter_id in existing:
                     continue
-                self.tasks.append({"chapterId": chapter_id, "attempts": 0, "notBefore": 0})
+                if chapter_id in self.prepared_chapters:
+                    continue
+                self.failures = [item for item in self.failures if item["chapterId"] != chapter_id]
+                self.tasks.append({"chapterId": chapter_id, "attempts": 0, "notBefore": 0, "lastError": ""})
                 existing.add(chapter_id)
                 added += 1
             if added:
@@ -213,12 +278,40 @@ class DownloadBufferManager:
         return {
             "activeChapterId": self.active_chapter_id,
             "queued": len(self.tasks),
+            "failed": len(self.failures),
+            "prepared": len(self.prepared_chapters),
             "nextAttemptAt": min((item["notBefore"] for item in self.tasks), default=0),
+            "tasks": [
+                {
+                    "chapterId": item["chapterId"],
+                    "attempts": item["attempts"],
+                    "notBefore": item["notBefore"],
+                    "lastError": item.get("lastError", ""),
+                }
+                for item in self.tasks[:25]
+            ],
         }
 
     def status(self):
         with self.lock:
             return self.status_locked()
+
+    def retry_failures(self):
+        with self.lock:
+            existing = {item["chapterId"] for item in self.tasks}
+            restored = 0
+            for failure in self.failures:
+                chapter_id = failure["chapterId"]
+                if chapter_id in existing or chapter_id == self.active_chapter_id:
+                    continue
+                self.tasks.append({"chapterId": chapter_id, "attempts": 0, "notBefore": 0, "lastError": ""})
+                existing.add(chapter_id)
+                restored += 1
+            self.failures = []
+            self.save_locked()
+            status = self.status_locked()
+        self.wake.set()
+        return {**status, "restored": restored}
 
     def graphql(self, query, variables=None, timeout=30):
         base = os.environ.get("SUWAYOMI_INTERNAL_URL", "http://localhost:4567").strip().rstrip("/")
@@ -243,6 +336,36 @@ class DownloadBufferManager:
         )
         return bool(data.get("chapter", {}).get("isDownloaded")), data.get("downloadStatus", {}).get("state")
 
+    def warm_chapter_detection(self, chapter_id):
+        data = self.graphql(
+            "mutation($input:FetchChapterPagesInput!){fetchChapterPages(input:$input){pages}}",
+            {"input": {"chapterId": chapter_id}},
+            timeout=45,
+        )
+        pages = data.get("fetchChapterPages", {}).get("pages") or []
+        if not pages:
+            return False
+        base = os.environ.get("SUWAYOMI_INTERNAL_URL", "http://localhost:4567").strip().rstrip("/")
+        username = os.environ.get("SUWAYOMI_AUTH_USER", "").strip()
+        password = os.environ.get("SUWAYOMI_AUTH_PASSWORD", "")
+        headers = {"Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8", "User-Agent": USER_AGENT}
+        if username and password:
+            token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+            headers["Authorization"] = f"Basic {token}"
+        warmed = 0
+        for path in pages:
+            parsed = urlparse(str(path or ""))
+            if parsed.scheme or parsed.netloc or not str(path).startswith("/api/v1/"):
+                continue
+            request = Request(f"{base}{path}", headers=headers, method="GET")
+            with urlopen(request, timeout=30) as response:
+                image_bytes = response.read()
+                if not image_bytes or len(image_bytes) > 12000000:
+                    continue
+                detect_manga_image(image_bytes, response.headers.get("Content-Type") or "application/octet-stream")
+                warmed += 1
+        return warmed == len(pages)
+
     def download_chapter(self, chapter_id):
         self.graphql(
             "mutation($input:EnqueueChapterDownloadsInput!){enqueueChapterDownloads(input:$input){downloadStatus{state}}}",
@@ -262,7 +385,7 @@ class DownloadBufferManager:
                 return False
         return False
 
-    def complete_active(self, chapter_id, downloaded):
+    def complete_active(self, chapter_id, downloaded, error_message=""):
         now = time.time()
         with self.lock:
             self.active_chapter_id = None
@@ -274,10 +397,20 @@ class DownloadBufferManager:
                 task = next((item for item in self.tasks if item["chapterId"] == chapter_id), None)
                 if task:
                     task["attempts"] += 1
-                    delay = min(self.RETRY_MAX_DELAY, self.RETRY_BASE_DELAY * (2 ** min(task["attempts"] - 1, 8)))
-                    retry_at = now + delay
-                    for item in self.tasks:
-                        item["notBefore"] = max(item["notBefore"], retry_at)
+                    task["lastError"] = str(error_message or "Downloader stopped before the chapter completed")[:500]
+                    if task["attempts"] >= self.MAX_ATTEMPTS:
+                        self.tasks = [item for item in self.tasks if item["chapterId"] != chapter_id]
+                        self.failures.append({
+                            "chapterId": chapter_id,
+                            "attempts": task["attempts"],
+                            "lastError": task["lastError"],
+                            "failedAt": now,
+                        })
+                        self.failures = self.failures[-100:]
+                    else:
+                        delay = min(self.RETRY_MAX_DELAY, self.RETRY_BASE_DELAY * (2 ** min(task["attempts"] - 1, 8)))
+                        task["notBefore"] = now + delay
+                        self.tasks = [item for item in self.tasks if item["chapterId"] != chapter_id] + [task]
             self.save_locked()
 
     def run(self):
@@ -297,16 +430,33 @@ class DownloadBufferManager:
                 continue
 
             downloaded = False
+            error_message = ""
             try:
                 already_downloaded, _ = self.chapter_download_state(chapter_id)
                 downloaded = already_downloaded or self.download_chapter(chapter_id)
             except Exception as error:
+                error_message = str(error)
                 print(f"Download buffer chapter {chapter_id} paused: {error}", flush=True)
+
+            if downloaded and chapter_id not in self.prepared_chapters:
+                try:
+                    if self.warm_chapter_detection(chapter_id):
+                        with self.lock:
+                            self.prepared_chapters.add(chapter_id)
+                except Exception as error:
+                    print(f"Download buffer could not prepare chapter {chapter_id}: {error}", flush=True)
 
             with self.lock:
                 if downloaded:
                     self.tasks = [item for item in self.tasks if item["chapterId"] != chapter_id]
-            self.complete_active(chapter_id, downloaded)
+            try:
+                self.complete_active(chapter_id, downloaded, error_message)
+            except Exception as error:
+                print(f"Download buffer could not persist chapter {chapter_id}: {error}", flush=True)
+                with self.lock:
+                    self.active_chapter_id = None
+                self.wake.wait(60)
+                self.wake.clear()
 
 
 class PanelPilotHandler(SimpleHTTPRequestHandler):
@@ -486,40 +636,39 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         if length < 1 or length > 12000000:
             raise ValueError("Manga detector image is empty or too large")
         content_type = self.headers.get("Content-Type", "application/octet-stream")
-        if not content_type.startswith("image/"):
-            raise ValueError("Manga detector expects an image")
-        image_bytes = self.rfile.read(length)
-        cache_version = os.environ.get("PANEL_PILOT_MANGA_DETECTOR_CACHE_VERSION", "v1")
-        cache_key = hashlib.sha256(cache_version.encode("utf-8") + b"\0" + image_bytes).hexdigest()
-        cache_dir = os.environ.get("PANEL_PILOT_MANGA_DETECTOR_CACHE_PATH", "/app/data/detector-cache")
-        cache_path = os.path.join(cache_dir, f"{cache_key}.json")
-        try:
-            with open(cache_path, "rb") as handle:
-                self.send_detector_payload(handle.read(), "hit")
-                return
-        except FileNotFoundError:
-            pass
+        request_body = self.rfile.read(length)
+        if content_type.startswith("application/json"):
+            if length > 16384:
+                raise ValueError("Manga detector URL request is too large")
+            payload = json.loads(request_body.decode("utf-8"))
+            image_bytes, content_type = self.fetch_manga_detection_asset(payload.get("url", ""))
+        elif content_type.startswith("image/"):
+            image_bytes = request_body
+        else:
+            raise ValueError("Manga detector expects an image or a Suwayomi asset URL")
+        payload, cache_state, status = detect_manga_image(image_bytes, content_type)
+        self.send_detector_payload(payload, cache_state, status=status)
+
+    def fetch_manga_detection_asset(self, raw_url):
+        parsed = urlparse(str(raw_url or ""))
+        if parsed.scheme or parsed.netloc or parsed.path != "/api/suwayomi/asset":
+            raise ValueError("Manga detector URL must be a local Suwayomi asset")
+        params = parse_qs(parsed.query)
+        base = self.resolve_suwayomi_base(params.get("base", ["http://localhost:4567"])[0])
+        path = unquote(params.get("path", [""])[0])
+        parsed_path = urlparse(path)
+        if parsed_path.scheme or parsed_path.netloc or not path.startswith("/api/v1/") or path.startswith("//"):
+            raise ValueError("Manga detector asset path is invalid")
         request = Request(
-            f"{detector_base}/v1/manga/panels",
-            data=image_bytes,
-            headers={"Content-Type": content_type, "Accept": "application/json"},
-            method="POST",
+            f"{base}{path}",
+            headers=self.suwayomi_headers(accept="image/avif,image/webp,image/apng,image/*,*/*;q=0.8"),
+            method="GET",
         )
         with urlopen(request, timeout=30) as response:
-            payload = response.read()
-            if response.status == 200:
-                os.makedirs(cache_dir, exist_ok=True)
-                with DETECTOR_CACHE_LOCK:
-                    temporary_path = ""
-                    try:
-                        with tempfile.NamedTemporaryFile(dir=cache_dir, delete=False) as handle:
-                            temporary_path = handle.name
-                            handle.write(payload)
-                        os.replace(temporary_path, cache_path)
-                    finally:
-                        if temporary_path and os.path.exists(temporary_path):
-                            os.unlink(temporary_path)
-            self.send_detector_payload(payload, "miss", status=response.status)
+            image_bytes = response.read()
+            if not image_bytes or len(image_bytes) > 12000000:
+                raise ValueError("Manga detector asset is empty or too large")
+            return image_bytes, response.headers.get("Content-Type") or "application/octet-stream"
 
     def send_detector_payload(self, payload, cache_state, status=200):
         self.send_response(status)
@@ -538,6 +687,9 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         if length < 1 or length > 65536:
             raise ValueError("Download buffer request is empty or too large")
         payload = json.loads(self.rfile.read(length).decode("utf-8"))
+        if payload.get("retryFailed") is True:
+            self.send_json(DOWNLOAD_BUFFER_MANAGER.retry_failures())
+            return
         chapter_ids = payload.get("chapterIds")
         if not isinstance(chapter_ids, list):
             raise ValueError("chapterIds must be a list")
@@ -695,6 +847,15 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         directory = os.path.dirname(LIBRARY_PATH)
         with LIBRARY_LOCK:
             os.makedirs(directory, exist_ok=True)
+            try:
+                with open(LIBRARY_PATH, "r", encoding="utf-8") as handle:
+                    existing_payload = json.load(handle)
+                existing = self.clean_library_items(
+                    existing_payload.get("items", []) if isinstance(existing_payload, dict) else existing_payload
+                )
+            except (FileNotFoundError, json.JSONDecodeError, OSError):
+                existing = []
+            cleaned = self.merge_library_items(cleaned, existing)
             fd, temp_path = tempfile.mkstemp(prefix=".library-", suffix=".json", dir=directory)
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -705,6 +866,32 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
                 if os.path.exists(temp_path):
                     os.unlink(temp_path)
         return cleaned
+
+    def merge_library_items(self, incoming, existing):
+        incoming_by_key = {
+            f"{item.get('sourceId', 'source')}:{item.get('mangaId', '')}": item
+            for item in incoming
+        }
+        existing_by_key = {
+            f"{item.get('sourceId', 'source')}:{item.get('mangaId', '')}": item
+            for item in existing
+        }
+        ordered_keys = list(incoming_by_key)
+        ordered_keys.extend(key for key in existing_by_key if key not in incoming_by_key)
+        merged = []
+        for key in ordered_keys:
+            new_item = incoming_by_key.get(key)
+            old_item = existing_by_key.get(key)
+            if not old_item:
+                merged.append(new_item)
+                continue
+            if not new_item:
+                merged.append(old_item)
+                continue
+            new_updated = str(new_item.get("updatedAt") or "")
+            old_updated = str(old_item.get("updatedAt") or "")
+            merged.append(new_item if new_updated >= old_updated else old_item)
+        return merged[:LIBRARY_LIMIT]
 
     def clean_library_items(self, items):
         if not isinstance(items, list):

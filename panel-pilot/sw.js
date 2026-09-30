@@ -1,13 +1,7 @@
-const cacheName = "panel-pilot-v95";
-const appShell = [
-  "./styles.css?v=47",
-  "./script.js?v=95",
-  "./panel-test.js?v=7",
-  "./manifest.webmanifest",
-];
+const cacheName = "panel-pilot-v96";
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(cacheName).then((cache) => cache.addAll(appShell)));
+  event.waitUntil(caches.open(cacheName));
   self.skipWaiting();
 });
 
@@ -37,8 +31,12 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(
     fetch(event.request)
       .then((response) => {
-        const copy = response.clone();
-        caches.open(cacheName).then((cache) => cache.put(event.request, copy));
+        const contentType = response.headers.get("Content-Type") || "";
+        const scriptOrStyleIsHtml = /\.(?:js|css)$/.test(url.pathname) && contentType.includes("text/html");
+        if (response.ok && !response.redirected && !scriptOrStyleIsHtml) {
+          const copy = response.clone();
+          caches.open(cacheName).then((cache) => cache.put(event.request, copy));
+        }
         return response;
       })
       .catch(() => caches.match(event.request))

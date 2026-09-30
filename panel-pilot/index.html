@@ -12,7 +12,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>Panel Pilot</title>
     <link rel="manifest" href="manifest.webmanifest">
-    <link rel="stylesheet" href="styles.css?v=47">
+    <link rel="stylesheet" href="styles.css?v=48">
   </head>
   <body>
     <main class="app-shell">
@@ -45,6 +45,7 @@
             <div class="reader-loading-track">
               <div class="reader-loading-bar" id="reader-loading-bar"></div>
             </div>
+            <button class="reader-loading-cancel" id="reader-loading-cancel" type="button">Cancel</button>
           </div>
         </div>
 
@@ -60,12 +61,36 @@
           </div>
         </div>
 
+        <div class="reader-complete" id="reader-complete" role="dialog" aria-modal="true" aria-labelledby="reader-complete-title" hidden>
+          <div class="reader-complete-card">
+            <p class="kicker">Chapter complete</p>
+            <strong id="reader-complete-title">You’re all caught up</strong>
+            <p id="reader-complete-message">There isn’t another chapter ready from this release group.</p>
+            <div class="reader-complete-actions">
+              <button class="text-button primary" id="reader-complete-next" type="button">Try next chapter</button>
+              <button class="text-button" id="reader-complete-chapters" type="button">Chapter list</button>
+              <button class="text-button" id="reader-complete-library" type="button">Library</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="reader-tap-hint" id="reader-tap-hint" role="dialog" aria-modal="true" aria-labelledby="reader-tap-hint-title" hidden>
+          <div class="reader-tap-hint-card">
+            <strong id="reader-tap-hint-title">One-handed tap zones</strong>
+            <div class="tap-zone-diagram" aria-hidden="true">
+              <span>Next</span><span>Controls</span><span>Next</span><span>Back one</span>
+            </div>
+            <p>Tap either side to move forward. Tap the lower middle to go back one panel.</p>
+            <button class="text-button primary" id="reader-tap-hint-close" type="button">Got it</button>
+          </div>
+        </div>
+
         <div class="reader-controls" aria-label="Reader controls">
-          <button class="text-button" id="toggle-fit" type="button">Full page</button>
+          <button class="text-button" id="toggle-fit" type="button">Page overview</button>
           <button class="text-button reader-step-back" id="prev-panel" type="button" title="Previous panel" aria-label="Previous panel">
             <span aria-hidden="true">←</span> Back one
           </button>
-          <button class="reader-next-accessible" id="next-panel" type="button" title="Next panel" aria-label="Next panel">
+          <button class="reader-next-accessible" id="next-panel" type="button" title="Next panel" aria-label="Next panel" tabindex="-1">
             <span aria-hidden="true">&gt;</span>
           </button>
           <details class="reader-options">
@@ -101,7 +126,7 @@
         </header>
         <section class="library-content">
           <div class="section-heading">
-            <h2>Continue Reading</h2>
+            <h2>Your Library</h2>
             <span class="section-count" id="library-count">0 titles</span>
           </div>
           <div id="library-body">
@@ -152,6 +177,10 @@
               <span class="detail-source" id="detail-source">Source</span>
               <h2 id="detail-title">Selected manga</h2>
               <span class="detail-progress" id="chapter-count">0 chapters</span>
+              <div class="detail-actions">
+                <button class="primary-action" id="detail-primary" type="button">Start reading</button>
+                <button id="detail-library" type="button">Add to library</button>
+              </div>
             </div>
           </div>
           <label class="chapter-filter">
@@ -248,10 +277,11 @@
           </p>
           <div class="button-row">
             <button id="sync-progress" type="button">Sync library &amp; progress</button>
+            <button id="retry-downloads" type="button" hidden>Retry failed downloads</button>
             <a class="button-link" href="https://tachimanga.app/help/guides/tracking.html" target="_blank" rel="noopener">Setup guide</a>
           </div>
           <p class="note" id="sync-note" aria-live="polite">Enable <strong>Enhanced Tracking → Suwayomi</strong> in Tachimanga after adding its Suwayomi extension.</p>
-          <p class="note" id="offline-note" aria-live="polite">Offline buffer: the server keeps the current and next 10 chapters downloaded in Suwayomi with paced retries.</p>
+          <p class="note" id="offline-note" aria-live="polite">Server chapter buffer: checking current and queued downloads…</p>
         </section>
 
         <section class="panel account-panel">
@@ -294,7 +324,8 @@
     </nav>
 
     <div class="app-toast" id="app-toast" role="status" aria-live="polite" hidden></div>
+    <button class="app-update" id="app-update" type="button" hidden>Update ready · Restart app</button>
 
-    <script src="script.js?v=95"></script>
+    <script src="script.js?v=96"></script>
   </body>
 </html>

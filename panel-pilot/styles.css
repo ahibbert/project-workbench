@@ -287,6 +287,7 @@ h2 {
 
 .reader-loading.active {
   display: flex;
+  pointer-events: auto;
 }
 
 .reader-loading-card {
@@ -318,7 +319,18 @@ h2 {
   transition: width 220ms ease;
 }
 
-.reader-error {
+.reader-loading-cancel {
+  justify-self: end;
+  min-height: 2.5rem;
+  border: 0;
+  background: transparent;
+  color: var(--accent-2);
+  font-weight: 800;
+}
+
+.reader-error,
+.reader-complete,
+.reader-tap-hint {
   position: absolute;
   inset: 0;
   z-index: 10;
@@ -329,11 +341,15 @@ h2 {
   backdrop-filter: blur(8px);
 }
 
-.reader-error[hidden] {
+.reader-error[hidden],
+.reader-complete[hidden],
+.reader-tap-hint[hidden] {
   display: none;
 }
 
-.reader-error-card {
+.reader-error-card,
+.reader-complete-card,
+.reader-tap-hint-card {
   width: min(25rem, calc(100vw - 2rem));
   display: grid;
   gap: 0.7rem;
@@ -344,24 +360,73 @@ h2 {
   box-shadow: 0 18px 50px rgba(35, 42, 37, 0.2);
 }
 
-.reader-error-card > strong {
+.reader-complete-card {
+  border-color: rgba(52, 127, 128, 0.28);
+}
+
+.reader-tap-hint-card {
+  border-color: rgba(154, 106, 0, 0.26);
+}
+
+.reader-error-card > strong,
+.reader-complete-card > strong,
+.reader-tap-hint-card > strong {
   font-size: 1.12rem;
 }
 
-.reader-error-card > p {
+.reader-error-card > p,
+.reader-complete-card > p,
+.reader-tap-hint-card > p {
   margin: 0;
   color: var(--muted);
   line-height: 1.45;
 }
 
-.reader-error-actions {
+.reader-error-actions,
+.reader-complete-actions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.55rem;
 }
 
-.reader-error-actions .text-button {
+.reader-error-actions .text-button,
+.reader-complete-actions .text-button {
   min-width: 0;
+}
+
+.reader-complete-actions {
+  grid-template-columns: 1fr;
+}
+
+.tap-zone-diagram {
+  min-height: 8rem;
+  display: grid;
+  grid-template-columns: 1fr 0.9fr 1fr;
+  grid-template-rows: 1fr auto;
+  gap: 0.35rem;
+}
+
+.tap-zone-diagram span {
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(52, 127, 128, 0.28);
+  border-radius: 12px;
+  background: #edf6f5;
+  color: #236c6e;
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.tap-zone-diagram span:nth-child(2) {
+  background: #f4f5f2;
+  color: var(--muted);
+}
+
+.tap-zone-diagram span:last-child {
+  grid-column: 2;
+  min-height: 2.6rem;
+  background: #fff6d9;
+  color: #725000;
 }
 
 .icon-button {
@@ -1985,6 +2050,24 @@ body.reader-focus .reading-miniplayer {
   padding: 0.55rem max(0.75rem, env(safe-area-inset-right)) max(0.65rem, env(safe-area-inset-bottom)) max(0.75rem, env(safe-area-inset-left));
 }
 
+.detail-actions {
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 0.85rem;
+}
+
+.detail-actions button {
+  min-height: 2.75rem;
+  border-radius: 12px;
+}
+
+.detail-actions .primary-action {
+  border-color: #d5a62e;
+  background: #e7bd52;
+  color: #28200b;
+  font-weight: 820;
+}
+
 body.reader-active .reader-controls {
   right: auto;
   bottom: max(0.7rem, env(safe-area-inset-bottom));
@@ -2117,6 +2200,25 @@ body.has-reading-miniplayer .app-toast {
 
 .app-toast.good { background: rgba(37, 105, 68, 0.96); }
 .app-toast.bad { background: rgba(147, 57, 50, 0.96); }
+
+.app-update {
+  position: fixed;
+  right: 1rem;
+  top: max(1rem, env(safe-area-inset-top));
+  z-index: 80;
+  min-height: 2.8rem;
+  border: 1px solid rgba(35, 108, 110, 0.42);
+  border-radius: 999px;
+  padding: 0.65rem 1rem;
+  background: #236c6e;
+  box-shadow: 0 12px 30px rgba(35, 42, 37, 0.2);
+  color: #fff;
+  font-weight: 800;
+}
+
+.app-update[hidden] {
+  display: none;
+}
 
 @media (max-width: 620px) {
   .app-shell {
