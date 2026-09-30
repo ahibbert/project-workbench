@@ -68,6 +68,7 @@
             <p id="reader-complete-message">There isn’t another chapter ready from this release group.</p>
             <div class="reader-complete-actions">
               <button class="text-button primary" id="reader-complete-next" type="button">Try next chapter</button>
+              <button class="text-button primary" id="reader-complete-refresh" type="button" hidden>Refresh chapters</button>
               <button class="text-button" id="reader-complete-chapters" type="button">Chapter list</button>
               <button class="text-button" id="reader-complete-library" type="button">Library</button>
             </div>
@@ -134,6 +135,7 @@
             <button class="library-filter" type="button" role="tab" aria-selected="false" data-library-filter="plan_to_read">Plan <span data-library-count="plan_to_read">0</span></button>
             <button class="library-filter" type="button" role="tab" aria-selected="false" data-library-filter="paused">Paused <span data-library-count="paused">0</span></button>
             <button class="library-filter" type="button" role="tab" aria-selected="false" data-library-filter="completed">Completed <span data-library-count="completed">0</span></button>
+            <button class="library-filter" type="button" role="tab" aria-selected="false" data-library-filter="other">Other <span data-library-count="other">0</span></button>
             <button class="library-filter" type="button" role="tab" aria-selected="false" data-library-filter="all">All <span data-library-count="all">0</span></button>
           </div>
           <div id="library-body">
@@ -367,6 +369,6 @@
     <div class="app-toast" id="app-toast" role="status" aria-live="polite" hidden></div>
     <button class="app-update" id="app-update" type="button" hidden>Update ready · Restart app</button>
 
-    <script src="script.js?v=98"></script>
+    <script src="script.js?v=98.1"></script>
   </body>
 </html>

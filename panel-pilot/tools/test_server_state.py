@@ -1,6 +1,7 @@
 import pathlib
 import sys
 import unittest
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -62,6 +63,8 @@ class LibraryMergeTests(unittest.TestCase):
             "started": True,
             "mangabakaId": 1797,
             "mangabakaTitle": "Kingdom",
+            "mangabakaMatchSource": "exact-title",
+            "mangabakaAccountKey": "user-123",
             "completedChapter": 486.5,
         }])
 
@@ -69,7 +72,55 @@ class LibraryMergeTests(unittest.TestCase):
         self.assertTrue(cleaned[0]["statusExplicit"])
         self.assertTrue(cleaned[0]["started"])
         self.assertEqual(cleaned[0]["mangabakaId"], 1797)
+        self.assertEqual(cleaned[0]["mangabakaMatchSource"], "exact-title")
+        self.assertEqual(cleaned[0]["mangabakaAccountKey"], "user-123")
         self.assertEqual(cleaned[0]["completedChapter"], 486.5)
+
+
+class MangaBakaSyncTests(unittest.TestCase):
+    def setUp(self):
+        self.handler = object.__new__(PanelPilotHandler)
+        self.responses = []
+        self.handler.send_json = lambda payload, status=200: self.responses.append((status, payload))
+
+    @mock.patch("server.read_mangabaka_token", return_value="token-account-a")
+    def test_batch_uses_captured_token_after_profile_verification(self, _read_token):
+        self.handler.read_json_request = lambda maximum: {
+            "accountKey": "account-a",
+            "entries": [{"series_id": 7, "state": "reading", "progress_chapter": 12}],
+        }
+        calls = []
+
+        def manga_json(path, method="GET", payload=None, token=None):
+            calls.append((path, method, payload, token))
+            if path == "/v1/my/profile":
+                return {"data": {"id": "account-a"}}
+            return {"updated": 1}
+
+        self.handler.mangabaka_json = manga_json
+        self.handler.handle_mangabaka_library_post()
+
+        self.assertEqual(calls[-1][0], "/v1/my/library/batch")
+        self.assertEqual(calls[-1][3], "token-account-a")
+        self.assertEqual(self.responses, [(200, {"updated": 1})])
+
+    @mock.patch("server.read_mangabaka_token", return_value="token-account-b")
+    def test_batch_rejects_account_switch_before_write(self, _read_token):
+        self.handler.read_json_request = lambda maximum: {
+            "accountKey": "account-a",
+            "entries": [{"series_id": 7, "state": "reading"}],
+        }
+        calls = []
+
+        def manga_json(path, method="GET", payload=None, token=None):
+            calls.append(path)
+            return {"data": {"id": "account-b"}}
+
+        self.handler.mangabaka_json = manga_json
+        self.handler.handle_mangabaka_library_post()
+
+        self.assertEqual(calls, ["/v1/my/profile"])
+        self.assertEqual(self.responses[0][0], 409)
 
 
 if __name__ == "__main__":

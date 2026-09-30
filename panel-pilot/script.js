@@ -5,7 +5,7 @@ const sourceIndexStoreKey = "panel-pilot-source-index";
 const sourceIndexTtlMs = 24 * 60 * 60 * 1000;
 const sourceIndexPageLimit = 6;
 const sourceIndexRequestTimeoutMs = 12000;
-const appVersion = "v98";
+const appVersion = "v98.1";
 const appBuildTime = "2026-10-01";
 const detectorVersion = "detector v18-ml-manga";
 const pageImageRetryDelaysMs = [0, 350, 1200];
@@ -21,6 +21,7 @@ const reconnectIntervalMs = 45 * 1000;
 const downloadStatusPollMs = 15 * 1000;
 const allSourcesValue = "__all__";
 const libraryStatuses = ["reading", "plan_to_read", "paused", "completed", "dropped", "rereading", "considering"];
+const libraryFilterValues = ["reading", "plan_to_read", "paused", "completed", "other", "all"];
 const libraryStatusLabels = {
   reading: "Reading",
   plan_to_read: "Plan to read",
@@ -191,6 +192,7 @@ const el = {
   readerCompleteTitle: document.querySelector("#reader-complete-title"),
   readerCompleteMessage: document.querySelector("#reader-complete-message"),
   readerCompleteNext: document.querySelector("#reader-complete-next"),
+  readerCompleteRefresh: document.querySelector("#reader-complete-refresh"),
   readerCompleteChapters: document.querySelector("#reader-complete-chapters"),
   readerCompleteLibrary: document.querySelector("#reader-complete-library"),
   readerTapHint: document.querySelector("#reader-tap-hint"),
@@ -306,6 +308,8 @@ const state = {
   librarySavePending: false,
   pendingResume: null,
   readerErrorRetryAction: null,
+  readerLoadRequestId: 0,
+  readerLoadController: null,
   libraryFilter: "reading",
   chapterPageUrls: [],
   pages: [],
@@ -348,10 +352,13 @@ const state = {
   historyApplying: false,
   viewScrollPositions: { library: 0, browse: 0, settings: 0 },
   browseDiscoveryScroll: 0,
+  mangaDetailOrigin: "browse",
   mangabakaRecommendations: [],
   mangabakaConnected: false,
   mangabakaConfigured: false,
   mangabakaOutbox: [],
+  mangabakaAccountKey: "",
+  mangabakaOutboxRevision: 0,
   mangabakaSyncPromise: null,
   mangabakaSyncTimer: null,
   pendingMangaBakaRecommendation: null,
@@ -374,7 +381,7 @@ function loadSettings() {
     if (isPanelMode(savedPanelMode)) state.panelMode = savedPanelMode;
     if (saved.readingDirection) state.readingDirection = saved.readingDirection;
     if (["smooth", "quick", "instant"].includes(saved.readerMotion)) state.readerMotion = saved.readerMotion;
-    if ([...libraryStatuses, "all"].includes(saved.libraryFilter)) state.libraryFilter = saved.libraryFilter;
+    if (libraryFilterValues.includes(saved.libraryFilter)) state.libraryFilter = saved.libraryFilter;
     if (Number.isFinite(saved.panelPadding)) state.panelPadding = clamp(saved.panelPadding, 0, 25);
   } catch {
     // Ignore malformed local storage.
@@ -491,12 +498,24 @@ function setActiveView(view, options = {}) {
 }
 
 function leaveReaderView() {
+  abortActiveReaderLoad();
   cancelReaderNavigation();
   if (!state.historyApplying && window.history.state?.panelPilot && window.history.state.view === "reader") {
     window.history.back();
     return;
   }
   setActiveView(state.previousView && state.previousView !== "reader" ? state.previousView : "library");
+}
+
+function abortActiveReaderLoad() {
+  if (!state.readerLoadController) return false;
+  state.readerLoadRequestId += 1;
+  state.readerLoadController.abort();
+  state.readerLoadController = null;
+  state.prepareGeneration += 1;
+  setReaderLoading(false);
+  setBusy(el.loadChapterPages, false);
+  return true;
 }
 
 function cleanBaseUrl() {
@@ -592,8 +611,11 @@ function setConnection(connected, message, tone = "") {
 
 async function graphQL(query, variables = {}, options = {}) {
   const baseUrl = cleanBaseUrl();
-  const controller = options.timeoutMs ? new AbortController() : null;
-  const timeout = controller
+  const controller = (options.timeoutMs || options.signal) ? new AbortController() : null;
+  const cancelFromExternalSignal = () => controller?.abort();
+  if (options.signal?.aborted) controller?.abort();
+  else options.signal?.addEventListener("abort", cancelFromExternalSignal, { once: true });
+  const timeout = controller && options.timeoutMs
     ? window.setTimeout(() => controller.abort(), options.timeoutMs)
     : null;
   try {
@@ -614,15 +636,24 @@ async function graphQL(query, variables = {}, options = {}) {
     }
     return payload.data;
   } catch (error) {
+    if (error?.name === "AbortError" && options.signal?.aborted) {
+      const cancelled = new Error("Reader request cancelled");
+      cancelled.name = "ReaderLoadCancelled";
+      throw cancelled;
+    }
     if (error?.name === "AbortError") throw new Error("GraphQL request timed out");
     throw error;
   } finally {
     if (timeout) window.clearTimeout(timeout);
+    options.signal?.removeEventListener("abort", cancelFromExternalSignal);
   }
 }
 
 function friendlySourceErrorMessage(error) {
   const message = error?.message || "Unknown error";
+  if (/urlopen error|winerror\s*10061|connection refused|actively refused|failed to fetch/i.test(message)) {
+    return "The reading server is unavailable right now. Check the connection and try again.";
+  }
   if (/api rate limit exceeded|rate limit|mangahub\.io/i.test(message)) {
     return "This source has temporarily rate-limited chapter pages. Try again later or switch this title to another source.";
   }
@@ -762,16 +793,82 @@ function mangaBakaMatchForManga(manga) {
 
 function loadMangaBakaOutbox() {
   try {
-    const saved = JSON.parse(localStorage.getItem(mangabakaOutboxStoreKey) || "[]");
-    state.mangabakaOutbox = Array.isArray(saved) ? saved.filter((entry) => Number(entry.series_id) > 0) : [];
+    const saved = JSON.parse(localStorage.getItem(mangabakaOutboxStoreKey) || "{}");
+    const sanitized = sanitizeMangaBakaOutbox(saved);
+    state.mangabakaAccountKey = sanitized.accountKey;
+    state.mangabakaOutbox = sanitized.entries;
+    state.mangabakaOutboxRevision = sanitized.revision;
+    persistMangaBakaOutbox();
   } catch {
     state.mangabakaOutbox = [];
+    state.mangabakaAccountKey = "";
+    state.mangabakaOutboxRevision = 0;
   }
+}
+
+function sanitizeMangaBakaOutbox(saved) {
+  const rawAccountKey = !Array.isArray(saved) && typeof saved?.accountKey === "string"
+    ? saved.accountKey.trim()
+    : "";
+  const accountKey = rawAccountKey.length <= 200 ? rawAccountKey : "";
+  const sourceEntries = !Array.isArray(saved) && Array.isArray(saved?.entries) ? saved.entries : [];
+  if (!accountKey) return { accountKey: "", entries: [], revision: 0 };
+
+  const candidates = sourceEntries.filter((entry) => {
+    const seriesId = Number(entry?.series_id);
+    const entryAccountKey = typeof entry?.accountKey === "string" ? entry.accountKey.trim() : "";
+    return Number.isSafeInteger(seriesId) && seriesId > 0 &&
+      entryAccountKey.length <= 200 && entryAccountKey === accountKey &&
+      libraryStatuses.includes(entry?.state);
+  });
+  let revision = candidates.reduce((highest, entry) => {
+    const value = Number(entry?.revision);
+    const upperBound = Number.MAX_SAFE_INTEGER - candidates.length - 1;
+    return Number.isSafeInteger(value) && value > 0 && value <= upperBound ? Math.max(highest, value) : highest;
+  }, 0);
+  const bySeries = new Map();
+  candidates.forEach((entry) => {
+    const seriesId = Number(entry?.series_id);
+    let entryRevision = Number(entry?.revision);
+    const upperBound = Number.MAX_SAFE_INTEGER - candidates.length - 1;
+    if (!Number.isSafeInteger(entryRevision) || entryRevision < 1 || entryRevision > upperBound) {
+      revision += 1;
+      entryRevision = revision;
+    }
+    revision = Math.max(revision, entryRevision);
+    const progress = Number(entry?.progress_chapter);
+    const candidate = {
+      series_id: seriesId,
+      state: entry.state,
+      accountKey,
+      revision: entryRevision,
+    };
+    if (Number.isFinite(progress) && progress >= 0 && progress <= 10000) {
+      candidate.progress_chapter = progress;
+    }
+    const existing = bySeries.get(seriesId);
+    if (!existing) {
+      bySeries.set(seriesId, candidate);
+      return;
+    }
+    const newest = candidate.revision >= existing.revision ? candidate : existing;
+    const merged = { ...newest, revision: Math.max(candidate.revision, existing.revision) };
+    const maxProgress = Math.max(
+      Number.isFinite(Number(candidate.progress_chapter)) ? Number(candidate.progress_chapter) : -1,
+      Number.isFinite(Number(existing.progress_chapter)) ? Number(existing.progress_chapter) : -1
+    );
+    if (maxProgress >= 0) merged.progress_chapter = maxProgress;
+    bySeries.set(seriesId, merged);
+  });
+  return { accountKey, entries: [...bySeries.values()], revision };
 }
 
 function persistMangaBakaOutbox() {
   try {
-    localStorage.setItem(mangabakaOutboxStoreKey, JSON.stringify(state.mangabakaOutbox));
+    localStorage.setItem(mangabakaOutboxStoreKey, JSON.stringify({
+      accountKey: state.mangabakaAccountKey,
+      entries: state.mangabakaOutbox,
+    }));
   } catch {
     // The Panel Pilot library still retains the last known state.
   }
@@ -779,7 +876,7 @@ function persistMangaBakaOutbox() {
 
 function enqueueMangaBakaLibraryItem(item, completedChapter = null) {
   const seriesId = Number(item?.mangabakaId);
-  if (!seriesId) return;
+  if (!seriesId || !state.mangabakaAccountKey) return;
   const existing = state.mangabakaOutbox.find((entry) => Number(entry.series_id) === seriesId) || {};
   const chapter = Number.isFinite(Number(completedChapter))
     ? Number(completedChapter)
@@ -788,7 +885,10 @@ function enqueueMangaBakaLibraryItem(item, completedChapter = null) {
     ...existing,
     series_id: seriesId,
     state: normalizedLibraryStatus(item),
+    accountKey: state.mangabakaAccountKey,
+    revision: state.mangabakaOutboxRevision + 1,
   };
+  state.mangabakaOutboxRevision = entry.revision;
   if (Number.isFinite(chapter) && chapter >= 0) {
     entry.progress_chapter = Math.max(Number(existing.progress_chapter) || 0, chapter);
   }
@@ -799,15 +899,28 @@ function enqueueMangaBakaLibraryItem(item, completedChapter = null) {
 }
 
 async function flushMangaBakaOutbox({ manual = false } = {}) {
-  if (!state.mangabakaConfigured || !state.mangabakaOutbox.length) return false;
+  if (!state.mangabakaConfigured || !state.mangabakaAccountKey || !state.mangabakaOutbox.length) return false;
   if (state.mangabakaSyncPromise) return state.mangabakaSyncPromise;
-  const entries = state.mangabakaOutbox.slice(0, 100).map((entry) => ({ ...entry }));
-  const request = postLocalJson("/api/mangabaka/library", { entries });
+  const entries = state.mangabakaOutbox
+    .filter((entry) => entry.accountKey === state.mangabakaAccountKey)
+    .slice(0, 100)
+    .map((entry) => ({ ...entry }));
+  if (!entries.length) return false;
+  const apiEntries = entries.map((entry) => {
+    const output = { series_id: entry.series_id, state: entry.state };
+    if (Number.isFinite(Number(entry.progress_chapter))) output.progress_chapter = Number(entry.progress_chapter);
+    return output;
+  });
+  const request = postLocalJson("/api/mangabaka/library", {
+    accountKey: state.mangabakaAccountKey,
+    entries: apiEntries,
+  });
+  let sentSuccessfully = false;
   state.mangabakaSyncPromise = request;
   try {
     await request;
-    const sentIds = new Set(entries.map((entry) => Number(entry.series_id)));
-    state.mangabakaOutbox = state.mangabakaOutbox.filter((entry) => !sentIds.has(Number(entry.series_id)));
+    sentSuccessfully = true;
+    state.mangabakaOutbox = retainUnacknowledgedMangaBakaEntries(state.mangabakaOutbox, entries);
     persistMangaBakaOutbox();
     if (manual) showToast("MangaBaka library synced.", "good");
     return true;
@@ -817,7 +930,68 @@ async function flushMangaBakaOutbox({ manual = false } = {}) {
     return false;
   } finally {
     if (state.mangabakaSyncPromise === request) state.mangabakaSyncPromise = null;
+    if (sentSuccessfully && state.mangabakaOutbox.some((entry) => entry.accountKey === state.mangabakaAccountKey)) {
+      window.setTimeout(() => void flushMangaBakaOutbox(), 50);
+    }
   }
+}
+
+function retainUnacknowledgedMangaBakaEntries(currentEntries, sentEntries) {
+  const sentRevisions = new Map(sentEntries.map((entry) => [
+    `${entry.accountKey}:${Number(entry.series_id)}`,
+    Number(entry.revision),
+  ]));
+  return currentEntries.filter((entry) => {
+    const sentRevision = sentRevisions.get(`${entry.accountKey}:${Number(entry.series_id)}`);
+    return sentRevision === undefined || Number(entry.revision) !== sentRevision;
+  });
+}
+
+function mangaBakaProfileKey(profile) {
+  const identifier = profile?.id ?? profile?.uuid ?? profile?.preferred_username;
+  return identifier === undefined || identifier === null ? "" : String(identifier);
+}
+
+function adoptMangaBakaAccount(profile) {
+  const accountKey = mangaBakaProfileKey(profile);
+  if (!accountKey) return;
+  if (state.mangabakaAccountKey && state.mangabakaAccountKey !== accountKey) {
+    state.mangabakaOutbox = [];
+  }
+  let mappingsChanged = false;
+  state.libraryItems = state.libraryItems.map((item) => {
+    if (!item.mangabakaId || item.mangabakaAccountKey === accountKey) return item;
+    const cleaned = { ...item };
+    delete cleaned.mangabakaId;
+    delete cleaned.mangabakaTitle;
+    delete cleaned.mangabakaMatchSource;
+    delete cleaned.mangabakaAccountKey;
+    mappingsChanged = true;
+    return cleaned;
+  });
+  state.mangabakaAccountKey = accountKey;
+  state.mangabakaOutbox = state.mangabakaOutbox.filter((entry) => entry.accountKey === accountKey);
+  persistMangaBakaOutbox();
+  if (mappingsChanged) {
+    saveLibraryItems();
+    renderLibrary();
+  }
+}
+
+function clearMangaBakaLocalState() {
+  state.mangabakaOutbox = [];
+  state.mangabakaAccountKey = "";
+  state.libraryItems = state.libraryItems.map((item) => {
+    const cleaned = { ...item };
+    delete cleaned.mangabakaId;
+    delete cleaned.mangabakaTitle;
+    delete cleaned.mangabakaMatchSource;
+    delete cleaned.mangabakaAccountKey;
+    return cleaned;
+  });
+  persistMangaBakaOutbox();
+  saveLibraryItems();
+  renderLibrary();
 }
 
 async function refreshMangaBakaStatus() {
@@ -825,6 +999,7 @@ async function refreshMangaBakaStatus() {
     const payload = await localJson("/api/mangabaka/status");
     state.mangabakaConfigured = Boolean(payload.configured);
     state.mangabakaConnected = Boolean(payload.connected);
+    if (payload.connected) adoptMangaBakaAccount(payload.profile);
     if (el.mangabakaState) el.mangabakaState.textContent = payload.connected ? "Connected" : "Not connected";
     if (el.disconnectMangabaka) el.disconnectMangabaka.hidden = !payload.configured;
     if (el.mangabakaNote) {
@@ -848,7 +1023,8 @@ async function connectMangaBaka() {
   if (!token) return showToast("Paste your MangaBaka token first.", "bad");
   setBusy(el.saveMangabaka, true, "Connecting");
   try {
-    await postLocalJson("/api/mangabaka/config", { token });
+    const connected = await postLocalJson("/api/mangabaka/config", { token });
+    adoptMangaBakaAccount(connected.profile);
     el.mangabakaToken.value = "";
     await refreshMangaBakaStatus();
     await matchMangaBakaLibrary();
@@ -864,6 +1040,7 @@ async function connectMangaBaka() {
 async function disconnectMangaBaka() {
   try {
     await postLocalJson("/api/mangabaka/config", { clear: true });
+    clearMangaBakaLocalState();
     state.mangabakaConfigured = false;
     state.mangabakaConnected = false;
     await refreshMangaBakaStatus();
@@ -875,17 +1052,21 @@ async function disconnectMangaBaka() {
 }
 
 async function matchMangaBakaLibrary() {
+  if (!state.mangabakaConnected || !state.mangabakaAccountKey) return 0;
   const candidates = state.libraryItems.filter((item) => !item.mangabakaId).slice(0, 20);
   let matched = 0;
   for (const item of candidates) {
     try {
       const payload = await localJson(`/api/mangabaka/search?q=${encodeURIComponent(item.mangaTitle || "")}`);
-      const exact = (payload.data || payload.results || []).find((series) =>
+      const exactMatches = (payload.data || payload.results || []).filter((series) =>
         mangaBakaTitles(series).some((title) => normalizeTitle(title) === normalizeTitle(item.mangaTitle))
       );
+      const exact = exactMatches.length === 1 ? exactMatches[0] : null;
       if (exact) {
         item.mangabakaId = Number(exact.id);
         item.mangabakaTitle = mangaBakaTitle(exact);
+        item.mangabakaMatchSource = "exact-title";
+        item.mangabakaAccountKey = state.mangabakaAccountKey;
         enqueueMangaBakaLibraryItem(item);
         matched += 1;
       }
@@ -1575,6 +1756,9 @@ function renderMangaResults() {
     });
     button.addEventListener("click", async () => {
       const mangabaka = mangaBakaMatchForManga(manga);
+      const accountScopedMangaBaka = mangabaka && state.mangabakaConnected && state.mangabakaAccountKey
+        ? mangabaka
+        : null;
       el.mangaId.value = manga.id;
       el.chapterTitle.textContent = manga.title;
       state.currentManga = {
@@ -1583,11 +1767,14 @@ function renderMangaResults() {
         sourceId: manga.sourceId,
         sourceLabel: sourceText,
         thumbnailUrl: manga.thumbnailUrl,
-        mangabakaId: mangabaka?.id,
-        mangabakaTitle: mangabaka ? mangaBakaTitle(mangabaka) : undefined,
+        mangabakaId: accountScopedMangaBaka?.id,
+        mangabakaTitle: accountScopedMangaBaka ? mangaBakaTitle(accountScopedMangaBaka) : undefined,
+        mangabakaMatchSource: accountScopedMangaBaka ? "recommendation" : undefined,
+        mangabakaAccountKey: accountScopedMangaBaka ? state.mangabakaAccountKey : undefined,
       };
       if (mangabaka) state.pendingMangaBakaRecommendation = null;
-      showMangaDetail(manga, sourceText);
+      state.mangaDetailOrigin = "browse";
+      showMangaDetail(manga, sourceText, { origin: "browse" });
       await fetchChapters();
     });
     card.append(button);
@@ -1612,10 +1799,21 @@ function showMangaDetail(manga, sourceText = "", options = {}) {
   if (!el.mangaDetail || !el.browseBody) return;
   const title = manga?.title || manga?.mangaTitle || "Selected manga";
   const source = sourceText || manga?.sourceLabel || "Suwayomi source";
+  state.mangaDetailOrigin = options.origin || state.mangaDetailOrigin || "browse";
   state.browseDiscoveryScroll = window.scrollY;
   el.mangaDetail.closest(".browse-view")?.classList.add("detail-open");
   el.browseBody.hidden = true;
   el.mangaDetail.hidden = false;
+  if (el.closeMangaDetail) {
+    el.closeMangaDetail.textContent = state.mangaDetailOrigin === "library" ? "‹ Library" : "‹ Browse";
+  }
+  if (state.mangaDetailOrigin === "library") {
+    el.appNavButtons.forEach((button) => {
+      const active = button.dataset.targetView === "library";
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-current", active ? "page" : "false");
+    });
+  }
   el.detailTitle.textContent = title;
   el.detailSource.textContent = source;
   el.detailCoverFallback.textContent = coverInitials(title);
@@ -1692,6 +1890,8 @@ async function addCurrentMangaToLibrary() {
       thumbnailUrl: state.currentManga.thumbnailUrl,
       mangabakaId: state.currentManga.mangabakaId,
       mangabakaTitle: state.currentManga.mangabakaTitle,
+      mangabakaMatchSource: state.currentManga.mangabakaMatchSource,
+      mangabakaAccountKey: state.currentManga.mangabakaAccountKey,
       libraryStatus: "plan_to_read",
       statusExplicit: true,
       started: false,
@@ -1903,7 +2103,7 @@ function normalizeLibraryItem(item) {
 }
 
 function setLibraryFilter(filter) {
-  if (![...libraryStatuses, "all"].includes(filter)) return;
+  if (!libraryFilterValues.includes(filter)) return;
   state.libraryFilter = filter;
   saveSettings();
   renderLibrary();
@@ -1949,7 +2149,14 @@ function renderLibrary() {
   });
   el.libraryFilterCounts.forEach((count) => {
     const filter = count.dataset.libraryCount;
-    count.textContent = String(filter === "all" ? allowedItems.filter((item) => !item.hidden).length : (statusCounts[filter] || 0));
+    const value = filter === "all"
+      ? allowedItems.filter((item) => !item.hidden).length
+      : filter === "reading"
+        ? (statusCounts.reading || 0) + (statusCounts.rereading || 0)
+        : filter === "other"
+          ? (statusCounts.dropped || 0) + (statusCounts.considering || 0)
+          : (statusCounts[filter] || 0);
+    count.textContent = String(value);
   });
   if (el.toggleHiddenLibrary) el.toggleHiddenLibrary.hidden = hiddenCount === 0 && !state.showHiddenLibrary;
   el.libraryCount.textContent = `${visibleItems.length} title${visibleItems.length === 1 ? "" : "s"}${hiddenCount ? ` · ${hiddenCount} hidden` : ""}`;
@@ -1958,7 +2165,7 @@ function renderLibrary() {
     const showHiddenAction = !state.showHiddenLibrary && hiddenCount > 0 && state.libraryFilter === "all";
     const message = showHiddenAction
       ? "Your current titles are hidden. Show hidden titles to bring them back."
-      : `No titles are currently marked ${state.libraryFilter === "all" ? "for this view" : (libraryStatusLabels[state.libraryFilter] || state.libraryFilter).toLowerCase()}.`;
+      : `No titles are currently marked ${state.libraryFilter === "all" ? "for this view" : state.libraryFilter === "other" ? "dropped or considering" : (libraryStatusLabels[state.libraryFilter] || state.libraryFilter).toLowerCase()}.`;
     const empty = document.createElement("div");
     empty.className = "app-empty-state";
     const art = document.createElement("span");
@@ -2109,11 +2316,15 @@ async function openReaderFromNav() {
     setActiveView("reader");
     return;
   }
-  const returnView = state.activeView === "reader" ? (state.previousView || "library") : state.activeView;
   el.navReader.setAttribute("aria-busy", "true");
   try {
     await selectLibraryManga(item, true);
-    if (!state.activeChapter || !state.pages.length) setActiveView(returnView);
+    if (!state.activeChapter || !state.pages.length) {
+      setActiveView("reader");
+      if (el.readerError?.hidden) {
+        showReaderError(`Could not resume ${item.mangaTitle}`, "The saved chapter did not finish loading.", openReaderFromNav);
+      }
+    }
   } catch (error) {
     const message = friendlySourceErrorMessage(error);
     setConnection(state.connected, `Could not resume ${item.mangaTitle}: ${message}`, "bad");
@@ -2154,7 +2365,13 @@ function visibleLibraryItems() {
   return sortLibraryItems(
     libraryItemsAllowedByNsfw()
       .filter((item) => state.showHiddenLibrary || !item.hidden)
-      .filter((item) => state.libraryFilter === "all" || normalizedLibraryStatus(item) === state.libraryFilter)
+      .filter((item) => {
+        const status = normalizedLibraryStatus(item);
+        if (state.libraryFilter === "all") return true;
+        if (state.libraryFilter === "reading") return status === "reading" || status === "rereading";
+        if (state.libraryFilter === "other") return status === "dropped" || status === "considering";
+        return status === state.libraryFilter;
+      })
   );
 }
 
@@ -2175,6 +2392,7 @@ async function withRetry(task, delays = [0]) {
     try {
       return await task(attempt);
     } catch (error) {
+      if (error?.name === "ReaderLoadCancelled") throw error;
       lastError = error;
     }
   }
@@ -2221,10 +2439,6 @@ function isNsfwLibraryItem(item) {
 }
 
 async function selectLibraryManga(item, resume) {
-  if (!resume) {
-    setActiveView("browse");
-    showMangaDetail(item, item.sourceLabel);
-  }
   state.currentManga = {
     id: item.mangaId,
     title: item.mangaTitle,
@@ -2233,7 +2447,14 @@ async function selectLibraryManga(item, resume) {
     thumbnailUrl: item.thumbnailUrl,
     mangabakaId: item.mangabakaId,
     mangabakaTitle: item.mangabakaTitle,
+    mangabakaMatchSource: item.mangabakaMatchSource,
+    mangabakaAccountKey: item.mangabakaAccountKey,
   };
+  if (!resume) {
+    state.mangaDetailOrigin = "library";
+    setActiveView("browse", { history: false });
+    showMangaDetail(state.currentManga, item.sourceLabel, { origin: "library" });
+  }
   updateReaderNav();
   el.mangaId.value = item.mangaId;
   el.chapterId.value = item.chapterId || "";
@@ -2405,7 +2626,10 @@ function showReaderComplete(message = "There isn’t another chapter ready from 
   if (!el.readerComplete) return;
   hideReaderError();
   el.readerCompleteMessage.textContent = message;
-  el.readerCompleteNext.hidden = state.activeChapter?.type !== "suwayomi";
+  const isSuwayomi = state.activeChapter?.type === "suwayomi";
+  const hasNextChapter = isSuwayomi && Boolean(nextSuwayomiChapterAfter(state.activeChapter.chapterId));
+  el.readerCompleteNext.hidden = !hasNextChapter;
+  if (el.readerCompleteRefresh) el.readerCompleteRefresh.hidden = !isSuwayomi || hasNextChapter;
   el.readerComplete.hidden = false;
   setReaderChromeVisible(true);
   el.readerCompleteChapters?.focus({ preventScroll: true });
@@ -2433,10 +2657,23 @@ function dismissReaderTapHint() {
 }
 
 function cancelReaderLoading() {
+  abortActiveReaderLoad();
   cancelReaderNavigation();
-  state.prepareGeneration += 1;
   setReaderLoading(false);
   leaveReaderView();
+}
+
+async function refreshCompletedChapterList() {
+  setBusy(el.readerCompleteRefresh, true, "Refreshing");
+  try {
+    await fetchChapters({ background: true, liveOnly: true });
+    const hasNext = state.activeChapter?.type === "suwayomi" && Boolean(nextSuwayomiChapterAfter(state.activeChapter.chapterId));
+    showReaderComplete(hasNext
+      ? "A new chapter is ready."
+      : "You’re caught up. No later chapter is available from this release group yet.");
+  } finally {
+    setBusy(el.readerCompleteRefresh, false);
+  }
 }
 
 function openCurrentChapterList() {
@@ -2464,6 +2701,8 @@ function rememberReadingProgress() {
     thumbnailUrl: state.currentManga.thumbnailUrl || existing?.thumbnailUrl,
     mangabakaId: state.currentManga.mangabakaId || existing?.mangabakaId,
     mangabakaTitle: state.currentManga.mangabakaTitle || existing?.mangabakaTitle,
+    mangabakaMatchSource: state.currentManga.mangabakaMatchSource || existing?.mangabakaMatchSource,
+    mangabakaAccountKey: state.currentManga.mangabakaAccountKey || existing?.mangabakaAccountKey,
     started: true,
     libraryStatus: existing?.libraryStatus === "completed" ? "rereading" : "reading",
     statusExplicit: Boolean(existing?.statusExplicit),
@@ -3022,6 +3261,14 @@ async function loadChapterPages(options = {}) {
     return;
   }
 
+  state.readerLoadController?.abort();
+  state.prepareGeneration += 1;
+  const loadController = new AbortController();
+  const loadRequestId = state.readerLoadRequestId + 1;
+  state.readerLoadRequestId = loadRequestId;
+  state.readerLoadController = loadController;
+  const loadIsCurrent = () => loadRequestId === state.readerLoadRequestId && !loadController.signal.aborted;
+
   setActiveView("reader");
   hideReaderError();
   setReaderChromeVisible(true);
@@ -3031,9 +3278,14 @@ async function loadChapterPages(options = {}) {
     if (!options.skipLibraryEnsure) {
       await ensureCurrentMangaInSuwayomiLibrary().catch(() => false);
     }
-    const data = await fetchChapterPagePayload(chapterId, options.fastResume ? { retries: false, timeoutMs: 12000 } : {});
+    const data = await fetchChapterPagePayload(chapterId, {
+      ...(options.fastResume ? { retries: false, timeoutMs: 12000 } : {}),
+      signal: loadController.signal,
+    });
+    if (!loadIsCurrent()) return;
     const chapter = data.fetchChapterPages?.chapter;
-    const pages = await resolveChapterPages(data.fetchChapterPages);
+    const pages = await resolveChapterPages(data.fetchChapterPages, { isCurrent: loadIsCurrent });
+    if (!loadIsCurrent()) return;
     if (!pages.length) throw new Error("Source returned no readable page URLs.");
     const listedChapter = state.chapters.find((item) => Number(item.id) === chapterId) || options.chapter || null;
     if (!state.pendingResume && listedChapter && !listedChapter.isRead && Number(listedChapter.lastPageRead) > 0) {
@@ -3051,39 +3303,45 @@ async function loadChapterPages(options = {}) {
     };
     await loadChapter(
       pages.map(normalizeSuwayomiPageUrl),
-      el.chapterTitle.textContent || listedChapter?.name || chapter?.name || `Chapter ${chapterId}`
+      el.chapterTitle.textContent || listedChapter?.name || chapter?.name || `Chapter ${chapterId}`,
+      { requestIsCurrent: loadIsCurrent }
     );
+    if (!loadIsCurrent()) return;
     rememberReadingProgress();
     void ensureDownloadAhead(chapterId);
     setConnection(true, `Loaded ${pages.length} pages. Panel detection is running locally.`, "good");
   } catch (error) {
+    if (error?.name === "ReaderLoadCancelled" || !loadIsCurrent()) return;
     const message = friendlySourceErrorMessage(error);
     setConnection(false, `Could not load chapter pages: ${message}`, "bad");
     showReaderError("Could not open this chapter", message, () => loadChapterPages(options));
     setReaderLoading(false);
   } finally {
-    setBusy(el.loadChapterPages, false);
+    if (loadRequestId === state.readerLoadRequestId) {
+      state.readerLoadController = null;
+      setBusy(el.loadChapterPages, false);
+    }
   }
 }
 
-function fetchChapterPagePayload(chapterId, { retries = true, timeoutMs = 45000 } = {}) {
+function fetchChapterPagePayload(chapterId, { retries = true, timeoutMs = 45000, signal = null } = {}) {
   const delays = retries ? chapterFetchRetryDelaysMs : [0];
   return withRetry(
-    () => graphQL(queries.fetchPages, { input: { chapterId } }, { timeoutMs }),
+    () => graphQL(queries.fetchPages, { input: { chapterId } }, { timeoutMs, signal }),
     delays
   );
 }
 
-async function resolveChapterPages(fetchPayload, { quiet = false } = {}) {
+async function resolveChapterPages(fetchPayload, { quiet = false, isCurrent = () => true } = {}) {
   const pages = fetchPayload?.pages || [];
   if (pages.length) return pages;
 
   const chapter = fetchPayload?.chapter;
   const sourceName = `${chapter?.manga?.source?.name || ""} ${chapter?.manga?.source?.displayName || ""}`;
   if (/readcomiconline/i.test(sourceName) && chapter?.realUrl) {
-    if (!quiet) setReaderLoading(true, "ReadComicOnline needs a local page fallback...", 18);
+    if (!quiet && isCurrent()) setReaderLoading(true, "ReadComicOnline needs a local page fallback...", 18);
     const payload = await localJson(`/api/readcomiconline/chapter?url=${encodeURIComponent(chapter.realUrl)}`);
-    if (payload.pages?.length) {
+    if (isCurrent() && payload.pages?.length) {
       return payload.pages;
     }
   }
@@ -3092,14 +3350,17 @@ async function resolveChapterPages(fetchPayload, { quiet = false } = {}) {
 }
 
 async function loadChapter(pageUrls, title, options = {}) {
+  const requestIsCurrent = typeof options.requestIsCurrent === "function" ? options.requestIsCurrent : () => true;
+  if (!requestIsCurrent()) return;
+  const generation = state.prepareGeneration + 1;
+  state.prepareGeneration = generation;
+  const loadIsCurrent = () => generation === state.prepareGeneration && requestIsCurrent();
   cancelReaderNavigation();
   clearNextChapterPrefetch();
   hideReaderError();
   hideReaderComplete();
   setActiveView("reader");
   setReaderLoading(true, "Preparing chapter...", 28);
-  const generation = state.prepareGeneration + 1;
-  state.prepareGeneration = generation;
   state.backgroundPreparing = false;
   state.chapterPageUrls = pageUrls.slice();
   state.pageIndex = 0;
@@ -3119,7 +3380,7 @@ async function loadChapter(pageUrls, title, options = {}) {
     const initialImage = preparedPages?.[initialPageIndex]?.image ||
       (initialPageIndex === 0 ? options.firstImage : null) ||
       await loadImage(pageUrls[initialPageIndex]);
-    if (generation !== state.prepareGeneration) return;
+    if (!loadIsCurrent()) return;
     autoSelectPanelMode(initialImage);
     if (
       state.pendingResume &&
@@ -3149,12 +3410,16 @@ async function loadChapter(pageUrls, title, options = {}) {
           initialImages: initialPageIndex === 0 ? [{ url: pageUrls[0], image: initialImage }] : [],
         }),
       ];
+      if (!loadIsCurrent()) return;
     } else {
       setReaderLoading(true, `Preparing page ${initialPageIndex + 1} of ${state.pages.length}...`, 44);
-      await preparePage(initialPageIndex, { generation, image: initialImage });
+      await preparePage(initialPageIndex, { generation, image: initialImage, isCurrent: requestIsCurrent });
+      if (!loadIsCurrent()) return;
     }
-    await applyPendingResume(generation);
+    await applyPendingResume(generation, requestIsCurrent);
+    if (!loadIsCurrent()) return;
     setReaderLoading(true, "Rendering reader...", 92);
+    if (!loadIsCurrent()) return;
     renderCurrentPage();
     renderPanelStrip();
     updateStats();
@@ -3167,16 +3432,18 @@ async function loadChapter(pageUrls, title, options = {}) {
       setReaderFocus(true);
       setReaderChromeVisible(false);
     }
-    window.setTimeout(showReaderTapHintOnce, 350);
+    window.setTimeout(() => {
+      if (loadIsCurrent()) showReaderTapHintOnce();
+    }, 350);
   } finally {
-    setReaderLoading(false);
+    if (loadIsCurrent()) setReaderLoading(false);
   }
 }
 
-async function applyPendingResume(generation) {
+async function applyPendingResume(generation, requestIsCurrent = () => true) {
+  if (generation !== state.prepareGeneration || !requestIsCurrent()) return;
   const resume = state.pendingResume;
   if (!resume || Number(resume.chapterId) !== Number(state.activeChapter?.chapterId)) return;
-  state.pendingResume = null;
   const resumeMode = normalizedResumePanelMode(resume);
   if (isPanelMode(resumeMode)) {
     state.panelMode = resumeMode;
@@ -3188,11 +3455,13 @@ async function applyPendingResume(generation) {
   const pageIndex = clamp(Number(resume.pageIndex) || 0, 0, Math.max(0, state.pages.length - 1));
   state.pageIndex = pageIndex;
   if (state.panelMode !== "webtoon") {
-    await preparePage(pageIndex, { generation });
+    await preparePage(pageIndex, { generation, isCurrent: requestIsCurrent });
+    if (generation !== state.prepareGeneration || !requestIsCurrent()) return;
   }
   const page = state.pages[state.pageIndex];
   state.panelIndex = clamp(Number(resume.panelIndex) || 0, 0, Math.max(0, (page?.panels.length || 1) - 1));
   state.fullPage = false;
+  state.pendingResume = null;
 }
 
 function autoSelectPanelMode(image) {
@@ -3262,7 +3531,11 @@ async function preparePage(index, options = {}) {
   const quiet = typeof options === "object" && Boolean(options.quiet);
   const generation = typeof options === "object" ? options.generation : state.prepareGeneration;
   const preloadedImage = typeof options === "object" ? options.image : null;
-  if (generation !== state.prepareGeneration) return null;
+  const requestIsCurrent = typeof options === "object" && typeof options.isCurrent === "function"
+    ? options.isCurrent
+    : () => true;
+  const preparationIsCurrent = () => generation === state.prepareGeneration && requestIsCurrent();
+  if (!preparationIsCurrent()) return null;
   const page = state.pages[index];
   if (!page || (page.detected && page.panelMode === state.panelMode && page.readingDirection === state.readingDirection && !force)) return page;
   if (
@@ -3277,7 +3550,8 @@ async function preparePage(index, options = {}) {
     direction: state.readingDirection,
     quiet,
     image: preloadedImage,
-  }).then((preparedPage) => generation === state.prepareGeneration ? preparedPage : null);
+    isCurrent: preparationIsCurrent,
+  }).then((preparedPage) => preparationIsCurrent() ? preparedPage : null);
   page.preparePromise = preparation;
   page.preparePromiseMode = state.panelMode;
   page.preparePromiseDirection = state.readingDirection;
@@ -3296,25 +3570,31 @@ async function preparePageEntry(page, index, totalPages, options = {}) {
   const mode = options.mode || "manga";
   const direction = options.direction || "rtl";
   const quiet = Boolean(options.quiet);
+  const isCurrent = typeof options.isCurrent === "function" ? options.isCurrent : () => true;
   const pageLabel = `page ${index + 1} of ${totalPages}`;
   const baseProgress = index === 0 ? 46 : 18;
+  if (!isCurrent()) return null;
   if (!quiet) setReaderLoading(true, `Loading image for ${pageLabel}...`, baseProgress);
   const image = options.image || page.image || await loadImage(page.url);
-  page.loadAttempts = image.panelPilotLoadAttempts || 1;
-  page.image = image;
-  page.renderUrl = image.currentSrc || image.src || page.url;
-  page.naturalWidth = image.naturalWidth;
-  page.naturalHeight = image.naturalHeight;
+  if (!isCurrent()) return null;
+  const naturalWidth = image.naturalWidth;
+  const naturalHeight = image.naturalHeight;
   const modeLabel = mode === "webtoon" ? "Detecting webtoon panels" : mode === "comic" ? "Detecting comic regions" : "Detecting panels";
   if (!quiet) setReaderLoading(true, `${modeLabel} on ${pageLabel}...`, Math.max(baseProgress + 28, 58));
   const detectedPanels =
     mode === "webtoon"
       ? makeWebtoonPanels(image)
       : mode === "comic"
-        ? await detectComicPanels(image, direction).catch(() => [fullPagePanel(page.naturalWidth, page.naturalHeight)])
-        : await detectPanels(image, direction, page.url).catch(() => [fullPagePanel(page.naturalWidth, page.naturalHeight)]);
-  page.panels = sanitizePanels(detectedPanels, page.naturalWidth, page.naturalHeight);
+        ? await detectComicPanels(image, direction).catch(() => [fullPagePanel(naturalWidth, naturalHeight)])
+        : await detectPanels(image, direction, page.url).catch(() => [fullPagePanel(naturalWidth, naturalHeight)]);
+  if (!isCurrent()) return null;
   if (!quiet) setReaderLoading(true, `Finishing ${pageLabel}...`, 88);
+  page.loadAttempts = image.panelPilotLoadAttempts || 1;
+  page.image = image;
+  page.renderUrl = image.currentSrc || image.src || page.url;
+  page.naturalWidth = naturalWidth;
+  page.naturalHeight = naturalHeight;
+  page.panels = sanitizePanels(detectedPanels, naturalWidth, naturalHeight);
   page.detected = true;
   page.panelMode = mode;
   page.readingDirection = direction;
@@ -6147,6 +6427,8 @@ function drawDemoPanel(ctx, [x, y, w, h], index) {
 }
 
 async function loadDemo() {
+  state.activeChapter = { type: "demo" };
+  state.pendingResume = null;
   await loadChapter([makeDemoPage(1), makeDemoPage(2)], "Demo chapter");
   setConnection(state.connected, "Demo chapter loaded. This uses the same local detector as Suwayomi pages.", "good");
 }
@@ -6285,6 +6567,7 @@ function wireEvents() {
       showReaderComplete(`The next chapter could not be opened yet: ${friendlySourceErrorMessage(error)}`);
     });
   });
+  el.readerCompleteRefresh?.addEventListener("click", refreshCompletedChapterList);
   el.readerCompleteChapters?.addEventListener("click", openCurrentChapterList);
   el.readerCompleteLibrary?.addEventListener("click", () => {
     hideReaderComplete();
@@ -6458,6 +6741,8 @@ window.PanelPilot = {
   fullPagePanel,
   loadImage,
   readerTapAction,
+  retainUnacknowledgedMangaBakaEntries,
+  sanitizeMangaBakaOutbox,
   sortPanels,
 };
 

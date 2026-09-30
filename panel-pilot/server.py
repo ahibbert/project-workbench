@@ -915,10 +915,20 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         self.send_json(payload)
 
     def handle_mangabaka_library_post(self):
-        if not read_mangabaka_token():
+        token = read_mangabaka_token()
+        if not token:
             self.send_json({"error": "Connect MangaBaka before syncing reading progress"}, status=409)
             return
         payload = self.read_json_request(131072)
+        expected_account = str(payload.get("accountKey") or "").strip()
+        if not expected_account or len(expected_account) > 200:
+            raise ValueError("MangaBaka library sync requires the connected account identity")
+        profile_payload = self.mangabaka_json("/v1/my/profile", token=token)
+        profile = profile_payload.get("data") or profile_payload.get("profile") or {}
+        active_account = str(profile.get("id") or profile.get("uuid") or profile.get("preferred_username") or "")
+        if not active_account or not hmac.compare_digest(active_account, expected_account):
+            self.send_json({"error": "MangaBaka account changed before this sync could finish"}, status=409)
+            return
         entries = payload.get("entries")
         if not isinstance(entries, list) or not entries or len(entries) > 100:
             raise ValueError("MangaBaka library sync expects 1 to 100 entries")
@@ -938,7 +948,7 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             cleaned.append(output)
         if not cleaned:
             raise ValueError("No valid MangaBaka library entries were supplied")
-        result = self.mangabaka_json("/v1/my/library/batch", method="POST", payload=cleaned)
+        result = self.mangabaka_json("/v1/my/library/batch", method="POST", payload=cleaned, token=token)
         self.send_json(result)
 
     def handle_panel_report_post(self):
@@ -1109,7 +1119,7 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             return []
         cleaned = []
         seen = set()
-        text_fields = ("mangaTitle", "sourceId", "sourceLabel", "chapterTitle", "panelMode", "readingDirection", "progressLabel", "updatedAt", "libraryStatus", "mangabakaTitle")
+        text_fields = ("mangaTitle", "sourceId", "sourceLabel", "chapterTitle", "panelMode", "readingDirection", "progressLabel", "updatedAt", "libraryStatus", "mangabakaTitle", "mangabakaMatchSource", "mangabakaAccountKey")
         number_fields = ("mangaId", "chapterId", "pageIndex", "panelIndex", "mangabakaId")
         bool_fields = ("pinned", "hidden", "isNsfw", "statusExplicit", "suwayomiLibrary", "started")
         for item in items:
