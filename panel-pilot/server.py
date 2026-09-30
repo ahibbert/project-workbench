@@ -1,6 +1,7 @@
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError
 import base64
 import hashlib
 import hmac
@@ -24,13 +25,54 @@ USER_AGENT = (
 LIBRARY_PATH = os.environ.get("PANEL_PILOT_LIBRARY_PATH", "/app/data/library.json")
 REPORTS_PATH = os.environ.get("PANEL_PILOT_REPORTS_PATH", "/app/data/panel-reports")
 DOWNLOAD_BUFFER_PATH = os.environ.get("PANEL_PILOT_DOWNLOAD_BUFFER_PATH", "/app/data/download-buffer.json")
+MANGABAKA_CONFIG_PATH = os.environ.get("PANEL_PILOT_MANGABAKA_CONFIG_PATH", "/app/data/mangabaka-config.json")
+MANGABAKA_API_BASE = "https://api.mangabaka.org"
 LIBRARY_LIMIT = 5000
 LIBRARY_LOCK = threading.Lock()
 REPORT_LOCK = threading.Lock()
 DETECTOR_CACHE_LOCK = threading.Lock()
+MANGABAKA_LOCK = threading.Lock()
 DOWNLOAD_BUFFER_MANAGER = None
 SESSION_COOKIE = "panel_pilot_session"
 SESSION_MAX_AGE = int(os.environ.get("PANEL_PILOT_SESSION_MAX_AGE", str(30 * 24 * 60 * 60)))
+
+
+def read_mangabaka_token():
+    configured = os.environ.get("MANGABAKA_API_KEY", "").strip()
+    if configured:
+        return configured
+    try:
+        with MANGABAKA_LOCK, open(MANGABAKA_CONFIG_PATH, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        return str(payload.get("token") or "").strip()
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return ""
+
+
+def write_mangabaka_token(token):
+    directory = os.path.dirname(MANGABAKA_CONFIG_PATH) or "."
+    os.makedirs(directory, exist_ok=True)
+    with MANGABAKA_LOCK:
+        if not token:
+            try:
+                os.unlink(MANGABAKA_CONFIG_PATH)
+            except FileNotFoundError:
+                pass
+            return
+        temporary_path = ""
+        try:
+            with tempfile.NamedTemporaryFile("w", dir=directory, delete=False, encoding="utf-8") as handle:
+                temporary_path = handle.name
+                json.dump({"token": token}, handle)
+                handle.write("\n")
+            try:
+                os.chmod(temporary_path, 0o600)
+            except OSError:
+                pass
+            os.replace(temporary_path, MANGABAKA_CONFIG_PATH)
+        finally:
+            if temporary_path and os.path.exists(temporary_path):
+                os.unlink(temporary_path)
 
 
 def fetch_url(url, accept="*/*", referer="https://comick.live/"):
@@ -618,6 +660,12 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/download-buffer":
                 self.handle_download_buffer_post()
                 return
+            if parsed.path == "/api/mangabaka/config":
+                self.handle_mangabaka_config_post()
+                return
+            if parsed.path == "/api/mangabaka/library":
+                self.handle_mangabaka_library_post()
+                return
             if parsed.path == "/api/detect/manga":
                 self.handle_manga_detection()
                 return
@@ -724,11 +772,174 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/library":
                 self.handle_library_get()
                 return
+            if parsed.path == "/api/mangabaka/status":
+                self.handle_mangabaka_status()
+                return
+            if parsed.path == "/api/mangabaka/recommendations":
+                self.handle_mangabaka_recommendations(parsed)
+                return
+            if parsed.path == "/api/mangabaka/search":
+                self.handle_mangabaka_search(parsed)
+                return
         except Exception as error:
             self.send_json({"error": str(error)}, status=502)
             return
 
         super().do_GET()
+
+    def mangabaka_json(self, path, method="GET", payload=None, token=None):
+        if not path.startswith("/") or path.startswith("//"):
+            raise ValueError("Invalid MangaBaka API path")
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "PanelPilot/1.0 (+https://panels.aydins-workbench.com)",
+        }
+        active_token = token if token is not None else read_mangabaka_token()
+        if active_token:
+            headers["x-api-key"] = active_token
+        body = None
+        if payload is not None:
+            body = json.dumps(payload).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        request = Request(f"{MANGABAKA_API_BASE}{path}", data=body, headers=headers, method=method)
+        try:
+            with urlopen(request, timeout=30) as response:
+                content = response.read(6000000)
+                if len(content) >= 6000000:
+                    raise ValueError("MangaBaka response was too large")
+                return json.loads(content.decode("utf-8") or "{}")
+        except HTTPError as error:
+            try:
+                detail = json.loads(error.read(65536).decode("utf-8", errors="replace"))
+                message = detail.get("message") or detail.get("error") or f"HTTP {error.code}"
+            except Exception:
+                message = f"HTTP {error.code}"
+            raise RuntimeError(f"MangaBaka request failed: {message}") from error
+
+    def read_json_request(self, maximum=131072):
+        length = int(self.headers.get("Content-Length", "0"))
+        if length < 1 or length > maximum:
+            raise ValueError("Request body is empty or too large")
+        return json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+
+    def handle_mangabaka_config_post(self):
+        payload = self.read_json_request(16384)
+        if payload.get("clear") is True:
+            if os.environ.get("MANGABAKA_API_KEY", "").strip():
+                raise ValueError("The MangaBaka token is configured by the server environment and cannot be removed here")
+            write_mangabaka_token("")
+            self.send_json({"configured": False})
+            return
+        token = str(payload.get("token") or "").strip()
+        if not token.startswith("mb-") or len(token) < 12 or len(token) > 512:
+            raise ValueError("Enter a valid MangaBaka Personal Access Token beginning with mb-")
+        profile = self.mangabaka_json("/v1/my/profile", token=token)
+        write_mangabaka_token(token)
+        self.send_json({"configured": True, "profile": profile.get("data") or profile.get("profile") or {}})
+
+    def handle_mangabaka_status(self):
+        token = read_mangabaka_token()
+        if not token:
+            self.send_json({"configured": False, "connected": False})
+            return
+        try:
+            profile = self.mangabaka_json("/v1/my/profile", token=token)
+            readiness = self.mangabaka_json("/v1/my/series/recommendations/status", token=token)
+        except Exception as error:
+            self.send_json({"configured": True, "connected": False, "error": str(error)})
+            return
+        self.send_json({
+            "configured": True,
+            "connected": True,
+            "profile": profile.get("data") or profile.get("profile") or {},
+            "recommendations": readiness,
+        })
+
+    def handle_mangabaka_recommendations(self, parsed):
+        params = parse_qs(parsed.query)
+        limit = max(1, min(20, int(params.get("limit", [12])[0])))
+        token = read_mangabaka_token()
+        ratings = [("content_rating", "safe"), ("content_rating", "suggestive")]
+        if token:
+            query = urlencode([("limit", limit), *ratings])
+            try:
+                payload = self.mangabaka_json(f"/v1/my/series/recommendations?{query}", token=token)
+                self.send_json({"configured": True, "mode": "personalized", **payload})
+                return
+            except Exception:
+                # Discovery remains useful while a revoked or under-scoped token is repaired.
+                token = ""
+
+        public_rails = []
+        per_rail = limit
+        public_paths = (
+            ("rising", "/v2/series/discover/rising"),
+            ("hidden_gem", "/v2/series/discover/hidden-gems"),
+        )
+        for reason_type, path in public_paths:
+            query = urlencode([("limit", per_rail), *ratings])
+            payload = self.mangabaka_json(f"{path}?{query}", token="")
+            rail = []
+            for series in payload.get("data") or []:
+                if str(series.get("type") or series.get("media_type") or "").lower() not in {"manga", "manhwa", "manhua", "oel"}:
+                    continue
+                rail.append({
+                    **series,
+                    "reason": {"reason_type": reason_type, "top_tags": [], "reason_seeds": []},
+                })
+            public_rails.append(rail)
+        public_results = []
+        for index in range(per_rail):
+            for rail in public_rails:
+                if index < len(rail):
+                    public_results.append(rail[index])
+        unique_results = []
+        seen = set()
+        for series in public_results:
+            series_id = int(series.get("id") or 0)
+            if not series_id or series_id in seen:
+                continue
+            seen.add(series_id)
+            unique_results.append(series)
+            if len(unique_results) >= limit:
+                break
+        self.send_json({"configured": False, "mode": "public", "results": unique_results})
+
+    def handle_mangabaka_search(self, parsed):
+        params = parse_qs(parsed.query)
+        query = str(params.get("q", [""])[0]).strip()
+        if not query or len(query) > 300:
+            raise ValueError("Enter a MangaBaka search title")
+        api_query = urlencode({"q": query, "limit": 8, "schema": "full"})
+        payload = self.mangabaka_json(f"/v2/series/search?{api_query}", token="")
+        self.send_json(payload)
+
+    def handle_mangabaka_library_post(self):
+        if not read_mangabaka_token():
+            self.send_json({"error": "Connect MangaBaka before syncing reading progress"}, status=409)
+            return
+        payload = self.read_json_request(131072)
+        entries = payload.get("entries")
+        if not isinstance(entries, list) or not entries or len(entries) > 100:
+            raise ValueError("MangaBaka library sync expects 1 to 100 entries")
+        allowed_states = {"considering", "completed", "dropped", "paused", "plan_to_read", "reading", "rereading"}
+        cleaned = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            series_id = int(entry.get("series_id") or 0)
+            state = str(entry.get("state") or "reading")
+            if series_id < 1 or state not in allowed_states:
+                continue
+            output = {"series_id": series_id, "state": state}
+            progress = entry.get("progress_chapter")
+            if isinstance(progress, (int, float)) and 0 <= progress <= 10000:
+                output["progress_chapter"] = progress
+            cleaned.append(output)
+        if not cleaned:
+            raise ValueError("No valid MangaBaka library entries were supplied")
+        result = self.mangabaka_json("/v1/my/library/batch", method="POST", payload=cleaned)
+        self.send_json(result)
 
     def handle_panel_report_post(self):
         length = int(self.headers.get("Content-Length", "0"))
@@ -898,9 +1109,9 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             return []
         cleaned = []
         seen = set()
-        text_fields = ("mangaTitle", "sourceId", "sourceLabel", "chapterTitle", "panelMode", "readingDirection", "progressLabel", "updatedAt")
-        number_fields = ("mangaId", "chapterId", "pageIndex", "panelIndex")
-        bool_fields = ("pinned", "hidden", "isNsfw")
+        text_fields = ("mangaTitle", "sourceId", "sourceLabel", "chapterTitle", "panelMode", "readingDirection", "progressLabel", "updatedAt", "libraryStatus", "mangabakaTitle")
+        number_fields = ("mangaId", "chapterId", "pageIndex", "panelIndex", "mangabakaId")
+        bool_fields = ("pinned", "hidden", "isNsfw", "statusExplicit", "suwayomiLibrary", "started")
         for item in items:
             if not isinstance(item, dict):
                 continue
@@ -909,6 +1120,9 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
                 value = item.get(field)
                 if isinstance(value, int) and value >= 0:
                     output[field] = value
+            completed_chapter = item.get("completedChapter")
+            if isinstance(completed_chapter, (int, float)) and completed_chapter >= 0:
+                output["completedChapter"] = completed_chapter
             for field in text_fields:
                 value = item.get(field)
                 if isinstance(value, (str, int, float)):

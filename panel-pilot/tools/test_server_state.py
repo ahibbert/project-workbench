@@ -52,6 +52,25 @@ class LibraryMergeTests(unittest.TestCase):
         self.assertEqual(merged[0]["pageIndex"], 9)
         self.assertTrue(merged[0]["pinned"])
 
+    def test_library_cleaner_keeps_status_and_mangabaka_link(self):
+        cleaned = self.handler.clean_library_items([{
+            "sourceId": "source",
+            "mangaId": 7,
+            "mangaTitle": "Kingdom",
+            "libraryStatus": "reading",
+            "statusExplicit": True,
+            "started": True,
+            "mangabakaId": 1797,
+            "mangabakaTitle": "Kingdom",
+            "completedChapter": 486.5,
+        }])
+
+        self.assertEqual(cleaned[0]["libraryStatus"], "reading")
+        self.assertTrue(cleaned[0]["statusExplicit"])
+        self.assertTrue(cleaned[0]["started"])
+        self.assertEqual(cleaned[0]["mangabakaId"], 1797)
+        self.assertEqual(cleaned[0]["completedChapter"], 486.5)
+
 
 if __name__ == "__main__":
     unittest.main()

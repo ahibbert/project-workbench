@@ -12,7 +12,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>Panel Pilot</title>
     <link rel="manifest" href="manifest.webmanifest">
-    <link rel="stylesheet" href="styles.css?v=48">
+    <link rel="stylesheet" href="styles.css?v=49">
   </head>
   <body>
     <main class="app-shell">
@@ -129,6 +129,13 @@
             <h2>Your Library</h2>
             <span class="section-count" id="library-count">0 titles</span>
           </div>
+          <div class="library-filters" id="library-filters" role="tablist" aria-label="Library status">
+            <button class="library-filter active" type="button" role="tab" aria-selected="true" data-library-filter="reading">Reading <span data-library-count="reading">0</span></button>
+            <button class="library-filter" type="button" role="tab" aria-selected="false" data-library-filter="plan_to_read">Plan <span data-library-count="plan_to_read">0</span></button>
+            <button class="library-filter" type="button" role="tab" aria-selected="false" data-library-filter="paused">Paused <span data-library-count="paused">0</span></button>
+            <button class="library-filter" type="button" role="tab" aria-selected="false" data-library-filter="completed">Completed <span data-library-count="completed">0</span></button>
+            <button class="library-filter" type="button" role="tab" aria-selected="false" data-library-filter="all">All <span data-library-count="all">0</span></button>
+          </div>
           <div id="library-body">
             <div class="cover-grid library-list" id="library-list" aria-live="polite"></div>
           </div>
@@ -144,6 +151,16 @@
         </header>
 
         <section class="browse-discovery" id="browse-body">
+          <section class="recommendation-section" id="mangabaka-recommendations" aria-labelledby="mangabaka-recommendations-title">
+            <div class="section-heading">
+              <div>
+                <h2 id="mangabaka-recommendations-title">Recommended for you</h2>
+                <p class="recommendation-note" id="mangabaka-recommendations-note">Loading MangaBaka discovery…</p>
+              </div>
+              <button class="mini-button" id="refresh-mangabaka" type="button">Refresh</button>
+            </div>
+            <div class="recommendation-rail" id="mangabaka-results" aria-live="polite"></div>
+          </section>
           <div class="search-bar">
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>
             <input id="search-query" type="search" placeholder="Search manga" aria-label="Search manga">
@@ -258,6 +275,11 @@
             <button class="segmented active" id="rtl-order" type="button">RTL</button>
             <button class="segmented" id="ltr-order" type="button">LTR</button>
           </div>
+          <div class="toggle-row" role="group" aria-label="Panel transition speed">
+            <button class="segmented active" id="motion-smooth" type="button">Smooth</button>
+            <button class="segmented" id="motion-quick" type="button">Quick</button>
+            <button class="segmented" id="motion-instant" type="button">Instant</button>
+          </div>
           <details class="settings-detail">
             <summary>Panel detection</summary>
             <span class="small-count" id="panel-count">0 detected</span>
@@ -282,6 +304,25 @@
           </div>
           <p class="note" id="sync-note" aria-live="polite">Enable <strong>Enhanced Tracking → Suwayomi</strong> in Tachimanga after adding its Suwayomi extension.</p>
           <p class="note" id="offline-note" aria-live="polite">Server chapter buffer: checking current and queued downloads…</p>
+        </section>
+
+        <section class="panel mangabaka-panel">
+          <div class="panel-heading">
+            <h2>MangaBaka</h2>
+            <span class="small-count" id="mangabaka-state">Not connected</span>
+          </div>
+          <p class="note">Personalized discovery and chapter-level tracking. Your token is stored on this server and is never returned to the browser.</p>
+          <label class="field">
+            <span>Personal Access Token</span>
+            <input id="mangabaka-token" type="password" autocomplete="off" spellcheck="false" placeholder="mb-…">
+          </label>
+          <div class="button-row">
+            <button id="save-mangabaka" type="button">Connect</button>
+            <button id="disconnect-mangabaka" type="button" class="quiet-card-action" hidden>Disconnect</button>
+            <a class="button-link" href="https://mangabaka.org/my/settings/api-and-apps" target="_blank" rel="noopener">Create token</a>
+          </div>
+          <p class="note" id="mangabaka-note" aria-live="polite">Public recommendations remain available without an account.</p>
+          <p class="note">Metadata and recommendations provided by <a href="https://mangabaka.org" target="_blank" rel="noopener">MangaBaka</a>.</p>
         </section>
 
         <section class="panel account-panel">
@@ -326,6 +367,6 @@
     <div class="app-toast" id="app-toast" role="status" aria-live="polite" hidden></div>
     <button class="app-update" id="app-update" type="button" hidden>Update ready · Restart app</button>
 
-    <script src="script.js?v=97"></script>
+    <script src="script.js?v=98"></script>
   </body>
 </html>

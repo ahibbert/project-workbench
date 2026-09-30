@@ -13,6 +13,7 @@
   --ok: #2f7a4e;
   --shadow: 0 18px 50px rgba(35, 42, 37, 0.12);
   --radius: 12px;
+  --reader-motion-duration: 220ms;
 }
 
 * {
@@ -228,7 +229,8 @@ h2 {
   max-width: none;
   max-height: none;
   transform-origin: 0 0;
-  transition: width 180ms ease, height 180ms ease, transform 260ms ease;
+  transition: transform var(--reader-motion-duration) cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform, opacity;
   box-shadow: var(--shadow);
   background: #fff;
 }
@@ -241,7 +243,8 @@ h2 {
   max-height: none;
   overflow: hidden;
   transform-origin: 0 0;
-  transition: width 180ms ease, height 180ms ease, transform 260ms ease;
+  transition: transform var(--reader-motion-duration) cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform, opacity;
   box-shadow: var(--shadow);
   background: #fff;
 }
@@ -250,6 +253,21 @@ h2 {
   display: block;
   width: 100%;
   height: auto;
+}
+
+#stage-image.camera-jump,
+.stage-strip.camera-jump {
+  transition: none !important;
+}
+
+#stage-image.page-fade,
+.stage-strip.page-fade {
+  animation: reader-page-in 120ms ease-out;
+}
+
+@keyframes reader-page-in {
+  from { opacity: 0.35; }
+  to { opacity: 1; }
 }
 
 .stage-empty {
@@ -1057,6 +1075,113 @@ h2 {
 
 .library-view > .panel > .panel-heading {
   padding-inline: 0.1rem;
+}
+
+.library-filters {
+  display: flex;
+  gap: 0.45rem;
+  margin: 0.1rem 0 0.9rem;
+  padding-bottom: 0.15rem;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.library-filters::-webkit-scrollbar {
+  display: none;
+}
+
+.library-filter {
+  min-height: 2.35rem;
+  flex: 0 0 auto;
+  border-color: var(--line);
+  border-radius: 999px;
+  padding: 0.42rem 0.7rem;
+  background: #f7f8f5;
+  color: var(--muted);
+  font-size: 0.74rem;
+  white-space: nowrap;
+}
+
+.library-filter span {
+  display: inline-grid;
+  min-width: 1.25rem;
+  margin-left: 0.2rem;
+  place-items: center;
+  border-radius: 999px;
+  padding: 0.05rem 0.28rem;
+  background: rgba(104, 113, 108, 0.12);
+  font-size: 0.65rem;
+}
+
+.library-filter.active {
+  border-color: var(--accent-2);
+  background: #e5f1f0;
+  color: var(--ink);
+}
+
+.library-status-select {
+  width: 100%;
+  min-height: 2rem;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 0.3rem 0.4rem;
+  background: #f7f8f5;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.7rem;
+}
+
+.recommendation-section {
+  margin-bottom: 1.15rem;
+}
+
+.recommendation-section .section-heading {
+  align-items: flex-end;
+}
+
+.recommendation-note {
+  margin: 0.15rem 0 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.recommendation-rail {
+  display: grid;
+  grid-auto-columns: minmax(9.2rem, 42%);
+  grid-auto-flow: column;
+  gap: 0.65rem;
+  margin-inline: calc(-1 * var(--app-gutter, 1rem));
+  padding: 0.1rem var(--app-gutter, 1rem) 0.65rem;
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+}
+
+.recommendation-card {
+  min-width: 0;
+  scroll-snap-align: start;
+}
+
+.recommendation-card .manga-cover-button {
+  width: 100%;
+}
+
+.recommendation-reason {
+  display: -webkit-box;
+  min-height: 2.2rem;
+  margin: 0.35rem 0 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.68rem;
+  line-height: 1.25;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.recommendation-card > button:last-child {
+  width: 100%;
+  min-height: 2.15rem;
+  margin-top: 0.4rem;
+  font-size: 0.72rem;
 }
 
 .result-item {

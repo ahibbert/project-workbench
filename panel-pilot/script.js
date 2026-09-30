@@ -5,8 +5,8 @@ const sourceIndexStoreKey = "panel-pilot-source-index";
 const sourceIndexTtlMs = 24 * 60 * 60 * 1000;
 const sourceIndexPageLimit = 6;
 const sourceIndexRequestTimeoutMs = 12000;
-const appVersion = "v97";
-const appBuildTime = "2026-09-30";
+const appVersion = "v98";
+const appBuildTime = "2026-10-01";
 const detectorVersion = "detector v18-ml-manga";
 const pageImageRetryDelaysMs = [0, 350, 1200];
 const chapterFetchRetryDelaysMs = [0, 700, 1800];
@@ -15,10 +15,21 @@ const backgroundLookaheadPages = 6;
 const nextChapterPreparedPageCount = 3;
 const downloadAheadChapterCount = 10;
 const progressOutboxStoreKey = "panel-pilot-progress-outbox";
+const mangabakaOutboxStoreKey = "panel-pilot-mangabaka-outbox";
 const tapHintStoreKey = "panel-pilot-tap-hint-seen";
 const reconnectIntervalMs = 45 * 1000;
 const downloadStatusPollMs = 15 * 1000;
 const allSourcesValue = "__all__";
+const libraryStatuses = ["reading", "plan_to_read", "paused", "completed", "dropped", "rereading", "considering"];
+const libraryStatusLabels = {
+  reading: "Reading",
+  plan_to_read: "Plan to read",
+  paused: "Paused",
+  completed: "Completed",
+  dropped: "Dropped",
+  rereading: "Rereading",
+  considering: "Considering",
+};
 const defaultComickChapter = {
   label: "Frieren chapter 1",
   chap: "1",
@@ -203,6 +214,9 @@ const el = {
   mangaMode: document.querySelector("#manga-mode"),
   comicMode: document.querySelector("#comic-mode"),
   webtoonMode: document.querySelector("#webtoon-mode"),
+  motionSmooth: document.querySelector("#motion-smooth"),
+  motionQuick: document.querySelector("#motion-quick"),
+  motionInstant: document.querySelector("#motion-instant"),
   serverUrl: document.querySelector("#server-url"),
   testConnection: document.querySelector("#test-connection"),
   loadSources: document.querySelector("#load-sources"),
@@ -217,6 +231,8 @@ const el = {
   libraryBody: document.querySelector("#library-body"),
   libraryList: document.querySelector("#library-list"),
   libraryCount: document.querySelector("#library-count"),
+  libraryFilters: [...document.querySelectorAll("[data-library-filter]")],
+  libraryFilterCounts: [...document.querySelectorAll("[data-library-count]")],
   toggleBrowsePanel: document.querySelector("#toggle-browse-panel"),
   browseBody: document.querySelector("#browse-body"),
   browsePrompt: document.querySelector("#browse-prompt"),
@@ -226,6 +242,10 @@ const el = {
   searchQuery: document.querySelector("#search-query"),
   searchSource: document.querySelector("#search-source"),
   mangaResults: document.querySelector("#manga-results"),
+  mangabakaRecommendations: document.querySelector("#mangabaka-recommendations"),
+  mangabakaResults: document.querySelector("#mangabaka-results"),
+  mangabakaRecommendationsNote: document.querySelector("#mangabaka-recommendations-note"),
+  refreshMangabaka: document.querySelector("#refresh-mangabaka"),
   mangaDetail: document.querySelector("#manga-detail"),
   closeMangaDetail: document.querySelector("#close-manga-detail"),
   detailCover: document.querySelector("#detail-cover"),
@@ -247,6 +267,11 @@ const el = {
   versionNote: document.querySelector("#version-note"),
   syncProgress: document.querySelector("#sync-progress"),
   retryDownloads: document.querySelector("#retry-downloads"),
+  mangabakaToken: document.querySelector("#mangabaka-token"),
+  saveMangabaka: document.querySelector("#save-mangabaka"),
+  disconnectMangabaka: document.querySelector("#disconnect-mangabaka"),
+  mangabakaState: document.querySelector("#mangabaka-state"),
+  mangabakaNote: document.querySelector("#mangabaka-note"),
   syncState: document.querySelector("#sync-state"),
   syncNote: document.querySelector("#sync-note"),
   offlineNote: document.querySelector("#offline-note"),
@@ -281,6 +306,7 @@ const state = {
   librarySavePending: false,
   pendingResume: null,
   readerErrorRetryAction: null,
+  libraryFilter: "reading",
   chapterPageUrls: [],
   pages: [],
   pageIndex: 0,
@@ -289,6 +315,7 @@ const state = {
   panelMode: "manga",
   panelPadding: 8,
   readingDirection: "rtl",
+  readerMotion: "smooth",
   connected: false,
   comickChapters: [],
   comickPage: 0,
@@ -321,6 +348,14 @@ const state = {
   historyApplying: false,
   viewScrollPositions: { library: 0, browse: 0, settings: 0 },
   browseDiscoveryScroll: 0,
+  mangabakaRecommendations: [],
+  mangabakaConnected: false,
+  mangabakaConfigured: false,
+  mangabakaOutbox: [],
+  mangabakaSyncPromise: null,
+  mangabakaSyncTimer: null,
+  pendingMangaBakaRecommendation: null,
+  cameraPageChanged: false,
 };
 
 function loadSettings() {
@@ -338,6 +373,8 @@ function loadSettings() {
     const savedPanelMode = localStorage.getItem(panelModeStoreKey);
     if (isPanelMode(savedPanelMode)) state.panelMode = savedPanelMode;
     if (saved.readingDirection) state.readingDirection = saved.readingDirection;
+    if (["smooth", "quick", "instant"].includes(saved.readerMotion)) state.readerMotion = saved.readerMotion;
+    if ([...libraryStatuses, "all"].includes(saved.libraryFilter)) state.libraryFilter = saved.libraryFilter;
     if (Number.isFinite(saved.panelPadding)) state.panelPadding = clamp(saved.panelPadding, 0, 25);
   } catch {
     // Ignore malformed local storage.
@@ -356,6 +393,7 @@ function loadSettings() {
   if (el.panelPadding) el.panelPadding.value = String(state.panelPadding);
   updatePaddingControl();
   updatePanelModeControls();
+  applyReaderMotion();
   setReadingDirection(state.readingDirection);
 }
 
@@ -367,6 +405,8 @@ function saveSettings() {
       baseUrl: state.baseUrl,
       panelMode: state.panelMode,
       readingDirection: state.readingDirection,
+      readerMotion: state.readerMotion,
+      libraryFilter: state.libraryFilter,
       panelPadding: state.panelPadding,
       suwayomiSetupOpen: state.suwayomiSetupOpen,
       showNsfwSources: state.showNsfwSources,
@@ -386,6 +426,24 @@ function isAppView(view) {
 function navigationHash(view, detail = false) {
   if (view === "browse" && detail) return "#browse-detail";
   return `#${view}`;
+}
+
+function applyReaderMotion() {
+  const durations = { smooth: "220ms", quick: "120ms", instant: "0ms" };
+  const motion = durations[state.readerMotion] ? state.readerMotion : "smooth";
+  state.readerMotion = motion;
+  document.documentElement.style.setProperty("--reader-motion-duration", durations[motion]);
+  [[el.motionSmooth, "smooth"], [el.motionQuick, "quick"], [el.motionInstant, "instant"]].forEach(([button, value]) => {
+    button?.classList.toggle("active", motion === value);
+    button?.setAttribute("aria-pressed", motion === value ? "true" : "false");
+  });
+}
+
+function setReaderMotion(motion) {
+  if (!["smooth", "quick", "instant"].includes(motion)) return;
+  state.readerMotion = motion;
+  applyReaderMotion();
+  saveSettings();
 }
 
 function recordNavigationState(mode = "push", detail = false) {
@@ -606,6 +664,258 @@ async function postLocalJson(path, body) {
   return payload;
 }
 
+function mangaBakaTitles(series) {
+  return (Array.isArray(series?.titles) ? series.titles : [])
+    .map((entry) => typeof entry === "string" ? entry : entry?.title)
+    .filter(Boolean);
+}
+
+function mangaBakaTitle(series) {
+  const titles = Array.isArray(series?.titles) ? series.titles : [];
+  const english = titles.find((entry) => entry?.language === "en" && entry?.is_primary)
+    || titles.find((entry) => entry?.language === "en")
+    || titles.find((entry) => entry?.is_primary);
+  return english?.title || mangaBakaTitles(series)[0] || series?.title || "Untitled manga";
+}
+
+function mangaBakaCover(series) {
+  const cover = series?.cover_image || series?.cover || {};
+  return cover.x250 || cover.x350 || cover.x150 || cover.raw || "";
+}
+
+function mangaBakaReason(series) {
+  const reason = series?.reason || {};
+  const seed = reason.reason_seeds?.[0];
+  if (reason.reason_type === "similar_to" && seed) return `Because you read ${mangaBakaTitle(seed)}`;
+  const tags = (reason.top_tags || []).slice(0, 2).map((tag) => tag.name).filter(Boolean);
+  if (tags.length) return `Matches your interest in ${tags.join(" and ")}`;
+  if (reason.reason_type === "hidden_gem") return "A highly rated hidden gem";
+  if (reason.reason_type === "rising") return "Popular with readers right now";
+  return "Selected from MangaBaka discovery";
+}
+
+function renderMangaBakaRecommendations() {
+  if (!el.mangabakaResults) return;
+  el.mangabakaResults.replaceChildren();
+  if (!state.mangabakaRecommendations.length) {
+    el.mangabakaResults.append(emptyLine("No recommendations are ready yet."));
+    return;
+  }
+  state.mangabakaRecommendations.forEach((series) => {
+    const title = mangaBakaTitle(series);
+    const card = document.createElement("article");
+    card.className = "recommendation-card";
+    card.append(createCoverButton({ title, thumbnailUrl: mangaBakaCover(series) }, {
+      title,
+      eyebrow: String(series.media_type || series.type || "Manga").replaceAll("_", " "),
+      meta: mangaBakaReason(series),
+    }));
+    const reason = document.createElement("p");
+    reason.className = "recommendation-reason";
+    reason.textContent = mangaBakaReason(series);
+    const find = document.createElement("button");
+    find.type = "button";
+    find.textContent = "Find a source";
+    find.addEventListener("click", () => findMangaBakaSource(series));
+    card.append(reason, find);
+    el.mangabakaResults.append(card);
+  });
+}
+
+async function loadMangaBakaRecommendations({ announce = false } = {}) {
+  if (!el.mangabakaResults) return;
+  if (el.mangabakaRecommendationsNote) el.mangabakaRecommendationsNote.textContent = "Loading MangaBaka discovery…";
+  setBusy(el.refreshMangabaka, true, "Loading");
+  try {
+    const payload = await localJson("/api/mangabaka/recommendations?limit=12");
+    state.mangabakaRecommendations = (payload.results || payload.data || []).filter((series) =>
+      ["manga", "manhwa", "manhua", "oel"].includes(String(series.media_type || series.type || "manga").toLowerCase())
+    );
+    renderMangaBakaRecommendations();
+    if (el.mangabakaRecommendationsNote) {
+      el.mangabakaRecommendationsNote.textContent = payload.mode === "personalized"
+        ? "Personalized from your MangaBaka library"
+        : "Rising titles and hidden gems from MangaBaka";
+    }
+    if (announce) showToast("Recommendations refreshed.", "good");
+  } catch (error) {
+    if (el.mangabakaRecommendationsNote) el.mangabakaRecommendationsNote.textContent = friendlySourceErrorMessage(error);
+    el.mangabakaResults.replaceChildren(emptyLine("MangaBaka discovery is temporarily unavailable."));
+  } finally {
+    setBusy(el.refreshMangabaka, false);
+  }
+}
+
+function findMangaBakaSource(series) {
+  state.pendingMangaBakaRecommendation = series;
+  el.searchQuery.value = mangaBakaTitle(series);
+  el.searchQuery.scrollIntoView({ behavior: "smooth", block: "center" });
+  void searchSource();
+}
+
+function mangaBakaMatchForManga(manga) {
+  const pending = state.pendingMangaBakaRecommendation;
+  if (!pending) return null;
+  const title = normalizeTitle(manga?.title);
+  return mangaBakaTitles(pending).some((candidate) => normalizeTitle(candidate) === title) ? pending : null;
+}
+
+function loadMangaBakaOutbox() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(mangabakaOutboxStoreKey) || "[]");
+    state.mangabakaOutbox = Array.isArray(saved) ? saved.filter((entry) => Number(entry.series_id) > 0) : [];
+  } catch {
+    state.mangabakaOutbox = [];
+  }
+}
+
+function persistMangaBakaOutbox() {
+  try {
+    localStorage.setItem(mangabakaOutboxStoreKey, JSON.stringify(state.mangabakaOutbox));
+  } catch {
+    // The Panel Pilot library still retains the last known state.
+  }
+}
+
+function enqueueMangaBakaLibraryItem(item, completedChapter = null) {
+  const seriesId = Number(item?.mangabakaId);
+  if (!seriesId) return;
+  const existing = state.mangabakaOutbox.find((entry) => Number(entry.series_id) === seriesId) || {};
+  const chapter = Number.isFinite(Number(completedChapter))
+    ? Number(completedChapter)
+    : Number(item?.completedChapter);
+  const entry = {
+    ...existing,
+    series_id: seriesId,
+    state: normalizedLibraryStatus(item),
+  };
+  if (Number.isFinite(chapter) && chapter >= 0) {
+    entry.progress_chapter = Math.max(Number(existing.progress_chapter) || 0, chapter);
+  }
+  state.mangabakaOutbox = [entry, ...state.mangabakaOutbox.filter((candidate) => Number(candidate.series_id) !== seriesId)];
+  persistMangaBakaOutbox();
+  window.clearTimeout(state.mangabakaSyncTimer);
+  state.mangabakaSyncTimer = window.setTimeout(() => void flushMangaBakaOutbox(), 2500);
+}
+
+async function flushMangaBakaOutbox({ manual = false } = {}) {
+  if (!state.mangabakaConfigured || !state.mangabakaOutbox.length) return false;
+  if (state.mangabakaSyncPromise) return state.mangabakaSyncPromise;
+  const entries = state.mangabakaOutbox.slice(0, 100).map((entry) => ({ ...entry }));
+  const request = postLocalJson("/api/mangabaka/library", { entries });
+  state.mangabakaSyncPromise = request;
+  try {
+    await request;
+    const sentIds = new Set(entries.map((entry) => Number(entry.series_id)));
+    state.mangabakaOutbox = state.mangabakaOutbox.filter((entry) => !sentIds.has(Number(entry.series_id)));
+    persistMangaBakaOutbox();
+    if (manual) showToast("MangaBaka library synced.", "good");
+    return true;
+  } catch (error) {
+    persistMangaBakaOutbox();
+    if (manual) throw error;
+    return false;
+  } finally {
+    if (state.mangabakaSyncPromise === request) state.mangabakaSyncPromise = null;
+  }
+}
+
+async function refreshMangaBakaStatus() {
+  try {
+    const payload = await localJson("/api/mangabaka/status");
+    state.mangabakaConfigured = Boolean(payload.configured);
+    state.mangabakaConnected = Boolean(payload.connected);
+    if (el.mangabakaState) el.mangabakaState.textContent = payload.connected ? "Connected" : "Not connected";
+    if (el.disconnectMangabaka) el.disconnectMangabaka.hidden = !payload.configured;
+    if (el.mangabakaNote) {
+      const readiness = payload.recommendations?.data || payload.recommendations || {};
+      el.mangabakaNote.textContent = payload.connected
+        ? (readiness.ready === false ? "Connected. Personalized recommendations are still being prepared." : "Connected. Recommendations and completed chapters will sync automatically.")
+        : (payload.error || "Public recommendations remain available without an account.");
+    }
+    if (payload.connected) void flushMangaBakaOutbox();
+    return payload;
+  } catch (error) {
+    state.mangabakaConnected = false;
+    if (el.mangabakaState) el.mangabakaState.textContent = "Needs attention";
+    if (el.mangabakaNote) el.mangabakaNote.textContent = friendlySourceErrorMessage(error);
+    return null;
+  }
+}
+
+async function connectMangaBaka() {
+  const token = el.mangabakaToken?.value.trim() || "";
+  if (!token) return showToast("Paste your MangaBaka token first.", "bad");
+  setBusy(el.saveMangabaka, true, "Connecting");
+  try {
+    await postLocalJson("/api/mangabaka/config", { token });
+    el.mangabakaToken.value = "";
+    await refreshMangaBakaStatus();
+    await matchMangaBakaLibrary();
+    await loadMangaBakaRecommendations();
+    showToast("MangaBaka connected.", "good");
+  } catch (error) {
+    showToast(`Could not connect MangaBaka: ${friendlySourceErrorMessage(error)}`, "bad");
+  } finally {
+    setBusy(el.saveMangabaka, false);
+  }
+}
+
+async function disconnectMangaBaka() {
+  try {
+    await postLocalJson("/api/mangabaka/config", { clear: true });
+    state.mangabakaConfigured = false;
+    state.mangabakaConnected = false;
+    await refreshMangaBakaStatus();
+    await loadMangaBakaRecommendations();
+    showToast("MangaBaka disconnected.");
+  } catch (error) {
+    showToast(`Could not disconnect MangaBaka: ${friendlySourceErrorMessage(error)}`, "bad");
+  }
+}
+
+async function matchMangaBakaLibrary() {
+  const candidates = state.libraryItems.filter((item) => !item.mangabakaId).slice(0, 20);
+  let matched = 0;
+  for (const item of candidates) {
+    try {
+      const payload = await localJson(`/api/mangabaka/search?q=${encodeURIComponent(item.mangaTitle || "")}`);
+      const exact = (payload.data || payload.results || []).find((series) =>
+        mangaBakaTitles(series).some((title) => normalizeTitle(title) === normalizeTitle(item.mangaTitle))
+      );
+      if (exact) {
+        item.mangabakaId = Number(exact.id);
+        item.mangabakaTitle = mangaBakaTitle(exact);
+        enqueueMangaBakaLibraryItem(item);
+        matched += 1;
+      }
+      await waitFor(220);
+    } catch {
+      // Keep unmatched titles local; they can be retried on the next manual sync.
+    }
+  }
+  if (matched) {
+    saveLibraryItems();
+    renderLibrary();
+  }
+  await flushMangaBakaOutbox().catch(() => false);
+  return matched;
+}
+
+function completeMangaBakaChapter() {
+  if (state.activeChapter?.type !== "suwayomi") return;
+  const chapter = state.activeChapter.chapter || state.chapters.find((entry) => Number(entry.id) === Number(state.activeChapter.chapterId));
+  const chapterNumber = Number(chapter?.chapterNumber);
+  if (!Number.isFinite(chapterNumber) || chapterNumber < 0) return;
+  const key = libraryItemKey(state.currentManga);
+  state.libraryItems = state.libraryItems.map((item) => libraryItemKey(item) === key
+    ? { ...item, completedChapter: Math.max(Number(item.completedChapter) || 0, chapterNumber) }
+    : item);
+  const item = state.libraryItems.find((entry) => libraryItemKey(entry) === key);
+  saveLibraryItems();
+  enqueueMangaBakaLibraryItem(item, chapterNumber);
+}
+
 function handleAuthenticationResponse(response, payload) {
   if (response.status !== 401) return;
   const login = payload?.login || "/login";
@@ -683,10 +993,10 @@ function toggleReaderFocus() {
   setActiveView("reader");
 }
 
-function setReaderChromeVisible(visible) {
+function setReaderChromeVisible(visible, { refit = true } = {}) {
   state.readerChromeVisible = Boolean(visible);
   document.body.classList.toggle("reader-chrome-hidden", state.readerFocus && !state.readerChromeVisible);
-  requestAnimationFrame(fitStage);
+  if (refit) requestAnimationFrame(fitStage);
 }
 
 function toggleReaderChrome() {
@@ -1264,6 +1574,7 @@ function renderMangaResults() {
       meta: "View chapters",
     });
     button.addEventListener("click", async () => {
+      const mangabaka = mangaBakaMatchForManga(manga);
       el.mangaId.value = manga.id;
       el.chapterTitle.textContent = manga.title;
       state.currentManga = {
@@ -1272,7 +1583,10 @@ function renderMangaResults() {
         sourceId: manga.sourceId,
         sourceLabel: sourceText,
         thumbnailUrl: manga.thumbnailUrl,
+        mangabakaId: mangabaka?.id,
+        mangabakaTitle: mangabaka ? mangaBakaTitle(mangabaka) : undefined,
       };
+      if (mangabaka) state.pendingMangaBakaRecommendation = null;
       showMangaDetail(manga, sourceText);
       await fetchChapters();
     });
@@ -1376,6 +1690,11 @@ async function addCurrentMangaToLibrary() {
       sourceId: state.currentManga.sourceId,
       sourceLabel: state.currentManga.sourceLabel,
       thumbnailUrl: state.currentManga.thumbnailUrl,
+      mangabakaId: state.currentManga.mangabakaId,
+      mangabakaTitle: state.currentManga.mangabakaTitle,
+      libraryStatus: "plan_to_read",
+      statusExplicit: true,
+      started: false,
       hidden: false,
       pinned: false,
       updatedAt: new Date().toISOString(),
@@ -1568,12 +1887,35 @@ function persistLibraryItemsLocally() {
   }
 }
 
+function normalizedLibraryStatus(item) {
+  if (libraryStatuses.includes(item?.libraryStatus)) return item.libraryStatus;
+  const hasStarted = Boolean(
+    item?.started ||
+    Number(item?.pageIndex) > 0 ||
+    Number(item?.panelIndex) > 0 ||
+    /page\s+[2-9]|page\s+\d{2,}/i.test(String(item?.progressLabel || ""))
+  );
+  return hasStarted ? "reading" : "plan_to_read";
+}
+
+function normalizeLibraryItem(item) {
+  return item ? { ...item, libraryStatus: normalizedLibraryStatus(item) } : item;
+}
+
+function setLibraryFilter(filter) {
+  if (![...libraryStatuses, "all"].includes(filter)) return;
+  state.libraryFilter = filter;
+  saveSettings();
+  renderLibrary();
+}
+
 function mergeLibraryItems(...lists) {
   const merged = [];
   const seen = new Map();
   lists
     .flat()
     .filter(Boolean)
+    .map(normalizeLibraryItem)
     .sort((a, b) => Date.parse(b.updatedAt || 0) - Date.parse(a.updatedAt || 0))
     .forEach((item) => {
       const key = libraryItemKey(item);
@@ -1595,13 +1937,28 @@ function renderLibrary() {
   const allowedItems = libraryItemsAllowedByNsfw();
   const visibleItems = visibleLibraryItems();
   const hiddenCount = allowedItems.filter((item) => item.hidden).length;
+  const statusCounts = Object.fromEntries(libraryStatuses.map((status) => [status, 0]));
+  allowedItems.filter((item) => !item.hidden).forEach((item) => {
+    const status = normalizedLibraryStatus(item);
+    statusCounts[status] = (statusCounts[status] || 0) + 1;
+  });
+  el.libraryFilters.forEach((button) => {
+    const active = button.dataset.libraryFilter === state.libraryFilter;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  el.libraryFilterCounts.forEach((count) => {
+    const filter = count.dataset.libraryCount;
+    count.textContent = String(filter === "all" ? allowedItems.filter((item) => !item.hidden).length : (statusCounts[filter] || 0));
+  });
   if (el.toggleHiddenLibrary) el.toggleHiddenLibrary.hidden = hiddenCount === 0 && !state.showHiddenLibrary;
   el.libraryCount.textContent = `${visibleItems.length} title${visibleItems.length === 1 ? "" : "s"}${hiddenCount ? ` · ${hiddenCount} hidden` : ""}`;
   updateReaderNav();
   if (!visibleItems.length) {
-    const message = !state.showHiddenLibrary && hiddenCount
+    const showHiddenAction = !state.showHiddenLibrary && hiddenCount > 0 && state.libraryFilter === "all";
+    const message = showHiddenAction
       ? "Your current titles are hidden. Show hidden titles to bring them back."
-      : "Add a title from Browse and it will appear here with your reading progress.";
+      : `No titles are currently marked ${state.libraryFilter === "all" ? "for this view" : (libraryStatusLabels[state.libraryFilter] || state.libraryFilter).toLowerCase()}.`;
     const empty = document.createElement("div");
     empty.className = "app-empty-state";
     const art = document.createElement("span");
@@ -1609,13 +1966,13 @@ function renderLibrary() {
     art.setAttribute("aria-hidden", "true");
     art.textContent = "▤";
     const heading = document.createElement("strong");
-    heading.textContent = hiddenCount ? "Nothing visible right now" : "Build your library";
+    heading.textContent = "Nothing in this view";
     const copy = document.createElement("span");
     copy.textContent = message;
     const action = document.createElement("button");
     action.type = "button";
-    action.textContent = hiddenCount ? "Show hidden titles" : "Browse manga";
-    action.addEventListener("click", () => hiddenCount ? setShowHiddenLibrary(true) : setActiveView("browse"));
+    action.textContent = showHiddenAction ? "Show hidden titles" : "Browse manga";
+    action.addEventListener("click", () => showHiddenAction ? setShowHiddenLibrary(true) : setActiveView("browse"));
     empty.append(art, heading, copy, action);
     el.libraryList.append(empty);
     return;
@@ -1646,6 +2003,10 @@ function renderLibrary() {
       hidden.textContent = "Hidden";
       badges.append(hidden);
     }
+    const statusBadge = document.createElement("span");
+    statusBadge.className = "manga-card-badge muted-badge";
+    statusBadge.textContent = libraryStatusLabels[normalizedLibraryStatus(item)] || "Library";
+    badges.append(statusBadge);
 
     const actions = document.createElement("div");
     actions.className = "manga-card-actions";
@@ -1670,7 +2031,18 @@ function renderLibrary() {
     moreLabel.setAttribute("aria-label", `More actions for ${item.mangaTitle || "manga"}`);
     const menu = document.createElement("div");
     menu.className = "manga-card-menu";
-    menu.append(pin, hide);
+    const statusSelect = document.createElement("select");
+    statusSelect.className = "library-status-select";
+    statusSelect.setAttribute("aria-label", `Reading status for ${item.mangaTitle || "manga"}`);
+    libraryStatuses.forEach((status) => {
+      const option = document.createElement("option");
+      option.value = status;
+      option.textContent = libraryStatusLabels[status];
+      statusSelect.append(option);
+    });
+    statusSelect.value = normalizedLibraryStatus(item);
+    statusSelect.addEventListener("change", () => setLibraryItemStatus(item, statusSelect.value));
+    menu.append(statusSelect, pin, hide);
     more.append(moreLabel, menu);
     actions.append(chapters, more);
 
@@ -1682,6 +2054,7 @@ function renderLibrary() {
 function readerResumeItem() {
   const available = state.libraryItems
     .filter((item) => !item.hidden)
+    .filter((item) => ["reading", "rereading"].includes(normalizedLibraryStatus(item)))
     .filter((item) => Number.isInteger(Number(item.chapterId)) && Number(item.chapterId) > 0)
     .sort((a, b) => Date.parse(b.updatedAt || 0) - Date.parse(a.updatedAt || 0));
   if (state.activeChapter?.type === "suwayomi" && state.currentManga?.id) {
@@ -1779,7 +2152,9 @@ async function hydrateLibraryCovers() {
 
 function visibleLibraryItems() {
   return sortLibraryItems(
-    libraryItemsAllowedByNsfw().filter((item) => state.showHiddenLibrary || !item.hidden)
+    libraryItemsAllowedByNsfw()
+      .filter((item) => state.showHiddenLibrary || !item.hidden)
+      .filter((item) => state.libraryFilter === "all" || normalizedLibraryStatus(item) === state.libraryFilter)
   );
 }
 
@@ -1823,6 +2198,21 @@ function setLibraryItemFlag(item, field, value) {
   showToast(field === "pinned" ? (value ? "Pinned to the top." : "Unpinned.") : (value ? "Hidden from Library." : "Restored to Library."));
 }
 
+function setLibraryItemStatus(item, status, { sync = true } = {}) {
+  if (!libraryStatuses.includes(status)) return;
+  const key = libraryItemKey(item);
+  state.libraryItems = state.libraryItems.map((existing) =>
+    libraryItemKey(existing) === key
+      ? { ...existing, libraryStatus: status, statusExplicit: true, updatedAt: new Date().toISOString() }
+      : existing
+  );
+  const updated = state.libraryItems.find((entry) => libraryItemKey(entry) === key);
+  saveLibraryItems();
+  renderLibrary();
+  if (sync) enqueueMangaBakaLibraryItem(updated);
+  showToast(`Moved to ${libraryStatusLabels[status]}.`, "good");
+}
+
 function isNsfwLibraryItem(item) {
   const source = state.sources.find((entry) => String(entry.id) === String(item?.sourceId));
   if (source && isNsfwSource(source)) return true;
@@ -1841,6 +2231,8 @@ async function selectLibraryManga(item, resume) {
     sourceId: item.sourceId,
     sourceLabel: item.sourceLabel,
     thumbnailUrl: item.thumbnailUrl,
+    mangabakaId: item.mangabakaId,
+    mangabakaTitle: item.mangabakaTitle,
   };
   updateReaderNav();
   el.mangaId.value = item.mangaId;
@@ -1918,18 +2310,27 @@ async function hydrateImportedReadingProgress(mangas) {
             .sort((a, b) => Number(a.chapterNumber ?? a.sourceOrder ?? 0) - Number(b.chapterNumber ?? b.sourceOrder ?? 0))[0];
         }
       }
-      if (active) updates.set(libraryItemKey({ mangaId: manga.id, sourceId: manga.sourceId }), active);
+      const started = nodes.some((chapter) => chapter.isRead || Number(chapter.lastPageRead) > 0);
+      updates.set(libraryItemKey({ mangaId: manga.id, sourceId: manga.sourceId }), { chapter: active, started });
     } catch {
       // One title should not block the rest of the library reconciliation.
     }
   });
   if (!updates.size) return;
   state.libraryItems = state.libraryItems.map((item) => {
-    if (item.chapterId && Date.parse(item.updatedAt || 0) > 0) return item;
-    const chapter = updates.get(libraryItemKey(item));
-    if (!chapter) return item;
+    const update = updates.get(libraryItemKey(item));
+    if (!update) return item;
+    const inferredStatus = item.statusExplicit
+      ? normalizedLibraryStatus(item)
+      : (update.started ? "reading" : "plan_to_read");
+    if ((item.chapterId && Date.parse(item.updatedAt || 0) > 0) || !update.chapter) {
+      return { ...item, started: update.started, libraryStatus: inferredStatus };
+    }
+    const chapter = update.chapter;
     return {
       ...item,
+      started: update.started,
+      libraryStatus: inferredStatus,
       chapterId: Number(chapter.id),
       chapterTitle: chapter.name || `Chapter ${chapter.chapterNumber || chapter.sourceOrder || chapter.id}`,
       pageIndex: Math.max(0, Number(chapter.lastPageRead) || 0),
@@ -1945,9 +2346,10 @@ async function syncLibraryAndProgress() {
   try {
     const count = await syncSuwayomiLibrary();
     const progressSynced = await syncSuwayomiProgress({ manual: true }).catch(() => false);
+    const mangabakaMatched = await matchMangaBakaLibrary().catch(() => 0);
     setSyncStatus(
       progressSynced ? "Synced" : "Partial",
-      `${count} Suwayomi title${count === 1 ? "" : "s"} refreshed${progressSynced ? " and current progress sent" : ""}.`,
+      `${count} Suwayomi title${count === 1 ? "" : "s"} refreshed${progressSynced ? " and current progress sent" : ""}${mangabakaMatched ? `; ${mangabakaMatched} linked to MangaBaka` : ""}.`,
       progressSynced ? "good" : "bad"
     );
     showToast(progressSynced ? "Suwayomi library and progress synced." : "Library synced, but progress is still queued.", progressSynced ? "good" : "bad");
@@ -2060,6 +2462,11 @@ function rememberReadingProgress() {
     sourceId: state.currentManga.sourceId,
     sourceLabel: state.currentManga.sourceLabel,
     thumbnailUrl: state.currentManga.thumbnailUrl || existing?.thumbnailUrl,
+    mangabakaId: state.currentManga.mangabakaId || existing?.mangabakaId,
+    mangabakaTitle: state.currentManga.mangabakaTitle || existing?.mangabakaTitle,
+    started: true,
+    libraryStatus: existing?.libraryStatus === "completed" ? "rereading" : "reading",
+    statusExplicit: Boolean(existing?.statusExplicit),
     isNsfw: isNsfwSource(source) || isNsfwLibraryItem(state.currentManga),
     hidden: false,
     pinned: Boolean(existing?.pinned),
@@ -2079,6 +2486,7 @@ function rememberReadingProgress() {
   saveLibraryItems();
   renderLibrary();
   scheduleSuwayomiProgressSync();
+  enqueueMangaBakaLibraryItem(item);
 }
 
 function currentSuwayomiPageIndex() {
@@ -2213,6 +2621,7 @@ async function finishChapterAndLoadNext() {
     window.clearTimeout(state.suwayomiSyncTimer);
     enqueueCurrentSuwayomiProgress({ completed: true });
     void flushSuwayomiProgressOutbox().catch(() => false);
+    completeMangaBakaChapter();
   }
   await loadNextChapter();
 }
@@ -4916,6 +5325,10 @@ function renderCurrentPage() {
     el.stageStrip.replaceChildren();
     el.stageStrip.dataset.signature = "";
   }
+  const pageKey = `${state.pageIndex}:${page.url || page.renderUrl || "page"}`;
+  const pageChanged = el.stageImage.dataset.pageKey !== pageKey;
+  el.stageImage.dataset.pageKey = pageKey;
+  state.cameraPageChanged = pageChanged;
   el.stageImage.hidden = false;
   el.stageImage.src = page.renderUrl || page.image?.currentSrc || page.image?.src || page.url;
   el.stageImage.alt = `${el.chapterTitle.textContent}, page ${state.pageIndex + 1}`;
@@ -4969,6 +5382,7 @@ function renderStripPage(page, { refit = true } = {}) {
   strip.hidden = false;
 
   if (strip.dataset.signature !== signature) {
+    state.cameraPageChanged = true;
     strip.replaceChildren();
     page.stripImages.forEach((item) => {
       const image = document.createElement("img");
@@ -5021,9 +5435,17 @@ function fitStage() {
   const top = stageRect.height / 2 - centerY;
 
   const targetElement = page.stripImages ? ensureStageStrip() : el.stageImage;
-  targetElement.style.width = `${renderedWidth}px`;
-  targetElement.style.height = `${renderedHeight}px`;
-  targetElement.style.transform = `translate(${left}px, ${top}px)`;
+  const pageChanged = state.cameraPageChanged;
+  state.cameraPageChanged = false;
+  if (pageChanged) targetElement.classList.add("camera-jump", "page-fade");
+  targetElement.style.width = `${imageWidth}px`;
+  targetElement.style.height = `${imageHeight}px`;
+  targetElement.style.transformOrigin = "0 0";
+  targetElement.style.transform = `translate3d(${left}px, ${top}px, 0) scale(${scale})`;
+  if (pageChanged) {
+    window.setTimeout(() => targetElement.classList.remove("camera-jump"), 0);
+    window.setTimeout(() => targetElement.classList.remove("page-fade"), 220);
+  }
 }
 
 function expandPanelRect(panel, padding) {
@@ -5231,6 +5653,7 @@ async function moveToAdjacentPage(delta) {
         if (state.activeChapter?.type === "suwayomi") {
           enqueueCurrentSuwayomiProgress({ completed: true });
           void flushSuwayomiProgressOutbox().catch(() => false);
+          completeMangaBakaChapter();
         }
         showReaderComplete();
         return;
@@ -5814,13 +6237,21 @@ function handleStageTap(event) {
 
   const action = readerTapAction(xRatio, yRatio);
   if (action === "forward") {
-    movePanel(1);
-    if (state.readerFocus && state.readerChromeVisible) setReaderChromeVisible(false);
+    if (state.readerFocus && state.readerChromeVisible) {
+      setReaderChromeVisible(false, { refit: false });
+      requestAnimationFrame(() => movePanel(1));
+    } else {
+      movePanel(1);
+    }
     return;
   }
   if (action === "back") {
-    movePanel(-1);
-    if (state.readerFocus && state.readerChromeVisible) setReaderChromeVisible(false);
+    if (state.readerFocus && state.readerChromeVisible) {
+      setReaderChromeVisible(false, { refit: false });
+      requestAnimationFrame(() => movePanel(-1));
+    } else {
+      movePanel(-1);
+    }
     return;
   }
   toggleReaderChrome();
@@ -5865,11 +6296,15 @@ function wireEvents() {
   el.loadSources.addEventListener("click", loadSources);
   el.clearAppCache?.addEventListener("click", clearAppCache);
   el.syncProgress?.addEventListener("click", syncLibraryAndProgress);
+  el.refreshMangabaka?.addEventListener("click", () => loadMangaBakaRecommendations({ announce: true }));
+  el.saveMangabaka?.addEventListener("click", connectMangaBaka);
+  el.disconnectMangabaka?.addEventListener("click", disconnectMangaBaka);
   el.retryDownloads?.addEventListener("click", retryFailedDownloads);
   el.showNsfwSources?.addEventListener("change", (event) => setShowNsfwSources(event.target.checked));
   el.toggleSuwayomiPanel?.addEventListener("click", toggleSuwayomiSetupPanel);
   el.toggleLibraryPanel?.addEventListener("click", toggleLibraryPanel);
   el.toggleHiddenLibrary?.addEventListener("click", () => setShowHiddenLibrary(!state.showHiddenLibrary));
+  el.libraryFilters.forEach((button) => button.addEventListener("click", () => setLibraryFilter(button.dataset.libraryFilter)));
   el.toggleBrowsePanel?.addEventListener("click", toggleBrowsePanel);
   el.closeMangaDetail?.addEventListener("click", closeMangaDetail);
   el.detailPrimary?.addEventListener("click", () => { void startOrContinueCurrentManga(); });
@@ -5910,6 +6345,9 @@ function wireEvents() {
   el.mangaMode?.addEventListener("click", () => setPanelMode("manga"));
   el.comicMode?.addEventListener("click", () => setPanelMode("comic"));
   el.webtoonMode?.addEventListener("click", () => setPanelMode("webtoon"));
+  el.motionSmooth?.addEventListener("click", () => setReaderMotion("smooth"));
+  el.motionQuick?.addEventListener("click", () => setReaderMotion("quick"));
+  el.motionInstant?.addEventListener("click", () => setReaderMotion("instant"));
   el.rtlOrder.addEventListener("click", () => resortAndDetect("rtl"));
   el.ltrOrder.addEventListener("click", () => resortAndDetect("ltr"));
   window.addEventListener("resize", () => {
@@ -5940,16 +6378,21 @@ function wireEvents() {
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
       persistSuwayomiProgressOutbox();
+      persistMangaBakaOutbox();
       return;
     }
     if (state.connected) {
       void flushSuwayomiProgressOutbox().catch(() => false);
       void refreshDownloadStatus().catch(() => null);
+      void flushMangaBakaOutbox().catch(() => false);
     } else {
       void recoverSuwayomiConnection();
     }
   });
-  window.addEventListener("pagehide", persistSuwayomiProgressOutbox);
+  window.addEventListener("pagehide", () => {
+    persistSuwayomiProgressOutbox();
+    persistMangaBakaOutbox();
+  });
 
   el.stage.addEventListener("click", handleStageTap);
 
@@ -6022,11 +6465,14 @@ if (el.stage) {
   renderVersionNote();
   loadSettings();
   loadSuwayomiProgressOutbox();
+  loadMangaBakaOutbox();
   loadLibraryItems();
   wireEvents();
   startBackgroundHealthChecks();
   setActiveView(state.activeView, { history: false });
   recordNavigationState("replace", false);
+  void refreshMangaBakaStatus();
+  void loadMangaBakaRecommendations();
   setTimeout(() => {
     initializeSuwayomi().catch((error) => {
       setConnection(false, `Could not initialize Suwayomi: ${error.message}`, "bad");
