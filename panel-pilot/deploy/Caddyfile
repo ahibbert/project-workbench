@@ -1,7 +1,4 @@
 panels.aydins-workbench.com {
 	encode zstd gzip
-	basic_auth {
-		aydin $2a$14$4UxvfH4nH2yF8z.D59QKu.8nre31.j2V.tiknZZRtc/CR9PeUH9hW
-	}
 	reverse_proxy panel-pilot:8013
 }

@@ -7,12 +7,12 @@
       name="description"
       content="A mobile-first Suwayomi-backed manga reader prototype with panel-by-panel guided view."
     >
-    <meta name="theme-color" content="#151515">
+    <meta name="theme-color" content="#ffffff">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>Panel Pilot</title>
     <link rel="manifest" href="manifest.webmanifest">
-    <link rel="stylesheet" href="styles.css?v=30">
+    <link rel="stylesheet" href="styles.css?v=45">
   </head>
   <body>
     <main class="app-shell">
@@ -55,36 +55,45 @@
           <button class="icon-button primary" id="next-panel" type="button" title="Next panel" aria-label="Next panel">
             <span aria-hidden="true">&gt;</span>
           </button>
-          <label class="padding-control" title="Panel context padding">
-            <span>Padding <strong id="panel-padding-value">8%</strong></span>
-            <input id="panel-padding" type="range" min="0" max="25" step="1" value="8">
-          </label>
           <button class="text-button" id="toggle-fit" type="button">Full page</button>
-          <button class="text-button" id="hide-reader-controls" type="button">Hide controls</button>
-          <button class="text-button" id="redetect" type="button">Detect panels</button>
-          <button class="text-button" id="report-bad-panels" type="button">Report bad panels</button>
-          <button class="text-button reader-mode-toggle" id="toggle-reader-mode" type="button">Back</button>
+          <details class="reader-options">
+            <summary aria-label="More reader controls" title="More reader controls">
+              <span aria-hidden="true">•••</span>
+            </summary>
+            <div class="reader-options-sheet">
+              <div class="sheet-handle" aria-hidden="true"></div>
+              <strong>Reader controls</strong>
+              <label class="padding-control" title="Panel context padding">
+                <span>Panel context <strong id="panel-padding-value">8%</strong></span>
+                <input id="panel-padding" type="range" min="0" max="25" step="1" value="8">
+              </label>
+              <button class="text-button" id="redetect" type="button">Detect panels again</button>
+              <button class="text-button" id="report-bad-panels" type="button">Report bad panels</button>
+            </div>
+          </details>
         </div>
       </section>
 
       <section class="app-view library-view active" id="library-view" data-view="library" aria-label="Library">
         <header class="view-header">
           <div>
-            <p class="kicker">Panel Pilot</p>
             <h1>Library</h1>
+            <p class="view-subtitle">Your reading, ready to resume</p>
           </div>
           <div class="panel-heading-actions">
-            <span class="small-count" id="library-count">0 items</span>
-            <button class="mini-button" id="toggle-hidden-library" type="button" aria-pressed="false">Hidden</button>
+            <button class="header-action" id="toggle-hidden-library" type="button" aria-pressed="false">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6Z"/><circle cx="12" cy="12" r="2.5"/></svg>
+              <span>Hidden</span>
+            </button>
           </div>
         </header>
-        <section class="panel">
-          <div class="panel-heading">
+        <section class="library-content">
+          <div class="section-heading">
             <h2>Continue Reading</h2>
-            <button class="mini-button" id="toggle-library-panel" type="button" aria-expanded="true">Hide</button>
+            <span class="section-count" id="library-count">0 titles</span>
           </div>
           <div id="library-body">
-            <div class="list compact library-list" id="library-list" aria-live="polite"></div>
+            <div class="cover-grid library-list" id="library-list" aria-live="polite"></div>
           </div>
         </section>
       </section>
@@ -92,63 +101,77 @@
       <section class="app-view browse-view" id="browse-view" data-view="browse" aria-label="Browse">
         <header class="view-header">
           <div>
-            <p class="kicker">Sources</p>
             <h1>Browse</h1>
+            <p class="view-subtitle" id="source-count">0 sources available</p>
           </div>
-          <span class="small-count" id="source-count">0 sources</span>
         </header>
 
-        <section class="panel">
-          <div class="panel-heading">
-            <h2>Search</h2>
-            <button class="mini-button" id="toggle-browse-panel" type="button" aria-expanded="true">Hide</button>
+        <section class="browse-discovery" id="browse-body">
+          <div class="search-bar">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>
+            <input id="search-query" type="search" placeholder="Search manga" aria-label="Search manga">
+            <button id="search-source" type="button" aria-label="Search">Search</button>
           </div>
-          <div id="browse-body">
-            <label class="field">
-              <span>Source</span>
-              <select id="source-select"></select>
-            </label>
-            <label class="field">
-              <span>Search</span>
-              <input id="search-query" type="search" placeholder="Manga title">
-            </label>
-            <button id="search-source" type="button">Search</button>
-            <div class="list" id="manga-results" aria-live="polite"></div>
-          </div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-heading">
-            <h2>Chapters</h2>
-            <span class="small-count" id="chapter-count">0 chapters</span>
-          </div>
-          <label class="field inline-field">
-            <span>Manga ID</span>
-            <input id="manga-id" type="number" inputmode="numeric" min="1" placeholder="From result">
-          </label>
-          <div class="button-row">
-            <button id="fetch-chapters" type="button">Fetch chapters</button>
-            <button id="load-chapter-pages" type="button">Load chapter</button>
-          </div>
-          <label class="field inline-field">
-            <span>Scanlator</span>
-            <select id="scanlator-select">
-              <option value="auto">Auto best</option>
+          <label class="source-filter">
+            <span>Source</span>
+            <select id="source-select">
+              <option value="">Connect Suwayomi to load sources</option>
             </select>
           </label>
-          <label class="field inline-field">
-            <span>Chapter ID</span>
-            <input id="chapter-id" type="number" inputmode="numeric" min="1" placeholder="Suwayomi chapter id">
+          <div class="browse-prompt" id="browse-prompt">
+            <span class="empty-illustration" aria-hidden="true">⌕</span>
+            <strong>Find your next series</strong>
+            <span>Search every enabled Suwayomi source from one place.</span>
+            <button id="browse-open-settings" type="button">Set up sources</button>
+          </div>
+            <div class="cover-grid browse-results" id="manga-results" aria-live="polite"></div>
+        </section>
+
+        <section class="manga-detail" id="manga-detail" hidden aria-label="Manga details">
+          <button class="detail-back" id="close-manga-detail" type="button">
+            <span aria-hidden="true">‹</span> Browse
+          </button>
+          <div class="manga-detail-hero">
+            <div class="detail-cover" id="detail-cover" aria-hidden="true">
+              <span id="detail-cover-fallback">PP</span>
+              <img id="detail-cover-image" alt="" hidden>
+            </div>
+            <div class="manga-detail-copy">
+              <span class="detail-source" id="detail-source">Source</span>
+              <h2 id="detail-title">Selected manga</h2>
+              <span class="detail-progress" id="chapter-count">0 chapters</span>
+            </div>
+          </div>
+          <label class="chapter-filter">
+            <span>Release group</span>
+            <select id="scanlator-select">
+              <option value="auto">Best available</option>
+            </select>
           </label>
           <div class="list compact" id="chapter-list" aria-live="polite"></div>
+          <details class="technical-tools">
+            <summary>Advanced chapter tools</summary>
+            <label class="field inline-field">
+              <span>Manga ID</span>
+              <input id="manga-id" type="number" inputmode="numeric" min="1" placeholder="From result">
+            </label>
+            <label class="field inline-field">
+              <span>Chapter ID</span>
+              <input id="chapter-id" type="number" inputmode="numeric" min="1" placeholder="Suwayomi chapter id">
+            </label>
+            <div class="button-row">
+              <button id="fetch-chapters" type="button">Refresh chapters</button>
+              <button id="load-chapter-pages" type="button">Load chapter ID</button>
+            </div>
+          </details>
         </section>
       </section>
 
       <section class="app-view settings-view" id="settings-view" data-view="settings" aria-label="Settings">
         <header class="view-header">
           <div>
-            <p class="kicker">Setup</p>
             <h1>Settings</h1>
+            <p class="view-subtitle">Reading, sync and connection</p>
           </div>
           <span class="status-dot" id="connection-dot" aria-label="Connection status"></span>
         </header>
@@ -156,7 +179,7 @@
         <section class="panel suwayomi-panel">
           <div class="panel-heading">
             <h2>Suwayomi</h2>
-            <button class="mini-button" id="toggle-suwayomi-panel" type="button" aria-expanded="false">Setup</button>
+            <button class="mini-button" id="toggle-suwayomi-panel" type="button" aria-expanded="false" aria-controls="suwayomi-setup">Advanced</button>
           </div>
           <div class="suwayomi-setup" id="suwayomi-setup" hidden>
             <label class="field">
@@ -174,17 +197,16 @@
             </label>
             <a class="tool-link" id="open-suwayomi" href="http://localhost:4567" target="_blank" rel="noopener">Open Suwayomi</a>
             <button class="wide-button" id="clear-app-cache" type="button">Clear app cache</button>
+            <p class="note version-note" id="version-note">Version loading...</p>
           </div>
           <p class="note" id="connection-note">
             Connecting to Suwayomi through the Panel Pilot proxy.
           </p>
-          <p class="note version-note" id="version-note">Version loading...</p>
         </section>
 
         <section class="panel panels-panel">
           <div class="panel-heading">
             <h2>Reader Defaults</h2>
-            <span class="small-count" id="panel-count">0 detected</span>
           </div>
           <div class="toggle-row" role="group" aria-label="Panel reading mode">
             <button class="segmented active" id="manga-mode" type="button">Manga</button>
@@ -195,19 +217,71 @@
             <button class="segmented active" id="rtl-order" type="button">RTL</button>
             <button class="segmented" id="ltr-order" type="button">LTR</button>
           </div>
-          <button class="wide-button" id="redetect-chapter" type="button">Redetect chapter</button>
-          <div class="panel-strip" id="panel-strip" aria-label="Detected panels"></div>
+          <details class="settings-detail">
+            <summary>Panel detection</summary>
+            <span class="small-count" id="panel-count">0 detected</span>
+            <button class="wide-button" id="redetect-chapter" type="button">Redetect chapter</button>
+            <div class="panel-strip" id="panel-strip" aria-label="Detected panels"></div>
+          </details>
+        </section>
+
+        <section class="panel sync-panel">
+          <div class="panel-heading">
+            <h2>Reading Sync</h2>
+            <span class="small-count" id="sync-state">Ready</span>
+          </div>
+          <p class="note">
+            Panel Pilot sends page and completed-chapter progress to Suwayomi. In Tachimanga, enable
+            <strong>Enhanced Tracking → Suwayomi</strong>, then connect <strong>MangaBaka</strong> under regular tracking.
+          </p>
+          <div class="button-row">
+            <button id="sync-progress" type="button">Sync current progress</button>
+            <a class="button-link" href="https://tachimanga.app/help/guides/tracking.html" target="_blank" rel="noopener">Setup guide</a>
+          </div>
+          <p class="note" id="sync-note" aria-live="polite">Progress syncs automatically while you read.</p>
+        </section>
+
+        <section class="panel account-panel">
+          <div class="panel-heading">
+            <h2>Account</h2>
+          </div>
+          <form action="/logout" method="post">
+            <button class="wide-button danger-button" type="submit">Sign out</button>
+          </form>
         </section>
       </section>
     </main>
 
+    <button class="reading-miniplayer" id="nav-reader" type="button" aria-label="Resume reading" hidden>
+      <span class="reader-resume-cover" id="nav-reader-cover" aria-hidden="true">
+        <span class="reader-resume-fallback" id="nav-reader-fallback">PP</span>
+        <img id="nav-reader-image" alt="" hidden>
+      </span>
+      <span class="reader-resume-copy">
+        <span class="reader-resume-kicker">Continue reading</span>
+        <strong id="nav-reader-label">Current title</strong>
+        <small id="nav-reader-title">Chapter progress</small>
+      </span>
+      <span class="miniplayer-action" aria-hidden="true">›</span>
+    </button>
+
     <nav class="app-nav" aria-label="Primary navigation">
-      <button class="app-nav-button active" id="nav-library" type="button" data-target-view="library" aria-current="page">Library</button>
-      <button class="app-nav-button" id="nav-browse" type="button" data-target-view="browse">Browse</button>
-      <button class="app-nav-button" id="nav-reader" type="button" data-target-view="reader">Reader</button>
-      <button class="app-nav-button" id="nav-settings" type="button" data-target-view="settings">Settings</button>
+      <button class="app-nav-button active" id="nav-library" type="button" data-target-view="library" aria-current="page">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H11v16H6.5A2.5 2.5 0 0 0 4 21.5v-16Z"/><path d="M20 5.5A2.5 2.5 0 0 0 17.5 3H13v16h4.5a2.5 2.5 0 0 1 2.5 2.5v-16Z"/></svg>
+        <span>Library</span>
+      </button>
+      <button class="app-nav-button" id="nav-browse" type="button" data-target-view="browse">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>
+        <span>Browse</span>
+      </button>
+      <button class="app-nav-button" id="nav-settings" type="button" data-target-view="settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 13.5v-3l-2-.7a7 7 0 0 0-.7-1.7l.9-1.9-2.1-2.1-1.9.9a7 7 0 0 0-1.7-.7L10.8 2h-3l-.7 2.3a7 7 0 0 0-1.7.7l-1.9-.9-2.1 2.1.9 1.9a7 7 0 0 0-.7 1.7l-2 .7v3l2 .7a7 7 0 0 0 .7 1.7l-.9 1.9 2.1 2.1 1.9-.9a7 7 0 0 0 1.7.7l.7 2.3h3l.7-2.3a7 7 0 0 0 1.7-.7l1.9.9 2.1-2.1-.9-1.9a7 7 0 0 0 .7-1.7l2-.7Z" transform="translate(2.2 0) scale(.8)"/></svg>
+        <span>Settings</span>
+      </button>
     </nav>
 
-    <script src="script.js?v=65"></script>
+    <div class="app-toast" id="app-toast" role="status" aria-live="polite" hidden></div>
+
+    <script src="script.js?v=82"></script>
   </body>
 </html>

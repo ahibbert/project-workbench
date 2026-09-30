@@ -1,10 +1,7 @@
-const cacheName = "panel-pilot-v71";
+const cacheName = "panel-pilot-v87";
 const appShell = [
-  "./",
-  "./index.html",
-  "./panel-test.html",
-  "./styles.css?v=30",
-  "./script.js?v=65",
+  "./styles.css?v=45",
+  "./script.js?v=82",
   "./panel-test.js?v=6",
   "./manifest.webmanifest",
 ];
@@ -26,19 +23,24 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (url.origin !== location.origin) return;
-  if (event.request.method !== "GET" || url.pathname.startsWith("/api/")) {
+  if (
+    event.request.method !== "GET" ||
+    event.request.mode === "navigate" ||
+    url.pathname.startsWith("/api/") ||
+    url.pathname === "/login" ||
+    url.pathname === "/logout"
+  ) {
     event.respondWith(fetch(event.request));
     return;
   }
 
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) return cached;
-      return fetch(event.request).then((response) => {
+    fetch(event.request)
+      .then((response) => {
         const copy = response.clone();
         caches.open(cacheName).then((cache) => cache.put(event.request, copy));
         return response;
-      });
-    })
+      })
+      .catch(() => caches.match(event.request))
   );
 });

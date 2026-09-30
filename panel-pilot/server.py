@@ -2,13 +2,18 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 from urllib.request import Request, urlopen
 import base64
+import hashlib
+import hmac
 import html
 import json
 import os
 import re
+import secrets
 import sys
 import tempfile
 import threading
+import time
+from http.cookies import SimpleCookie
 from datetime import datetime, timezone
 
 
@@ -21,6 +26,8 @@ REPORTS_PATH = os.environ.get("PANEL_PILOT_REPORTS_PATH", "/app/data/panel-repor
 LIBRARY_LIMIT = 5000
 LIBRARY_LOCK = threading.Lock()
 REPORT_LOCK = threading.Lock()
+SESSION_COOKIE = "panel_pilot_session"
+SESSION_MAX_AGE = int(os.environ.get("PANEL_PILOT_SESSION_MAX_AGE", str(30 * 24 * 60 * 60)))
 
 
 def fetch_url(url, accept="*/*", referer="https://comick.live/"):
@@ -126,27 +133,151 @@ def decode_readcomiconline_path(raw_path, replacements=None):
 
 
 class PanelPilotHandler(SimpleHTTPRequestHandler):
-    def require_auth(self):
+    def auth_credentials(self):
         username = os.environ.get("PANEL_PILOT_AUTH_USER", "").strip()
         password = os.environ.get("PANEL_PILOT_AUTH_PASSWORD", "")
-        if not username or not password:
+        return username, password
+
+    def auth_enabled(self):
+        return all(self.auth_credentials())
+
+    def session_secret(self):
+        configured = os.environ.get("PANEL_PILOT_SESSION_SECRET", "")
+        if configured:
+            return configured.encode("utf-8")
+        username, password = self.auth_credentials()
+        return hashlib.sha256(f"panel-pilot-session\0{username}\0{password}".encode("utf-8")).digest()
+
+    def make_session_token(self, username):
+        payload = json.dumps(
+            {"sub": username, "exp": int(time.time()) + SESSION_MAX_AGE},
+            separators=(",", ":"),
+        ).encode("utf-8")
+        encoded = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+        signature = hmac.new(self.session_secret(), encoded.encode("ascii"), hashlib.sha256).digest()
+        encoded_signature = base64.urlsafe_b64encode(signature).decode("ascii").rstrip("=")
+        return f"{encoded}.{encoded_signature}"
+
+    def valid_session(self):
+        if not self.auth_enabled():
             return True
 
-        expected = "Basic " + base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
-        if self.headers.get("Authorization") == expected:
+        cookie = SimpleCookie()
+        try:
+            cookie.load(self.headers.get("Cookie", ""))
+            token = cookie[SESSION_COOKIE].value
+            encoded, encoded_signature = token.split(".", 1)
+            expected = hmac.new(self.session_secret(), encoded.encode("ascii"), hashlib.sha256).digest()
+            supplied = base64.urlsafe_b64decode(encoded_signature + "=" * (-len(encoded_signature) % 4))
+            if not hmac.compare_digest(expected, supplied):
+                return False
+            payload_bytes = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+            payload = json.loads(payload_bytes.decode("utf-8"))
+        except (KeyError, ValueError, TypeError, json.JSONDecodeError):
+            return False
+
+        try:
+            expires_at = int(payload.get("exp", 0))
+        except (TypeError, ValueError):
+            return False
+        username, _ = self.auth_credentials()
+        return payload.get("sub") == username and expires_at >= int(time.time())
+
+    def require_auth(self, parsed):
+        if self.valid_session():
             return True
 
-        self.send_response(401)
-        self.send_header("WWW-Authenticate", 'Basic realm="Panel Pilot"')
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.end_headers()
-        self.wfile.write(b"Authentication required")
+        if parsed.path.startswith("/api/"):
+            self.send_json({"error": "Authentication required", "login": "/login"}, status=401)
+            return False
+
+        next_path = parsed.path
+        if parsed.query:
+            next_path += f"?{parsed.query}"
+        self.redirect(f"/login?{urlencode({'next': next_path})}")
         return False
 
-    def do_POST(self):
-        if not self.require_auth():
+    def secure_request(self):
+        forwarded = self.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip().lower()
+        return forwarded == "https"
+
+    def session_cookie_header(self, value, max_age):
+        parts = [
+            f"{SESSION_COOKIE}={value}",
+            "Path=/",
+            f"Max-Age={max_age}",
+            "HttpOnly",
+            "SameSite=Lax",
+        ]
+        if self.secure_request():
+            parts.append("Secure")
+        return "; ".join(parts)
+
+    def redirect(self, target, cookie_header=None):
+        self.send_response(303)
+        self.send_header("Location", target)
+        self.send_header("Cache-Control", "no-store")
+        if cookie_header:
+            self.send_header("Set-Cookie", cookie_header)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def serve_login(self, parsed):
+        if not self.auth_enabled():
+            self.redirect("/")
             return
+        if self.valid_session():
+            self.redirect(self.safe_next_path(parse_qs(parsed.query).get("next", ["/"])[0]))
+            return
+
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "login.html")
+        with open(path, "rb") as handle:
+            body = handle.read()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def safe_next_path(self, value):
+        return value if value.startswith("/") and not value.startswith("//") else "/"
+
+    def handle_login_post(self):
+        if not self.auth_enabled():
+            self.redirect("/")
+            return
+        length = int(self.headers.get("Content-Length", "0"))
+        if length > 16384:
+            self.redirect("/login?error=1")
+            return
+        form = parse_qs(self.rfile.read(length).decode("utf-8", errors="replace"))
+        username = form.get("username", [""])[0]
+        password = form.get("password", [""])[0]
+        expected_username, expected_password = self.auth_credentials()
+        valid = secrets.compare_digest(username, expected_username) and secrets.compare_digest(password, expected_password)
+        next_path = self.safe_next_path(form.get("next", ["/"])[0])
+        if not valid:
+            self.redirect(f"/login?{urlencode({'error': '1', 'next': next_path})}")
+            return
+
+        token = self.make_session_token(expected_username)
+        self.redirect(next_path, self.session_cookie_header(token, SESSION_MAX_AGE))
+
+    def handle_logout_post(self):
+        self.redirect("/login", self.session_cookie_header("", 0))
+
+    def do_POST(self):
         parsed = urlparse(self.path)
+        if parsed.path == "/login":
+            self.handle_login_post()
+            return
+        if parsed.path == "/logout":
+            self.handle_logout_post()
+            return
+        if not self.require_auth(parsed):
+            return
         try:
             if parsed.path == "/api/suwayomi/graphql":
                 self.handle_suwayomi_graphql(parsed)
@@ -164,9 +295,12 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         self.send_json({"error": "Unknown POST endpoint"}, status=404)
 
     def do_GET(self):
-        if not self.require_auth():
-            return
         parsed = urlparse(self.path)
+        if parsed.path == "/login":
+            self.serve_login(parsed)
+            return
+        if not self.require_auth(parsed):
+            return
         try:
             if parsed.path == "/api/comick/chapters":
                 self.handle_comick_chapters(parsed)
@@ -340,6 +474,9 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
                 value = item.get(field)
                 if isinstance(value, (str, int, float)):
                     output[field] = str(value)[:300]
+            thumbnail_url = item.get("thumbnailUrl")
+            if isinstance(thumbnail_url, str):
+                output["thumbnailUrl"] = thumbnail_url[:2000]
             for field in bool_fields:
                 output[field] = bool(item.get(field))
             key = f"{output.get('sourceId', 'source')}:{output.get('mangaId', '')}"

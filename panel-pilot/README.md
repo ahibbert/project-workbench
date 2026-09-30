@@ -74,6 +74,24 @@ same core operations used by the official WebUI:
 - `fetchChapters`
 - `fetchChapterPages`
 
+Panel Pilot also writes page progress and completed chapters back to Suwayomi.
+To share that progress with Tachimanga, enable **Enhanced Tracking → Suwayomi**
+in Tachimanga. Tachimanga can then use MangaBaka as a regular tracker; connect
+MangaBaka in Tachimanga's Tracking settings. Panel Pilot's Settings page has a
+manual sync button, and progress is also sent automatically while reading.
+
+## Sign in
+
+When `PANEL_PILOT_AUTH_USER` and `PANEL_PILOT_AUTH_PASSWORD` are set, Panel
+Pilot shows an HTML sign-in page instead of a browser Basic Auth dialog. The
+form uses standard `username` and `current-password` autocomplete fields so
+password managers can fill it. Sessions last 30 days by default.
+
+For a stable session signing key across password changes or multiple replicas,
+set `PANEL_PILOT_SESSION_SECRET` to a long random value. You can optionally set
+`PANEL_PILOT_SESSION_MAX_AGE` in seconds. TLS remains the responsibility of the
+reverse proxy; do not add a second Basic Auth gate in front of Panel Pilot.
+
 ## Current limitations
 
 - Panel detection is local and heuristic-based. It works best on pages with
@@ -88,7 +106,7 @@ same core operations used by the official WebUI:
 
 ## Next steps
 
+- Follow the [panel performance and Tachimanga migration plan](PERFORMANCE_AND_SYNC_PLAN.md).
 - Add manual split, merge, reorder, and skip controls.
-- Cache detected panel metadata in IndexedDB by chapter/page.
 - Add direct MangaDex and Comick adapters as optional alternatives to Suwayomi.
 - Package as an iOS-friendly standalone PWA or native wrapper.
