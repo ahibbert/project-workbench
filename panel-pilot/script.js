@@ -5,7 +5,7 @@ const sourceIndexStoreKey = "panel-pilot-source-index";
 const sourceIndexTtlMs = 24 * 60 * 60 * 1000;
 const sourceIndexPageLimit = 6;
 const sourceIndexRequestTimeoutMs = 12000;
-const appVersion = "v93";
+const appVersion = "v94";
 const appBuildTime = "2026-09-30";
 const detectorVersion = "detector v18-ml-manga";
 const pageImageRetryDelaysMs = [0, 350, 1200];
@@ -13,6 +13,9 @@ const chapterFetchRetryDelaysMs = [0, 700, 1800];
 const backgroundPageConcurrency = 2;
 const nextChapterPreparedPageCount = 3;
 const downloadAheadChapterCount = 10;
+const downloadInterChapterDelayMs = 90 * 1000;
+const downloadRetryBaseDelayMs = 3 * 60 * 1000;
+const downloadMaxAttemptsPerSession = 3;
 const allSourcesValue = "__all__";
 const defaultComickChapter = {
   label: "Frieren chapter 1",
@@ -139,6 +142,10 @@ const queries = {
     startDownloader(input: $input) {
       downloadStatus { state }
     }
+  }`,
+  chapterDownloadState: `query CHAPTER_DOWNLOAD_STATE($id: Int!) {
+    chapter(id: $id) { id isDownloaded }
+    downloadStatus { state }
   }`,
 };
 
@@ -271,6 +278,9 @@ const state = {
   nextChapterPrefetch: null,
   nextChapterPrefetchTimer: null,
   downloadAheadQueued: new Set(),
+  downloadAheadPending: [],
+  downloadAheadAttempts: new Map(),
+  downloadAheadWorkerRunning: false,
   mangaModelAvailable: null,
   navigationPending: false,
   navigationRequestId: 0,
@@ -1883,18 +1893,65 @@ async function ensureDownloadAhead(chapterId) {
   }
 
   const ids = chapters.map((chapter) => Number(chapter.id));
-  ids.forEach((id) => state.downloadAheadQueued.add(id));
-  if (el.offlineNote) el.offlineNote.textContent = `Offline buffer: queueing ${ids.length} chapter${ids.length === 1 ? "" : "s"} in Suwayomi…`;
+  ids.forEach((id) => {
+    state.downloadAheadQueued.add(id);
+    state.downloadAheadPending.push(id);
+  });
+  if (el.offlineNote) el.offlineNote.textContent = `Offline buffer: ${state.downloadAheadPending.length} chapter${state.downloadAheadPending.length === 1 ? "" : "s"} waiting for paced download.`;
+  void runDownloadAheadWorker();
+}
+
+async function runDownloadAheadWorker() {
+  if (state.downloadAheadWorkerRunning) return;
+  state.downloadAheadWorkerRunning = true;
   try {
-    await graphQL(queries.enqueueChapterDownloads, { input: { ids } }, { timeoutMs: 15000 });
-    await graphQL(queries.startDownloader, { input: {} }, { timeoutMs: 10000 }).catch(() => null);
-    if (el.offlineNote) {
-      el.offlineNote.textContent = `Offline buffer: Suwayomi is keeping the current and next ${downloadAheadChapterCount} chapters ready.`;
+    while (state.downloadAheadPending.length) {
+      const chapterId = state.downloadAheadPending.shift();
+      const attempt = (state.downloadAheadAttempts.get(chapterId) || 0) + 1;
+      state.downloadAheadAttempts.set(chapterId, attempt);
+      if (el.offlineNote) el.offlineNote.textContent = `Offline buffer: downloading one chapter in Suwayomi (${state.downloadAheadPending.length} waiting).`;
+
+      const downloaded = await downloadChapterWithStatus(chapterId).catch(() => false);
+      if (downloaded) {
+        state.downloadAheadQueued.delete(chapterId);
+        state.downloadAheadAttempts.delete(chapterId);
+        const chapter = state.chapters.find((item) => Number(item.id) === Number(chapterId));
+        if (chapter) chapter.isDownloaded = true;
+        if (state.downloadAheadPending.length) {
+          if (el.offlineNote) el.offlineNote.textContent = `Offline buffer: chapter saved. Cooling down before the next ${state.downloadAheadPending.length}.`;
+          await waitFor(downloadInterChapterDelayMs);
+        }
+        continue;
+      }
+
+      if (attempt >= downloadMaxAttemptsPerSession) {
+        state.downloadAheadPending.length = 0;
+        if (el.offlineNote) el.offlineNote.textContent = "Offline buffer: this source is still limiting downloads; Panel Pilot will try again next session.";
+        return;
+      }
+
+      const retryDelay = downloadRetryBaseDelayMs * 2 ** (attempt - 1);
+      state.downloadAheadPending.unshift(chapterId);
+      if (el.offlineNote) el.offlineNote.textContent = `Offline buffer: source paused the download. Retrying quietly in ${Math.round(retryDelay / 60000)} minutes.`;
+      await waitFor(retryDelay);
     }
-  } catch (error) {
-    ids.forEach((id) => state.downloadAheadQueued.delete(id));
-    if (el.offlineNote) el.offlineNote.textContent = `Offline buffer will retry later: ${friendlySourceErrorMessage(error)}`;
+    if (el.offlineNote) el.offlineNote.textContent = `Offline buffer: the current and next ${downloadAheadChapterCount} chapters are ready where the source allowed.`;
+  } finally {
+    state.downloadAheadWorkerRunning = false;
   }
+}
+
+async function downloadChapterWithStatus(chapterId) {
+  await graphQL(queries.enqueueChapterDownloads, { input: { ids: [chapterId] } }, { timeoutMs: 15000 });
+  await graphQL(queries.startDownloader, { input: {} }, { timeoutMs: 10000 });
+
+  for (let poll = 0; poll < 30; poll += 1) {
+    await waitFor(4000);
+    const data = await graphQL(queries.chapterDownloadState, { id: chapterId }, { timeoutMs: 10000 });
+    if (data.chapter?.isDownloaded) return true;
+    if (poll >= 1 && data.downloadStatus?.state === "STOPPED") return false;
+  }
+  return false;
 }
 
 function clearNextChapterPrefetch() {
