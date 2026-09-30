@@ -75,10 +75,18 @@ same core operations used by the official WebUI:
 - `fetchChapterPages`
 
 Panel Pilot also writes page progress and completed chapters back to Suwayomi.
+It refreshes Suwayomi's library on startup and marks a manga as in-library when
+you start reading it, so Suwayomi-backed titles use one shared library across
+Panel Pilot and Tachimanga.
 To share that progress with Tachimanga, enable **Enhanced Tracking → Suwayomi**
 in Tachimanga. Tachimanga can then use MangaBaka as a regular tracker; connect
 MangaBaka in Tachimanga's Tracking settings. Panel Pilot's Settings page has a
 manual sync button, and progress is also sent automatically while reading.
+
+Enhanced Tracking only applies to entries opened through Tachimanga's Suwayomi
+extension. Existing entries from other Tachimanga extensions need a one-time
+source migration (or a backup-assisted migration) before they can share this
+progress path.
 
 ## Sign in
 

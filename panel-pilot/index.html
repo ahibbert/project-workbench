@@ -12,7 +12,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>Panel Pilot</title>
     <link rel="manifest" href="manifest.webmanifest">
-    <link rel="stylesheet" href="styles.css?v=45">
+    <link rel="stylesheet" href="styles.css?v=46">
   </head>
   <body>
     <main class="app-shell">
@@ -231,14 +231,14 @@
             <span class="small-count" id="sync-state">Ready</span>
           </div>
           <p class="note">
-            Panel Pilot sends page and completed-chapter progress to Suwayomi. In Tachimanga, enable
-            <strong>Enhanced Tracking → Suwayomi</strong>, then connect <strong>MangaBaka</strong> under regular tracking.
+            Suwayomi is the shared library for Panel Pilot and Tachimanga. Panel Pilot adds titles when you read them and
+            sends page and completed-chapter progress automatically.
           </p>
           <div class="button-row">
-            <button id="sync-progress" type="button">Sync current progress</button>
+            <button id="sync-progress" type="button">Sync library &amp; progress</button>
             <a class="button-link" href="https://tachimanga.app/help/guides/tracking.html" target="_blank" rel="noopener">Setup guide</a>
           </div>
-          <p class="note" id="sync-note" aria-live="polite">Progress syncs automatically while you read.</p>
+          <p class="note" id="sync-note" aria-live="polite">Enable <strong>Enhanced Tracking → Suwayomi</strong> in Tachimanga after adding its Suwayomi extension.</p>
         </section>
 
         <section class="panel account-panel">
@@ -282,6 +282,6 @@
 
     <div class="app-toast" id="app-toast" role="status" aria-live="polite" hidden></div>
 
-    <script src="script.js?v=82"></script>
+    <script src="script.js?v=83"></script>
   </body>
 </html>

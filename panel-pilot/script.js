@@ -5,7 +5,7 @@ const sourceIndexStoreKey = "panel-pilot-source-index";
 const sourceIndexTtlMs = 24 * 60 * 60 * 1000;
 const sourceIndexPageLimit = 6;
 const sourceIndexRequestTimeoutMs = 12000;
-const appVersion = "v87";
+const appVersion = "v88";
 const appBuildTime = "2026-09-30";
 const detectorVersion = "detector v16";
 const allSourcesValue = "__all__";
@@ -29,6 +29,26 @@ const queries = {
         isNsfw
         supportsLatest
         extension { pkgName repo }
+      }
+    }
+  }`,
+  libraryMangas: `query GET_LIBRARY_MANGAS {
+    mangas(condition: { inLibrary: true }, first: 500) {
+      totalCount
+      nodes {
+        id
+        title
+        thumbnailUrl
+        inLibrary
+        initialized
+        sourceId
+        source {
+          id
+          name
+          displayName
+          lang
+          isNsfw
+        }
       }
     }
   }`,
@@ -94,6 +114,14 @@ const queries = {
         id
         isRead
         lastPageRead
+      }
+    }
+  }`,
+  updateManga: `mutation UPDATE_MANGA_LIBRARY($input: UpdateMangaInput!) {
+    updateManga(input: $input) {
+      manga {
+        id
+        inLibrary
       }
     }
   }`,
@@ -1374,12 +1402,13 @@ function renderLibrary() {
   visibleItems.forEach((item) => {
     const card = document.createElement("article");
     card.className = `manga-card library-card${item.pinned ? " pinned-item" : ""}${item.hidden ? " hidden-item" : ""}`;
+    const resumable = Number.isInteger(Number(item.chapterId)) && Number(item.chapterId) > 0;
     const cover = createCoverButton(item, {
       title: item.mangaTitle || "Untitled",
-      eyebrow: item.chapterTitle || `Chapter ${item.chapterId}`,
-      meta: item.progressLabel || "Resume reading",
+      eyebrow: item.chapterTitle || item.sourceLabel || "Suwayomi library",
+      meta: resumable ? (item.progressLabel || "Resume reading") : "View chapters",
     });
-    cover.addEventListener("click", () => selectLibraryManga(item, true));
+    cover.addEventListener("click", () => selectLibraryManga(item, resumable));
 
     const badges = document.createElement("div");
     badges.className = "manga-card-badges";
@@ -1431,7 +1460,7 @@ function renderLibrary() {
 function readerResumeItem() {
   const available = state.libraryItems
     .filter((item) => !item.hidden)
-    .filter((item) => state.showNsfwSources || !isNsfwLibraryItem(item))
+    .filter((item) => Number.isInteger(Number(item.chapterId)) && Number(item.chapterId) > 0)
     .sort((a, b) => Date.parse(b.updatedAt || 0) - Date.parse(a.updatedAt || 0));
   if (state.activeChapter?.type === "suwayomi" && state.currentManga?.id) {
     const currentKey = libraryItemKey({ mangaId: state.currentManga.id, sourceId: state.currentManga.sourceId });
@@ -1531,7 +1560,9 @@ function visibleLibraryItems() {
 }
 
 function libraryItemsAllowedByNsfw() {
-  return state.libraryItems.filter((item) => state.showNsfwSources || !isNsfwLibraryItem(item));
+  // A title explicitly present in the user's library should remain visible.
+  // The NSFW preference only limits discovery/search results.
+  return state.libraryItems;
 }
 
 function sortLibraryItems(items) {
@@ -1572,11 +1603,69 @@ async function selectLibraryManga(item, resume) {
   };
   updateReaderNav();
   el.mangaId.value = item.mangaId;
-  el.chapterId.value = item.chapterId;
-  el.chapterTitle.textContent = item.chapterTitle || item.mangaTitle || `Chapter ${item.chapterId}`;
+  el.chapterId.value = item.chapterId || "";
+  el.chapterTitle.textContent = item.chapterTitle || item.mangaTitle || "Selected manga";
   state.pendingResume = resume ? item : null;
   await fetchChapters();
   if (resume) await loadChapterPages();
+}
+
+async function ensureCurrentMangaInSuwayomiLibrary() {
+  const mangaId = Number(state.currentManga?.id);
+  if (!Number.isInteger(mangaId) || mangaId < 1) return false;
+  const data = await graphQL(
+    queries.updateManga,
+    { input: { id: mangaId, patch: { inLibrary: true } } },
+    { timeoutMs: 10000 }
+  );
+  return Boolean(data.updateManga?.manga?.inLibrary);
+}
+
+async function syncSuwayomiLibrary({ announce = false } = {}) {
+  const data = await graphQL(queries.libraryMangas, {}, { timeoutMs: 15000 });
+  const mangas = data.mangas?.nodes || [];
+  const existingByKey = new Map(state.libraryItems.map((item) => [libraryItemKey(item), item]));
+  const serverItems = mangas.map((manga) => {
+    const key = libraryItemKey({ id: manga.id, sourceId: manga.sourceId });
+    const existing = existingByKey.get(key) || {};
+    const source = manga.source || state.sources.find((item) => String(item.id) === String(manga.sourceId));
+    return {
+      ...existing,
+      mangaId: Number(manga.id),
+      mangaTitle: manga.title,
+      sourceId: manga.sourceId,
+      sourceLabel: source ? sourceLabel(source) : (existing.sourceLabel || "Suwayomi"),
+      thumbnailUrl: manga.thumbnailUrl || existing.thumbnailUrl,
+      suwayomiLibrary: true,
+      updatedAt: existing.updatedAt || "1970-01-01T00:00:00.000Z",
+    };
+  });
+  state.libraryItems = mergeLibraryItems(serverItems, state.libraryItems);
+  saveLibraryItems();
+  renderLibrary();
+  if (announce) {
+    setSyncStatus("Synced", `${mangas.length} Suwayomi library title${mangas.length === 1 ? "" : "s"} available in Panel Pilot.`, "good");
+    showToast("Library refreshed from Suwayomi.");
+  }
+  return mangas.length;
+}
+
+async function syncLibraryAndProgress() {
+  setBusy(el.syncProgress, true, "Syncing");
+  try {
+    const count = await syncSuwayomiLibrary();
+    const progressSynced = await syncSuwayomiProgress();
+    setSyncStatus(
+      "Synced",
+      `${count} Suwayomi title${count === 1 ? "" : "s"} refreshed${progressSynced ? " and current progress sent" : ""}.`,
+      "good"
+    );
+    showToast("Suwayomi library synced.");
+  } catch (error) {
+    setSyncStatus("Sync failed", friendlySourceErrorMessage(error), "bad");
+  } finally {
+    setBusy(el.syncProgress, false);
+  }
 }
 
 function rememberReadingProgress() {
@@ -1909,6 +1998,7 @@ async function loadChapterPages() {
   setBusy(el.loadChapterPages, true, "Loading");
   setReaderLoading(true, "Fetching chapter pages...", 12);
   try {
+    await ensureCurrentMangaInSuwayomiLibrary().catch(() => false);
     const data = await graphQL(queries.fetchPages, { input: { chapterId } });
     const chapter = data.fetchChapterPages?.chapter;
     const pages = await resolveChapterPages(data.fetchChapterPages);
@@ -4644,6 +4734,7 @@ async function initializeSuwayomi() {
   const connected = await testConnection();
   if (connected) {
     await loadSources();
+    await syncSuwayomiLibrary().catch(() => 0);
     await hydrateLibraryCovers();
   }
 }
@@ -4688,9 +4779,7 @@ function wireEvents() {
   el.testConnection.addEventListener("click", testConnection);
   el.loadSources.addEventListener("click", loadSources);
   el.clearAppCache?.addEventListener("click", clearAppCache);
-  el.syncProgress?.addEventListener("click", () => {
-    syncSuwayomiProgress({ manual: true }).catch(() => {});
-  });
+  el.syncProgress?.addEventListener("click", syncLibraryAndProgress);
   el.showNsfwSources?.addEventListener("change", (event) => setShowNsfwSources(event.target.checked));
   el.toggleSuwayomiPanel?.addEventListener("click", toggleSuwayomiSetupPanel);
   el.toggleLibraryPanel?.addEventListener("click", toggleLibraryPanel);
