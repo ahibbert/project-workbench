@@ -116,7 +116,7 @@
         <header class="view-header">
           <div>
             <h1>Library</h1>
-            <p class="view-subtitle">Your reading, ready to resume</p>
+            <p class="view-subtitle" id="library-count">0 titles</p>
           </div>
           <div class="panel-heading-actions">
             <button class="header-action" id="toggle-hidden-library" type="button" aria-pressed="false">
@@ -126,10 +126,7 @@
           </div>
         </header>
         <section class="library-content">
-          <div class="section-heading">
-            <h2>Your Library</h2>
-            <span class="section-count" id="library-count">0 titles</span>
-          </div>
+          <p class="library-filter-help">Reading includes rereading · Other includes considering and dropped</p>
           <div class="library-filters" id="library-filters" role="tablist" aria-label="Library status">
             <button class="library-filter active" type="button" role="tab" aria-selected="true" data-library-filter="reading">Reading <span data-library-count="reading">0</span></button>
             <button class="library-filter" type="button" role="tab" aria-selected="false" data-library-filter="plan_to_read">Plan <span data-library-count="plan_to_read">0</span></button>
@@ -162,6 +159,13 @@
               <button class="mini-button" id="refresh-mangabaka" type="button">Refresh</button>
             </div>
             <div class="recommendation-rail" id="mangabaka-results" aria-live="polite"></div>
+          </section>
+          <section class="recommendation-context" id="recommendation-context" aria-live="polite" hidden>
+            <div>
+              <strong id="recommendation-context-title">Finding a readable source</strong>
+              <span id="recommendation-context-note"></span>
+            </div>
+            <button class="mini-button" id="clear-recommendation-context" type="button">Clear</button>
           </section>
           <div class="search-bar">
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>
@@ -242,22 +246,35 @@
             <button class="mini-button" id="toggle-suwayomi-panel" type="button" aria-expanded="false" aria-controls="suwayomi-setup">Advanced</button>
           </div>
           <div class="suwayomi-setup" id="suwayomi-setup" hidden>
+            <div class="setup-guide" aria-labelledby="suwayomi-setup-title">
+              <strong id="suwayomi-setup-title">Connect your reading library</strong>
+              <ol>
+                <li id="setup-step-url"><span aria-hidden="true">1</span><strong>Confirm the Suwayomi URL</strong></li>
+                <li id="setup-step-connection"><span aria-hidden="true">2</span><strong>Test the connection</strong></li>
+                <li id="setup-step-sources"><span aria-hidden="true">3</span><strong>Load at least one source</strong></li>
+                <li id="setup-step-browse"><span aria-hidden="true">4</span><strong>Return to Browse</strong></li>
+              </ol>
+            </div>
             <label class="field">
               <span>Server URL</span>
               <input id="server-url" type="url" inputmode="url" value="http://localhost:4567" autocomplete="url">
             </label>
             <div class="button-row">
-              <button id="test-connection" type="button">Test</button>
-              <button id="load-sources" type="button">Sources</button>
-              <button id="load-demo" type="button">Demo</button>
+              <button id="test-connection" type="button">Test connection</button>
+              <button id="load-sources" type="button" disabled>Load sources</button>
             </div>
-            <label class="checkbox-field">
-              <input id="show-nsfw-sources" type="checkbox">
-              <span>Show NSFW sources</span>
-            </label>
-            <a class="tool-link" id="open-suwayomi" href="http://localhost:4567" target="_blank" rel="noopener">Open Suwayomi</a>
-            <button class="wide-button" id="clear-app-cache" type="button">Clear app cache</button>
-            <p class="note version-note" id="version-note">Version loading...</p>
+            <button class="wide-button setup-finish" id="finish-suwayomi-setup" type="button" hidden>Continue to Browse</button>
+            <details class="settings-detail setup-advanced">
+              <summary>Advanced tools</summary>
+              <label class="checkbox-field">
+                <input id="show-nsfw-sources" type="checkbox">
+                <span>Show NSFW sources</span>
+              </label>
+              <a class="tool-link" id="open-suwayomi" href="http://localhost:4567" target="_blank" rel="noopener">Open Suwayomi</a>
+              <button class="wide-button" id="load-demo" type="button">Load reader demo</button>
+              <button class="wide-button" id="clear-app-cache" type="button">Clear app cache</button>
+              <p class="note version-note" id="version-note">Version loading...</p>
+            </details>
           </div>
           <p class="note" id="connection-note">
             Connecting to Suwayomi through the Panel Pilot proxy.
@@ -296,11 +313,11 @@
             <span class="small-count" id="sync-state">Ready</span>
           </div>
           <p class="note">
-            Suwayomi is the shared library for Panel Pilot and Tachimanga. Panel Pilot adds titles when you read them and
+            Optional Tachimanga integration: Suwayomi can be the shared library for both apps. Panel Pilot adds titles when you read them and
             sends page and completed-chapter progress automatically.
           </p>
           <div class="button-row">
-            <button id="sync-progress" type="button">Sync library &amp; progress</button>
+            <button id="sync-progress" type="button" disabled>Sync library &amp; progress</button>
             <button id="retry-downloads" type="button" hidden>Retry failed downloads</button>
             <a class="button-link" href="https://tachimanga.app/help/guides/tracking.html" target="_blank" rel="noopener">Setup guide</a>
           </div>
@@ -313,7 +330,7 @@
             <h2>MangaBaka</h2>
             <span class="small-count" id="mangabaka-state">Not connected</span>
           </div>
-          <p class="note">Personalized discovery and chapter-level tracking. Your token is stored on this server and is never returned to the browser.</p>
+          <p class="note">Optional: connect MangaBaka for personalized discovery and chapter-level tracking. Your token is stored on this server and is never returned to the browser.</p>
           <label class="field">
             <span>Personal Access Token</span>
             <input id="mangabaka-token" type="password" autocomplete="off" spellcheck="false" placeholder="mb-…">
@@ -369,6 +386,6 @@
     <div class="app-toast" id="app-toast" role="status" aria-live="polite" hidden></div>
     <button class="app-update" id="app-update" type="button" hidden>Update ready · Restart app</button>
 
-    <script src="script.js?v=98.1"></script>
+    <script src="script.js?v=99"></script>
   </body>
 </html>

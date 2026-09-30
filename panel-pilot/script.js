@@ -5,7 +5,7 @@ const sourceIndexStoreKey = "panel-pilot-source-index";
 const sourceIndexTtlMs = 24 * 60 * 60 * 1000;
 const sourceIndexPageLimit = 6;
 const sourceIndexRequestTimeoutMs = 12000;
-const appVersion = "v98.1";
+const appVersion = "v99";
 const appBuildTime = "2026-10-01";
 const detectorVersion = "detector v18-ml-manga";
 const pageImageRetryDelaysMs = [0, 350, 1200];
@@ -223,6 +223,11 @@ const el = {
   testConnection: document.querySelector("#test-connection"),
   loadSources: document.querySelector("#load-sources"),
   loadDemo: document.querySelector("#load-demo"),
+  finishSuwayomiSetup: document.querySelector("#finish-suwayomi-setup"),
+  setupStepUrl: document.querySelector("#setup-step-url"),
+  setupStepConnection: document.querySelector("#setup-step-connection"),
+  setupStepSources: document.querySelector("#setup-step-sources"),
+  setupStepBrowse: document.querySelector("#setup-step-browse"),
   clearAppCache: document.querySelector("#clear-app-cache"),
   showNsfwSources: document.querySelector("#show-nsfw-sources"),
   toggleSuwayomiPanel: document.querySelector("#toggle-suwayomi-panel"),
@@ -237,6 +242,7 @@ const el = {
   libraryFilterCounts: [...document.querySelectorAll("[data-library-count]")],
   toggleBrowsePanel: document.querySelector("#toggle-browse-panel"),
   browseBody: document.querySelector("#browse-body"),
+  browseView: document.querySelector("#browse-view"),
   browsePrompt: document.querySelector("#browse-prompt"),
   browseOpenSettings: document.querySelector("#browse-open-settings"),
   sourceSelect: document.querySelector("#source-select"),
@@ -248,6 +254,10 @@ const el = {
   mangabakaResults: document.querySelector("#mangabaka-results"),
   mangabakaRecommendationsNote: document.querySelector("#mangabaka-recommendations-note"),
   refreshMangabaka: document.querySelector("#refresh-mangabaka"),
+  recommendationContext: document.querySelector("#recommendation-context"),
+  recommendationContextTitle: document.querySelector("#recommendation-context-title"),
+  recommendationContextNote: document.querySelector("#recommendation-context-note"),
+  clearRecommendationContext: document.querySelector("#clear-recommendation-context"),
   mangaDetail: document.querySelector("#manga-detail"),
   closeMangaDetail: document.querySelector("#close-manga-detail"),
   detailCover: document.querySelector("#detail-cover"),
@@ -362,6 +372,7 @@ const state = {
   mangabakaSyncPromise: null,
   mangabakaSyncTimer: null,
   pendingMangaBakaRecommendation: null,
+  setupReturnToBrowse: false,
   cameraPageChanged: false,
 };
 
@@ -470,6 +481,7 @@ function setActiveView(view, options = {}) {
   }
 
   state.activeView = view;
+  updateSuwayomiSetupState();
   el.appViews.forEach((item) => {
     const isActive = item.dataset.view === view;
     item.classList.toggle("active", isActive);
@@ -552,6 +564,58 @@ function updateSuwayomiSetupPanel() {
   el.suwayomiSetup.hidden = !state.suwayomiSetupOpen;
   el.toggleSuwayomiPanel.textContent = state.suwayomiSetupOpen ? "Done" : "Advanced";
   el.toggleSuwayomiPanel.setAttribute("aria-expanded", state.suwayomiSetupOpen ? "true" : "false");
+  updateSuwayomiSetupState();
+}
+
+function updateSuwayomiSetupState() {
+  const hasUrl = Boolean((el.serverUrl?.value || state.baseUrl || "").trim());
+  const hasSources = state.connected && state.visibleSources.length > 0;
+  setSetupStepComplete(el.setupStepUrl, hasUrl, 1);
+  setSetupStepComplete(el.setupStepConnection, state.connected, 2);
+  setSetupStepComplete(el.setupStepSources, hasSources, 3);
+  setSetupStepComplete(el.setupStepBrowse, hasSources && state.activeView === "browse", 4);
+  if (el.loadSources) el.loadSources.disabled = !state.connected;
+  if (el.syncProgress) el.syncProgress.disabled = !state.connected;
+  if (el.retryDownloads) el.retryDownloads.disabled = !state.connected;
+  if (el.finishSuwayomiSetup) el.finishSuwayomiSetup.hidden = !hasSources;
+  if (!state.connected) {
+    if (el.offlineNote) el.offlineNote.textContent = "Chapter buffering starts after Suwayomi is connected.";
+    if (el.retryDownloads) el.retryDownloads.hidden = true;
+  }
+}
+
+function setSetupStepComplete(step, complete, number) {
+  if (!step) return;
+  step.classList.toggle("complete", complete);
+  const marker = step.querySelector("span");
+  if (marker) marker.textContent = complete ? "✓" : String(number);
+}
+
+function openSuwayomiSetup({ recommendation = null } = {}) {
+  if (recommendation) {
+    state.pendingMangaBakaRecommendation = recommendation;
+    state.setupReturnToBrowse = true;
+    updateRecommendationContext();
+  }
+  state.suwayomiSetupOpen = true;
+  updateSuwayomiSetupPanel();
+  setActiveView("settings");
+  requestAnimationFrame(() => el.serverUrl?.focus({ preventScroll: true }));
+}
+
+async function finishSuwayomiSetup() {
+  if (!state.connected || !state.visibleSources.length) {
+    showToast("Test the connection and load a source first.", "bad");
+    return;
+  }
+  state.setupReturnToBrowse = false;
+  setActiveView("browse");
+  updateSuwayomiSetupState();
+  if (state.pendingMangaBakaRecommendation) {
+    await continuePendingRecommendationSearch();
+  } else {
+    requestAnimationFrame(() => el.searchQuery?.focus({ preventScroll: true }));
+  }
 }
 
 function toggleSuwayomiSetupPanel() {
@@ -603,10 +667,34 @@ function updateHiddenLibraryToggle() {
 }
 
 function setConnection(connected, message, tone = "") {
+  const connectionChanged = state.connected !== connected;
   state.connected = connected;
   el.connectionDot.classList.toggle("connected", connected);
   el.connectionNote.textContent = message;
   el.connectionNote.className = `note ${tone}`;
+  updateSuwayomiSetupState();
+  updateBrowseAvailability();
+  if (connectionChanged) renderMangaBakaRecommendations();
+  if (!connected) {
+    const checking = /connecting|checking/i.test(message);
+    setSyncStatus(
+      checking ? "Checking" : "Not connected",
+      checking ? "Checking the Suwayomi connection…" : "Test the Suwayomi connection before syncing progress.",
+      checking ? "" : "bad"
+    );
+  }
+}
+
+function updateBrowseAvailability() {
+  const usableSourceCount = state.connected ? state.visibleSources.length : 0;
+  if (el.sourceCount) {
+    el.sourceCount.textContent = state.connected
+      ? `${usableSourceCount} source${usableSourceCount === 1 ? "" : "s"} available`
+      : "Suwayomi setup required";
+  }
+  if (el.sourceSelect) el.sourceSelect.disabled = !usableSourceCount;
+  if (el.searchSource) el.searchSource.disabled = !usableSourceCount;
+  if (el.browseOpenSettings) el.browseOpenSettings.hidden = usableSourceCount > 0;
 }
 
 async function graphQL(query, variables = {}, options = {}) {
@@ -736,17 +824,19 @@ function renderMangaBakaRecommendations() {
     const title = mangaBakaTitle(series);
     const card = document.createElement("article");
     card.className = "recommendation-card";
-    card.append(createCoverButton({ title, thumbnailUrl: mangaBakaCover(series) }, {
+    const cover = createCoverButton({ title, thumbnailUrl: mangaBakaCover(series) }, {
       title,
       eyebrow: String(series.media_type || series.type || "Manga").replaceAll("_", " "),
-      meta: mangaBakaReason(series),
-    }));
+      meta: "View reading options",
+    });
+    cover.addEventListener("click", () => findMangaBakaSource(series));
+    card.append(cover);
     const reason = document.createElement("p");
     reason.className = "recommendation-reason";
     reason.textContent = mangaBakaReason(series);
     const find = document.createElement("button");
     find.type = "button";
-    find.textContent = "Find a source";
+    find.textContent = state.connected && state.visibleSources.length ? "Read this" : "Set up to read";
     find.addEventListener("click", () => findMangaBakaSource(series));
     card.append(reason, find);
     el.mangabakaResults.append(card);
@@ -780,8 +870,39 @@ async function loadMangaBakaRecommendations({ announce = false } = {}) {
 function findMangaBakaSource(series) {
   state.pendingMangaBakaRecommendation = series;
   el.searchQuery.value = mangaBakaTitle(series);
+  updateRecommendationContext();
+  if (!state.connected || !state.visibleSources.length) {
+    openSuwayomiSetup({ recommendation: series });
+    showToast("Connect Suwayomi and load a source to read this title.");
+    return;
+  }
+  void continuePendingRecommendationSearch();
+}
+
+function updateRecommendationContext() {
+  if (!el.recommendationContext) return;
+  const series = state.pendingMangaBakaRecommendation;
+  el.recommendationContext.hidden = !series;
+  if (!series) return;
+  const title = mangaBakaTitle(series);
+  if (el.recommendationContextTitle) el.recommendationContextTitle.textContent = `Finding ${title}`;
+  if (el.recommendationContextNote) {
+    el.recommendationContextNote.textContent = `${mangaBakaReason(series)} · Exact matches are shown first.`;
+  }
+}
+
+function clearRecommendationContext() {
+  state.pendingMangaBakaRecommendation = null;
+  state.setupReturnToBrowse = false;
+  updateRecommendationContext();
+}
+
+async function continuePendingRecommendationSearch() {
+  const series = state.pendingMangaBakaRecommendation;
+  if (!series) return;
+  el.searchQuery.value = mangaBakaTitle(series);
   el.searchQuery.scrollIntoView({ behavior: "smooth", block: "center" });
-  void searchSource();
+  await searchSource();
 }
 
 function mangaBakaMatchForManga(manga) {
@@ -1372,8 +1493,8 @@ async function testConnection() {
     }
     return true;
   } catch (error) {
-    setConnection(false, "Suwayomi is unavailable. Open Advanced to check the server connection.", "bad");
-    setSyncStatus("Not connected", "Progress remains saved locally and will retry when Suwayomi reconnects.", "bad");
+    setConnection(false, `Could not connect to Suwayomi: ${friendlySourceErrorMessage(error)}`, "bad");
+    setSyncStatus("Not connected", "Test the Suwayomi connection before syncing progress.", "bad");
     return false;
   } finally {
     setBusy(el.testConnection, false);
@@ -1381,6 +1502,10 @@ async function testConnection() {
 }
 
 async function loadSources() {
+  if (!state.connected) {
+    showToast("Test the Suwayomi connection first.", "bad");
+    return false;
+  }
   setBusy(el.loadSources, true, "Loading");
   try {
     const data = await graphQL(queries.sources);
@@ -1399,6 +1524,9 @@ async function loadSources() {
         : `Loaded ${state.visibleSources.length} usable sources from ${state.sources.length} installed sources. Indexing titles in the background.`,
       "good"
     );
+    if (state.setupReturnToBrowse && state.pendingMangaBakaRecommendation && state.visibleSources.length) {
+      await finishSuwayomiSetup();
+    }
     return true;
   } catch (error) {
     setConnection(false, `Could not load sources: ${friendlySourceErrorMessage(error)}`, "bad");
@@ -1478,16 +1606,18 @@ function renderSources() {
     el.sourceSelect.append(option);
   });
   el.sourceSelect.value = allSourcesValue;
-  el.sourceCount.textContent = `${state.visibleSources.length} source${state.visibleSources.length === 1 ? "" : "s"} available`;
-  if (el.browseOpenSettings) el.browseOpenSettings.hidden = state.visibleSources.length > 0;
+  updateBrowseAvailability();
+  renderMangaBakaRecommendations();
+  updateSuwayomiSetupState();
 }
 
 async function searchSource() {
   const selectedSource = el.sourceSelect.value;
   const query = el.searchQuery.value.trim();
-  if (!selectedSource) {
-    setConnection(state.connected, "Connect Suwayomi in Settings to search manga.", "bad");
-    showToast("Set up Suwayomi sources first.", "bad");
+  if (!state.connected || !state.visibleSources.length || !selectedSource) {
+    setConnection(false, "Connect Suwayomi and load at least one source before searching.", "bad");
+    openSuwayomiSetup({ recommendation: state.pendingMangaBakaRecommendation });
+    showToast("Set up a Suwayomi source to continue.", "bad");
     return;
   }
   if (!query) {
@@ -1729,6 +1859,7 @@ async function mapWithConcurrency(items, concurrency, task) {
 function renderMangaResults() {
   el.mangaResults.replaceChildren();
   if (!state.mangas.length) {
+    const recommendation = state.pendingMangaBakaRecommendation;
     const empty = document.createElement("div");
     empty.className = "app-empty-state compact-empty";
     const art = document.createElement("span");
@@ -1736,10 +1867,16 @@ function renderMangaResults() {
     art.setAttribute("aria-hidden", "true");
     art.textContent = "⌕";
     const heading = document.createElement("strong");
-    heading.textContent = "No matching manga";
+    heading.textContent = recommendation ? `No source match for ${mangaBakaTitle(recommendation)}` : "No matching manga";
     const copy = document.createElement("span");
-    copy.textContent = "Try a shorter title or choose another source.";
-    empty.append(art, heading, copy);
+    copy.textContent = recommendation
+      ? "Try a shorter title, choose another source, or clear this recommendation."
+      : "Try a shorter title or choose another source.";
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.textContent = "Change search";
+    retry.addEventListener("click", () => el.searchQuery?.focus());
+    empty.append(art, heading, copy, retry);
     el.mangaResults.append(empty);
     return;
   }
@@ -1749,10 +1886,15 @@ function renderMangaResults() {
     card.className = "manga-card browse-card";
     const source = state.sources.find((item) => String(item.id) === String(manga.sourceId));
     const sourceText = source ? sourceLabel(source) : manga.sourceId;
+    const exactRecommendationMatch = Boolean(mangaBakaMatchForManga(manga));
     const button = createCoverButton(manga, {
       title: manga.title,
       eyebrow: sourceText || "Source",
-      meta: "View chapters",
+      meta: exactRecommendationMatch
+        ? "Exact title match"
+        : state.pendingMangaBakaRecommendation
+          ? "Alternative source result"
+          : "View chapters",
     });
     button.addEventListener("click", async () => {
       const mangabaka = mangaBakaMatchForManga(manga);
@@ -1772,7 +1914,10 @@ function renderMangaResults() {
         mangabakaMatchSource: accountScopedMangaBaka ? "recommendation" : undefined,
         mangabakaAccountKey: accountScopedMangaBaka ? state.mangabakaAccountKey : undefined,
       };
-      if (mangabaka) state.pendingMangaBakaRecommendation = null;
+      if (mangabaka) {
+        state.pendingMangaBakaRecommendation = null;
+        updateRecommendationContext();
+      }
       state.mangaDetailOrigin = "browse";
       showMangaDetail(manga, sourceText, { origin: "browse" });
       await fetchChapters();
@@ -1800,6 +1945,7 @@ function showMangaDetail(manga, sourceText = "", options = {}) {
   const title = manga?.title || manga?.mangaTitle || "Selected manga";
   const source = sourceText || manga?.sourceLabel || "Suwayomi source";
   state.mangaDetailOrigin = options.origin || state.mangaDetailOrigin || "browse";
+  el.browseView?.setAttribute("aria-label", `Manga details: ${title}`);
   state.browseDiscoveryScroll = window.scrollY;
   el.mangaDetail.closest(".browse-view")?.classList.add("detail-open");
   el.browseBody.hidden = true;
@@ -1902,7 +2048,7 @@ async function addCurrentMangaToLibrary() {
     saveLibraryItems();
     renderLibrary();
     updateMangaDetailActions();
-    showToast("Added to your library.", "good");
+    showToast("Added to Plan to read.", "good");
   } catch (error) {
     showToast(`Could not add this title: ${friendlySourceErrorMessage(error)}`, "bad");
   } finally {
@@ -1913,6 +2059,7 @@ async function addCurrentMangaToLibrary() {
 
 function closeMangaDetail(options = {}) {
   if (!el.mangaDetail || !el.browseBody) return;
+  el.browseView?.setAttribute("aria-label", "Browse");
   if (!state.historyApplying && options.history !== false && window.history.state?.detail) {
     window.history.back();
     return;
@@ -6461,6 +6608,11 @@ async function recoverSuwayomiConnection() {
 
 async function refreshDownloadStatus() {
   if (!el.offlineNote) return null;
+  if (!state.connected) {
+    el.offlineNote.textContent = "Chapter buffering starts after Suwayomi is connected.";
+    if (el.retryDownloads) el.retryDownloads.hidden = true;
+    return null;
+  }
   const status = await localJson("/api/download-buffer/status");
   const active = Number(status.activeChapterId) || 0;
   const queued = Number(status.queued) || 0;
@@ -6501,7 +6653,7 @@ function startBackgroundHealthChecks() {
     if (!state.connected) void recoverSuwayomiConnection();
   }, reconnectIntervalMs);
   state.downloadStatusTimer = window.setInterval(() => {
-    if (!document.hidden) void refreshDownloadStatus().catch(() => null);
+    if (!document.hidden && state.connected) void refreshDownloadStatus().catch(() => null);
   }, downloadStatusPollMs);
 }
 
@@ -6577,9 +6729,11 @@ function wireEvents() {
   el.appUpdate?.addEventListener("click", () => location.reload());
   el.testConnection.addEventListener("click", testConnection);
   el.loadSources.addEventListener("click", loadSources);
+  el.finishSuwayomiSetup?.addEventListener("click", () => { void finishSuwayomiSetup(); });
   el.clearAppCache?.addEventListener("click", clearAppCache);
   el.syncProgress?.addEventListener("click", syncLibraryAndProgress);
   el.refreshMangabaka?.addEventListener("click", () => loadMangaBakaRecommendations({ announce: true }));
+  el.clearRecommendationContext?.addEventListener("click", clearRecommendationContext);
   el.saveMangabaka?.addEventListener("click", connectMangaBaka);
   el.disconnectMangabaka?.addEventListener("click", disconnectMangaBaka);
   el.retryDownloads?.addEventListener("click", retryFailedDownloads);
@@ -6593,12 +6747,12 @@ function wireEvents() {
   el.detailPrimary?.addEventListener("click", () => { void startOrContinueCurrentManga(); });
   el.detailLibrary?.addEventListener("click", () => { void addCurrentMangaToLibrary(); });
   el.browseOpenSettings?.addEventListener("click", () => {
-    state.suwayomiSetupOpen = true;
-    updateSuwayomiSetupPanel();
-    setActiveView("settings");
-    requestAnimationFrame(() => el.serverUrl?.focus({ preventScroll: true }));
+    openSuwayomiSetup();
   });
-  el.serverUrl?.addEventListener("input", updateSuwayomiLink);
+  el.serverUrl?.addEventListener("input", () => {
+    updateSuwayomiLink();
+    updateSuwayomiSetupState();
+  });
   el.searchSource.addEventListener("click", searchSource);
   el.searchQuery?.addEventListener("keydown", (event) => {
     if (event.key === "Enter") searchSource();

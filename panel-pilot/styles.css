@@ -684,7 +684,7 @@ h2 {
 }
 
 .mini-button {
-  min-height: 2rem;
+  min-height: 2.75rem;
   padding: 0.25rem 0.55rem;
   font-size: 0.78rem;
 }
@@ -1086,12 +1086,19 @@ h2 {
   scrollbar-width: none;
 }
 
+.library-filter-help {
+  margin: -0.15rem 0 0.55rem;
+  color: var(--muted);
+  font-size: 0.7rem;
+  line-height: 1.35;
+}
+
 .library-filters::-webkit-scrollbar {
   display: none;
 }
 
 .library-filter {
-  min-height: 2.35rem;
+  min-height: 2.75rem;
   flex: 0 0 auto;
   border-color: var(--line);
   border-radius: 999px;
@@ -1121,7 +1128,7 @@ h2 {
 
 .library-status-select {
   width: 100%;
-  min-height: 2rem;
+  min-height: 2.75rem;
   border: 1px solid var(--line);
   border-radius: 9px;
   padding: 0.3rem 0.4rem;
@@ -1179,9 +1186,98 @@ h2 {
 
 .recommendation-card > button:last-child {
   width: 100%;
-  min-height: 2.15rem;
+  min-height: 2.75rem;
   margin-top: 0.4rem;
   font-size: 0.72rem;
+}
+
+.recommendation-context {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin: -0.15rem 0 0.8rem;
+  border: 1px solid #bfd6d5;
+  border-radius: var(--radius);
+  padding: 0.65rem 0.75rem;
+  background: #edf6f5;
+}
+
+.recommendation-context[hidden] {
+  display: none;
+}
+
+.recommendation-context > div {
+  min-width: 0;
+  display: grid;
+  gap: 0.15rem;
+}
+
+.recommendation-context strong {
+  font-size: 0.8rem;
+}
+
+.recommendation-context span {
+  color: var(--muted);
+  font-size: 0.7rem;
+  line-height: 1.35;
+}
+
+.setup-guide {
+  margin-bottom: 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.7rem;
+  background: #f7f8f5;
+}
+
+.setup-guide > strong {
+  font-size: 0.86rem;
+}
+
+.setup-guide ol {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0.6rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.setup-guide li {
+  min-height: 1.7rem;
+  display: grid;
+  grid-template-columns: 1.55rem minmax(0, 1fr);
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.setup-guide li > span {
+  width: 1.45rem;
+  height: 1.45rem;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: #e5e8e3;
+  color: var(--muted);
+  font-size: 0.66rem;
+}
+
+.setup-guide li.complete {
+  color: var(--ink);
+}
+
+.setup-guide li.complete > span {
+  background: #dcefe4;
+  color: #25613d;
+}
+
+.setup-finish {
+  margin-top: 0.65rem;
+  border-color: #8db8b6;
+  background: #e5f1f0;
+  color: #205e60;
 }
 
 .result-item {
