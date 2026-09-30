@@ -288,11 +288,40 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/panel-report":
                 self.handle_panel_report_post()
                 return
+            if parsed.path == "/api/detect/manga":
+                self.handle_manga_detection()
+                return
         except Exception as error:
             self.send_json({"error": str(error)}, status=502)
             return
 
         self.send_json({"error": "Unknown POST endpoint"}, status=404)
+
+    def handle_manga_detection(self):
+        detector_base = os.environ.get("PANEL_PILOT_MANGA_DETECTOR_URL", "").strip().rstrip("/")
+        if not detector_base:
+            self.send_json({"error": "Manga model service is not configured"}, status=503)
+            return
+        length = int(self.headers.get("Content-Length", "0"))
+        if length < 1 or length > 12000000:
+            raise ValueError("Manga detector image is empty or too large")
+        content_type = self.headers.get("Content-Type", "application/octet-stream")
+        if not content_type.startswith("image/"):
+            raise ValueError("Manga detector expects an image")
+        request = Request(
+            f"{detector_base}/v1/manga/panels",
+            data=self.rfile.read(length),
+            headers={"Content-Type": content_type, "Accept": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=30) as response:
+            payload = response.read()
+            self.send_response(response.status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
 
     def do_GET(self):
         parsed = urlparse(self.path)

@@ -23,6 +23,25 @@
         </div>
 
         <label class="field">
+          <span>Source</span>
+          <select id="test-source-type">
+            <option value="suwayomi" selected>Suwayomi library chapter</option>
+            <option value="comick">Comick URL</option>
+          </select>
+        </label>
+
+        <div id="test-suwayomi-fields" class="test-grid">
+          <label class="field">
+            <span>Manga ID</span>
+            <input id="test-manga-id" type="number" inputmode="numeric" min="1" value="1916">
+          </label>
+          <label class="field">
+            <span>Chapter ID</span>
+            <input id="test-chapter-id" type="number" inputmode="numeric" min="1" value="4016">
+          </label>
+        </div>
+
+        <label class="field" id="test-comick-fields" hidden>
           <span>Comick comic URL</span>
           <input id="test-comic-url" type="url" inputmode="url" value="https://comick.live/comic/00-sousou-no-frieren">
         </label>
@@ -51,7 +70,7 @@
           <button id="test-export" type="button" disabled>Export JSON</button>
           <button id="test-clear" type="button" disabled>Clear Expected</button>
         </div>
-        <p class="note" id="test-note">Load Frieren chapter 1, then run detection. Enter expected panel counts to score each page.</p>
+        <p class="note" id="test-note">Load a Suwayomi manga chapter, then run detection. Overlap risks are flagged automatically; add expected panel counts when you want count accuracy too.</p>
       </section>
 
       <section class="test-summary" aria-live="polite">
@@ -71,12 +90,16 @@
           <strong id="summary-accuracy">-</strong>
           <span>accuracy</span>
         </div>
+        <div>
+          <strong id="summary-risky">0</strong>
+          <span>overlap risks</span>
+        </div>
       </section>
 
       <section class="test-results" id="test-results"></section>
     </main>
 
-    <script src="script.js?v=14"></script>
-    <script src="panel-test.js?v=6"></script>
+    <script src="script.js?v=90"></script>
+    <script src="panel-test.js?v=7"></script>
   </body>
 </html>

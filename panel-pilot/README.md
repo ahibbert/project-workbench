@@ -44,16 +44,18 @@ Open the test harness at:
 http://localhost:8013/panel-test.html
 ```
 
-The Test Lab uses the same browser detector as the reader. It loads a chapter,
-runs detection page by page, draws overlay boxes, and lets you enter expected
-panel counts. Expected counts are stored in localStorage and can be exported as
-JSON with the detection report.
+The Test Lab uses the same detector path as the reader. It can load a
+Suwayomi library chapter by manga/chapter ID or a Comick chapter, runs detection
+page by page, draws overlay boxes, flags risky overlapping crops, and lets you
+enter expected panel counts. Expected counts are stored in localStorage and can
+be exported as JSON with the detection report.
 
 Useful query parameters:
 
 ```text
 panel-test.html?pages=3&autorun=1
 panel-test.html?chapter=1&pages=10&autoload=1
+panel-test.html?source=suwayomi&mangaId=1916&chapterId=4016&autorun=1
 ```
 
 ## Suwayomi flow
@@ -100,10 +102,23 @@ set `PANEL_PILOT_SESSION_SECRET` to a long random value. You can optionally set
 `PANEL_PILOT_SESSION_MAX_AGE` in seconds. TLS remains the responsibility of the
 reverse proxy; do not add a second Basic Auth gate in front of Panel Pilot.
 
+## Manga panel model
+
+The production compose stack includes a private CPU-only ONNX service for manga
+panel detection. It is used only in manga mode; comic and webtoon behavior is
+unchanged. The service downloads a checksum-pinned 10 MB model during its image
+build. If the service is unavailable, Panel Pilot automatically uses the local
+browser detector, so reading still works.
+
+The model and its Manga109-s training-data attribution are documented in
+[`ml/MODEL-NOTICE.md`](ml/MODEL-NOTICE.md). Because the weights are AGPL-3.0,
+keep the corresponding Panel Pilot source available to anyone using the hosted
+service.
+
 ## Current limitations
 
-- Panel detection is local and heuristic-based. It works best on pages with
-  visible gutters and rectangular panels.
+- Manga detection uses a pretrained model with a browser fallback. Covers,
+  title cards, and splash pages with no detected panels open as full pages.
 - If Suwayomi image responses do not allow canvas access from this app's origin,
   the image will still display but detection may fall back to full-page mode.
   The clean fix is serving this PWA from the same origin as Suwayomi or adding a
@@ -111,6 +126,8 @@ reverse proxy; do not add a second Basic Auth gate in front of Panel Pilot.
 - The Comick test path is for local development only. It currently supports
   `comick.live` chapter lists and proxied image loading from Comick CDN URLs.
 - Manual panel correction is not implemented yet.
+- The optional trained detector is currently manga-only. Comic and webtoon
+  models will remain separate rather than sharing manga weights and thresholds.
 
 ## Next steps
 

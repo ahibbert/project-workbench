@@ -642,6 +642,57 @@ def merge_duplicate_panels(panels):
     return kept
 
 
+def overlap_1d(start_a, end_a, start_b, end_b):
+    return max(0, min(end_a, end_b) - max(start_a, start_b))
+
+
+def should_consolidate_manga_panels(a, b):
+    overlap_x = overlap_1d(a["x"], a["x"] + a["w"], b["x"], b["x"] + b["w"])
+    overlap_y = overlap_1d(a["y"], a["y"] + a["h"], b["y"], b["y"] + b["h"])
+    x_containment = overlap_x / max(0.000001, min(a["w"], b["w"]))
+    y_containment = overlap_y / max(0.000001, min(a["h"], b["h"]))
+    area_a = max(0.000001, a["w"] * a["h"])
+    area_b = max(0.000001, b["w"] * b["h"])
+    intersection = overlap_x * overlap_y
+    containment = intersection / min(area_a, area_b)
+    overlap_iou = intersection / max(0.000001, area_a + area_b - intersection)
+    area_ratio = min(area_a, area_b) / max(area_a, area_b)
+
+    repeated_horizontal_band = x_containment >= 0.94 and y_containment >= 0.28
+    repeated_vertical_band = y_containment >= 0.94 and x_containment >= 0.28
+    near_duplicate = overlap_iou >= 0.68 or (containment >= 0.86 and area_ratio >= 0.42)
+    return repeated_horizontal_band or repeated_vertical_band or near_duplicate
+
+
+def union_panel(a, b):
+    x = min(a["x"], b["x"])
+    y = min(a["y"], b["y"])
+    x1 = max(a["x"] + a["w"], b["x"] + b["w"])
+    y1 = max(a["y"] + a["h"], b["y"] + b["h"])
+    return {**a, "x": x, "y": y, "w": x1 - x, "h": y1 - y, "manga_consolidated": True}
+
+
+def consolidate_manga_panels(panels):
+    consolidated = [dict(panel) for panel in merge_duplicate_panels(panels)]
+    changed = True
+    passes = 0
+    while changed and passes < 12:
+        changed = False
+        passes += 1
+        for index, first in enumerate(consolidated):
+            for other in range(index + 1, len(consolidated)):
+                second = consolidated[other]
+                if not should_consolidate_manga_panels(first, second):
+                    continue
+                consolidated[index] = union_panel(first, second)
+                consolidated.pop(other)
+                changed = True
+                break
+            if changed:
+                break
+    return merge_duplicate_panels(consolidated)
+
+
 def plausible_panel(panel):
     area = panel["w"] * panel["h"]
     return panel["w"] > 0.08 and panel["h"] > 0.045 and area > 0.006 and area < 0.92
@@ -1358,7 +1409,8 @@ def detect_manga_panels(image, direction="rtl"):
     split = detect_split_panels(dark, stats, image)
     slanted = detect_slanted_manga_panels(lum, dark, black, image)
     chosen, strategy = choose_panel_set(recursive, connected, split, slanted, direction)
-    chosen = repair_reading_order(sort_panels(merge_duplicate_panels(chosen), direction), direction)
+    chosen = consolidate_manga_panels(chosen)
+    chosen = repair_reading_order(sort_panels(chosen, direction), direction)
     if not chosen:
         chosen = [full_page_panel(image)]
         strategy = "full-page"
@@ -1532,6 +1584,7 @@ def main():
     parser.add_argument("--pages", type=int, default=0)
     parser.add_argument("--direction", default="rtl", choices=["rtl", "ltr"])
     parser.add_argument("--mode", default="auto", choices=["auto", "manga", "comic", "comic-flow"])
+    parser.add_argument("--save-pages", action="store_true", help="Save original pages for external model benchmarks")
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
 
@@ -1542,6 +1595,9 @@ def main():
     out_dir = Path(args.out)
     overlay_dir = out_dir / "overlays"
     overlay_dir.mkdir(parents=True, exist_ok=True)
+    page_dir = out_dir / "pages"
+    if args.save_pages:
+        page_dir.mkdir(parents=True, exist_ok=True)
 
     if args.chapter_ids.strip():
         chapter_ids = [int(value.strip()) for value in args.chapter_ids.split(",") if value.strip()]
@@ -1556,6 +1612,9 @@ def main():
         page_limit = args.pages or len(pages)
         for page_index, page_url in enumerate(pages[:page_limit], start=1):
             image = load_image(args.app, args.base, page_url, auth)
+            if args.save_pages:
+                page_path = page_dir / f"chapter-{chapter_sort_key(chapter):g}-page-{page_index:03d}.png"
+                image.convert("RGB").save(page_path, optimize=True)
             mode = "webtoon" if image.height / max(1, image.width) >= 2.6 else args.mode
             if mode == "auto":
                 mode = "manga"

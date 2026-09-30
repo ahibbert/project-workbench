@@ -5,9 +5,9 @@ const sourceIndexStoreKey = "panel-pilot-source-index";
 const sourceIndexTtlMs = 24 * 60 * 60 * 1000;
 const sourceIndexPageLimit = 6;
 const sourceIndexRequestTimeoutMs = 12000;
-const appVersion = "v88";
+const appVersion = "v90";
 const appBuildTime = "2026-09-30";
-const detectorVersion = "detector v16";
+const detectorVersion = "detector v18-ml-manga";
 const allSourcesValue = "__all__";
 const defaultComickChapter = {
   label: "Frieren chapter 1",
@@ -247,6 +247,10 @@ const state = {
   activeChapter: null,
   prepareGeneration: 0,
   backgroundPreparing: false,
+  mangaModelAvailable: null,
+  navigationPending: false,
+  navigationRequestId: 0,
+  navigationCooldownUntil: 0,
   readerFocus: false,
   readerChromeVisible: true,
   activeView: "library",
@@ -361,11 +365,14 @@ function setActiveView(view) {
 }
 
 function leaveReaderView() {
+  cancelReaderNavigation();
   setActiveView(state.previousView && state.previousView !== "reader" ? state.previousView : "library");
 }
 
 function cleanBaseUrl() {
-  state.baseUrl = el.serverUrl.value.trim().replace(/\/+$/, "");
+  const rawUrl = el.serverUrl?.value || state.baseUrl || "http://localhost:4567";
+  state.baseUrl = rawUrl.trim().replace(/\/+$/, "");
+  if (el.serverUrl) el.serverUrl.value = state.baseUrl;
   updateSuwayomiLink();
   saveSettings();
   return state.baseUrl;
@@ -2049,6 +2056,7 @@ async function resolveChapterPages(fetchPayload) {
 }
 
 async function loadChapter(pageUrls, title) {
+  cancelReaderNavigation();
   setActiveView("reader");
   setReaderLoading(true, "Preparing chapter...", 28);
   const generation = state.prepareGeneration + 1;
@@ -2706,6 +2714,50 @@ function readerViewportAspect() {
 }
 
 async function detectPanels(image, direction) {
+  const modelPanels = await detectMangaPanelsWithModel(image, direction).catch(() => null);
+  if (modelPanels) return modelPanels;
+  return detectPanelsHeuristic(image, direction);
+}
+
+async function detectMangaPanelsWithModel(image, direction) {
+  if (state.mangaModelAvailable === false) return null;
+  const maxSide = 1800;
+  const scale = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+  canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+  const blob = await new Promise((resolve, reject) => {
+    canvas.toBlob((value) => value ? resolve(value) : reject(new Error("Could not encode manga page")), "image/jpeg", 0.9);
+  });
+  const response = await fetch("/api/detect/manga", {
+    method: "POST",
+    headers: { "Content-Type": "image/jpeg" },
+    body: blob,
+  });
+  if (!response.ok) {
+    if (response.status === 404 || response.status === 502 || response.status === 503) {
+      state.mangaModelAvailable = false;
+    }
+    throw new Error(`Manga model returned ${response.status}`);
+  }
+  const payload = await response.json();
+  if (!Array.isArray(payload.panels)) throw new Error("Manga model returned an invalid response");
+  state.mangaModelAvailable = true;
+  if (!payload.panels.length) return [fullPagePanel(image.naturalWidth, image.naturalHeight)];
+  const panels = payload.panels.map((panel) => ({
+    ...panel,
+    pageWidth: image.naturalWidth,
+    pageHeight: image.naturalHeight,
+  }));
+  const consolidated = consolidateMangaPanels(panels);
+  const sorted = repairReadingOrder(sortPanels(consolidated, direction), direction);
+  return sorted.length ? sorted.map((panel, index) => ({ ...panel, label: `Panel ${index + 1}` })) : [
+    fullPagePanel(image.naturalWidth, image.naturalHeight),
+  ];
+}
+
+async function detectPanelsHeuristic(image, direction) {
   const maxSide = 900;
   const scale = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
   const width = Math.max(1, Math.round(image.naturalWidth * scale));
@@ -2786,7 +2838,8 @@ async function detectPanels(image, direction) {
   }
 
   const panels = choosePanelSet(recursivePanels, connectedPanels, splitPanels, slantedPanels, direction);
-  const sorted = repairReadingOrder(sortPanels(mergeDuplicatePanels(panels), direction), direction);
+  const consolidated = consolidateMangaPanels(panels);
+  const sorted = repairReadingOrder(sortPanels(consolidated, direction), direction);
   return sorted.length ? sorted.map((panel, index) => ({ ...panel, label: `Panel ${index + 1}` })) : [
     fullPagePanel(image.naturalWidth, image.naturalHeight),
   ];
@@ -4230,6 +4283,7 @@ async function setPanelMode(mode) {
   if (!isPanelMode(mode)) return;
   if (state.panelMode === mode) return;
 
+  cancelReaderNavigation();
   state.panelMode = mode;
   updatePanelModeControls();
   saveSettings();
@@ -4274,8 +4328,84 @@ function setPanelPadding(value) {
   if (!state.fullPage) fitStage();
 }
 
+function consolidateMangaPanels(panels) {
+  const consolidated = mergeDuplicatePanels(panels).map((panel) => ({ ...panel }));
+  let changed = true;
+  let passes = 0;
+
+  while (changed && passes < 12) {
+    changed = false;
+    passes += 1;
+    for (let index = 0; index < consolidated.length; index += 1) {
+      for (let other = index + 1; other < consolidated.length; other += 1) {
+        const first = consolidated[index];
+        const second = consolidated[other];
+        if (!shouldConsolidateMangaPanels(first, second)) continue;
+        consolidated[index] = unionPanel(first, second);
+        consolidated.splice(other, 1);
+        changed = true;
+        break;
+      }
+      if (changed) break;
+    }
+  }
+
+  return mergeDuplicatePanels(consolidated);
+}
+
+function shouldConsolidateMangaPanels(a, b) {
+  const overlapX = oneDimensionalOverlap(a.x, a.x + a.w, b.x, b.x + b.w);
+  const overlapY = oneDimensionalOverlap(a.y, a.y + a.h, b.y, b.y + b.h);
+  const xContainment = overlapX / Math.max(0.000001, Math.min(a.w, b.w));
+  const yContainment = overlapY / Math.max(0.000001, Math.min(a.h, b.h));
+  const areaA = Math.max(0.000001, a.w * a.h);
+  const areaB = Math.max(0.000001, b.w * b.h);
+  const intersection = overlapX * overlapY;
+  const containment = intersection / Math.min(areaA, areaB);
+  const iou = intersection / Math.max(0.000001, areaA + areaB - intersection);
+  const areaRatio = Math.min(areaA, areaB) / Math.max(areaA, areaB);
+
+  // Slanted layouts can produce several shifted crops for the same visual band.
+  // Keep consolidating aligned overlaps until the reader cannot immediately
+  // revisit the same artwork; a broader crop is the safer fallback.
+  const repeatedHorizontalBand = xContainment >= 0.94 && yContainment >= 0.28;
+  const repeatedVerticalBand = yContainment >= 0.94 && xContainment >= 0.28;
+  const nearDuplicate = iou >= 0.68 || (containment >= 0.86 && areaRatio >= 0.42);
+  return repeatedHorizontalBand || repeatedVerticalBand || nearDuplicate;
+}
+
+function unionPanel(a, b) {
+  const x = Math.min(a.x, b.x);
+  const y = Math.min(a.y, b.y);
+  const x1 = Math.max(a.x + a.w, b.x + b.w);
+  const y1 = Math.max(a.y + a.h, b.y + b.h);
+  return {
+    ...a,
+    x,
+    y,
+    w: x1 - x,
+    h: y1 - y,
+    mangaConsolidated: true,
+  };
+}
+
+function setReaderNavigationPending(pending) {
+  state.navigationPending = Boolean(pending);
+  el.stage?.setAttribute("aria-busy", state.navigationPending ? "true" : "false");
+  if (el.prevPanel) el.prevPanel.disabled = state.navigationPending;
+  if (el.nextPanel) el.nextPanel.disabled = state.navigationPending;
+}
+
+function cancelReaderNavigation() {
+  state.navigationRequestId += 1;
+  state.navigationCooldownUntil = 0;
+  setReaderNavigationPending(false);
+}
+
 function movePanel(delta) {
   if (!state.pages.length) return;
+  if (state.navigationPending) return;
+  if (performance.now() < state.navigationCooldownUntil) return;
   const page = state.pages[state.pageIndex];
   if (!Array.isArray(page?.panels) || !page.panels.length) {
     page.panels = sanitizePanels(page?.panels, page?.naturalWidth || 1, page?.naturalHeight || 1);
@@ -4290,31 +4420,67 @@ function movePanel(delta) {
     return;
   }
 
-  const nextPage = state.pageIndex + delta;
+  void moveToAdjacentPage(delta);
+}
+
+async function moveToAdjacentPage(delta) {
+  if (state.navigationPending || !state.pages.length) return;
+
+  const fromPageIndex = state.pageIndex;
+  const nextPage = fromPageIndex + delta;
+
   if (nextPage < 0) return;
   if (nextPage >= state.pages.length) {
     if (delta > 0 && state.panelMode === "webtoon" && !state.pages[0]?.complete) {
       setConnection(state.connected, "Still preparing the rest of this webtoon chapter.", "");
       return;
     }
-    if (delta > 0) finishChapterAndLoadNext();
+    if (delta > 0) {
+      const requestId = state.navigationRequestId + 1;
+      state.navigationRequestId = requestId;
+      setReaderNavigationPending(true);
+      setReaderLoading(true, "Loading next chapter...", 24);
+      try {
+        await finishChapterAndLoadNext();
+      } catch (error) {
+        setConnection(state.connected, `Could not load the next chapter: ${error.message}`, "bad");
+      } finally {
+        if (requestId === state.navigationRequestId) {
+          setReaderNavigationPending(false);
+          setReaderLoading(false);
+        }
+      }
+    }
     return;
   }
 
-  state.pageIndex = nextPage;
+  const requestId = state.navigationRequestId + 1;
+  state.navigationRequestId = requestId;
   const generation = state.prepareGeneration;
-  preparePage(state.pageIndex, { generation })
-    .then(() => {
-      const panels = state.pages[state.pageIndex].panels;
-      state.panelIndex = delta > 0 ? 0 : Math.max(0, panels.length - 1);
-      state.fullPage = false;
-      renderCurrentPage();
-      updateAfterNavigation();
-    })
-    .catch((error) => {
-      setConnection(state.connected, `Could not prepare page: ${error.message}`, "bad");
-    })
-    .finally(() => setReaderLoading(false));
+  setReaderNavigationPending(true);
+  setReaderLoading(true, `Preparing page ${nextPage + 1}...`, 58);
+
+  try {
+    const preparedPage = await preparePage(nextPage, { generation });
+    if (!preparedPage) return;
+    if (requestId !== state.navigationRequestId || generation !== state.prepareGeneration) return;
+    if (state.pageIndex !== fromPageIndex) return;
+
+    const panels = state.pages[nextPage].panels;
+    state.pageIndex = nextPage;
+    state.panelIndex = delta > 0 ? 0 : Math.max(0, panels.length - 1);
+    state.navigationCooldownUntil = performance.now() + 280;
+    state.fullPage = false;
+    renderCurrentPage();
+    updateAfterNavigation();
+  } catch (error) {
+    setConnection(state.connected, `Could not prepare page: ${error.message}`, "bad");
+  } finally {
+    if (requestId === state.navigationRequestId) {
+      setReaderNavigationPending(false);
+      setReaderLoading(false);
+    }
+  }
 }
 
 async function loadNextChapter() {
@@ -4404,6 +4570,7 @@ function renderPanelStrip() {
     button.title = `${panel.label || "Panel"}, page ${state.pageIndex + 1}`;
     button.style.aspectRatio = `${Math.max(0.25, panel.w)} / ${Math.max(0.25, panel.h)}`;
     button.addEventListener("click", () => {
+      if (state.navigationPending) return;
       state.panelIndex = index;
       state.fullPage = false;
       updateAfterNavigation();
@@ -4441,6 +4608,7 @@ async function redetectCurrentPage() {
     await redetectChapterPanels();
     return;
   }
+  cancelReaderNavigation();
   setBusy(el.redetect, true, "Detecting");
   try {
     await preparePage(state.pageIndex, { force: true });
@@ -4455,6 +4623,7 @@ async function redetectCurrentPage() {
 
 async function redetectChapterPanels() {
   if (!state.chapterPageUrls.length) return;
+  cancelReaderNavigation();
   setBusy(el.redetect, true, "Detecting");
   setBusy(el.redetectChapter, true, "Detecting");
   setReaderLoading(true, "Redetecting chapter panels...", 18);
@@ -4616,6 +4785,7 @@ function setReadingDirection(direction) {
 }
 
 async function resortAndDetect(direction) {
+  cancelReaderNavigation();
   setReadingDirection(direction);
   const generation = state.prepareGeneration + 1;
   state.prepareGeneration = generation;
@@ -4896,6 +5066,7 @@ function wireEvents() {
 
 window.PanelPilot = {
   detectorVersion,
+  consolidateMangaPanels,
   detectPanels,
   fullPagePanel,
   loadImage,

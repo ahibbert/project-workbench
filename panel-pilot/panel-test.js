@@ -9,6 +9,11 @@ const expectedFixtures = {
 
 const testEl = {
   version: document.querySelector("#test-version"),
+  sourceType: document.querySelector("#test-source-type"),
+  suwayomiFields: document.querySelector("#test-suwayomi-fields"),
+  comickFields: document.querySelector("#test-comick-fields"),
+  mangaId: document.querySelector("#test-manga-id"),
+  chapterId: document.querySelector("#test-chapter-id"),
   comicUrl: document.querySelector("#test-comic-url"),
   chapter: document.querySelector("#test-chapter"),
   pageLimit: document.querySelector("#test-page-limit"),
@@ -23,6 +28,7 @@ const testEl = {
   summaryLabeled: document.querySelector("#summary-labeled"),
   summaryMatches: document.querySelector("#summary-matches"),
   summaryAccuracy: document.querySelector("#summary-accuracy"),
+  summaryRisky: document.querySelector("#summary-risky"),
 };
 
 const testState = {
@@ -38,7 +44,9 @@ testEl.load.addEventListener("click", loadTestChapter);
 testEl.run.addEventListener("click", runDetection);
 testEl.export.addEventListener("click", exportReport);
 testEl.clear.addEventListener("click", clearExpectations);
+testEl.sourceType.addEventListener("change", updateSourceFields);
 applyUrlOptions();
+updateSourceFields();
 
 function setTestNote(message, tone = "") {
   testEl.note.textContent = message;
@@ -58,6 +66,9 @@ function setTestBusy(button, busy, label = "Working") {
 
 function applyUrlOptions() {
   const params = new URLSearchParams(location.search);
+  if (params.get("source")) testEl.sourceType.value = params.get("source");
+  if (params.get("mangaId")) testEl.mangaId.value = params.get("mangaId");
+  if (params.get("chapterId")) testEl.chapterId.value = params.get("chapterId");
   if (params.get("url")) testEl.comicUrl.value = params.get("url");
   if (params.get("chapter")) testEl.chapter.value = params.get("chapter");
   if (params.get("pages")) testEl.pageLimit.value = params.get("pages");
@@ -72,7 +83,18 @@ function applyUrlOptions() {
   }
 }
 
+function updateSourceFields() {
+  const suwayomi = testEl.sourceType.value === "suwayomi";
+  testEl.suwayomiFields.hidden = !suwayomi;
+  testEl.comickFields.hidden = suwayomi;
+}
+
 async function loadTestChapter() {
+  if (testEl.sourceType.value === "suwayomi") {
+    await loadSuwayomiTestChapter();
+    return;
+  }
+
   const comicUrl = testEl.comicUrl.value.trim();
   const chapterNumber = testEl.chapter.value.trim() || "1";
   if (!comicUrl) {
@@ -118,6 +140,62 @@ async function loadTestChapter() {
     setTestNote(`Loaded ${pages.length} pages from ${chapter.label}.`, "good");
   } catch (error) {
     setTestNote(`Could not load test chapter: ${error.message}`, "bad");
+  } finally {
+    setTestBusy(testEl.load, false);
+  }
+}
+
+async function loadSuwayomiTestChapter() {
+  const mangaId = Number(testEl.mangaId.value);
+  const chapterId = Number(testEl.chapterId.value);
+  if (!Number.isInteger(chapterId) || chapterId < 1) {
+    setTestNote("Enter a valid Suwayomi chapter ID first.", "bad");
+    return;
+  }
+
+  setTestBusy(testEl.load, true, "Loading");
+  testEl.run.disabled = true;
+  testEl.export.disabled = true;
+  testEl.clear.disabled = true;
+  testEl.results.replaceChildren();
+  resetSummary();
+
+  try {
+    const query = `mutation TEST_CHAPTER_PAGES($input: FetchChapterPagesInput!) {
+      fetchChapterPages(input: $input) {
+        chapter { id name manga { id title source { name displayName } } }
+        pages
+      }
+    }`;
+    const data = await graphQL(query, { input: { chapterId } }, { timeoutMs: 90000 });
+    const fetched = data.fetchChapterPages;
+    const pages = await resolveChapterPages(fetched);
+    if (!pages.length) throw new Error("Source returned no readable page URLs.");
+
+    const limit = Number.parseInt(testEl.pageLimit.value, 10);
+    const selectedPages = Number.isFinite(limit) && limit > 0 ? pages.slice(0, limit) : pages;
+    const chapter = fetched.chapter || {};
+    const manga = chapter.manga || {};
+    testState.title = `${manga.title || `Manga ${mangaId || manga.id || ""}`} — ${chapter.name || `Chapter ${chapterId}`}`;
+    testState.chapterUrl = `suwayomi:${mangaId || manga.id || "unknown"}:${chapterId}`;
+    testState.pages = selectedPages.map((url, index) => ({
+      url: normalizeSuwayomiPageUrl(url),
+      sourceUrl: url,
+      index,
+      detected: null,
+      error: "",
+      panels: [],
+      image: null,
+      reliability: null,
+    }));
+    testState.rows = [];
+    renderPendingRows();
+    testEl.run.disabled = false;
+    testEl.export.disabled = false;
+    testEl.clear.disabled = false;
+    setTestNote(`Loaded ${selectedPages.length} pages from ${testState.title}.`, "good");
+  } catch (error) {
+    setTestNote(`Could not load Suwayomi test chapter: ${error.message}`, "bad");
   } finally {
     setTestBusy(testEl.load, false);
   }
@@ -183,7 +261,8 @@ function makeResultRow(page) {
   });
   expectedWrap.append(expectedText, expected);
   const delta = metric("Delta", "-");
-  metrics.append(detected.node, expectedWrap, delta.node);
+  const overlap = metric("Overlap", "-");
+  metrics.append(detected.node, expectedWrap, delta.node, overlap.node);
 
   const detail = document.createElement("p");
   detail.className = "note";
@@ -192,7 +271,7 @@ function makeResultRow(page) {
   body.append(heading, metrics, detail);
   node.append(canvas, body);
 
-  const row = { node, canvas, status, detected, expected, delta, detail, page };
+  const row = { node, canvas, status, detected, expected, delta, overlap, detail, page };
   return row;
 }
 
@@ -231,9 +310,13 @@ async function runDetection() {
       page.image = image;
       page.panels = panels;
       page.detected = panels.length;
+      page.reliability = panelReliability(panels);
       page.error = "";
       row.node.dataset.panels = JSON.stringify(panels.map(serializePanel));
       row.detected.value.textContent = String(panels.length);
+      row.overlap.value.textContent = page.reliability.riskyPairs
+        ? String(page.reliability.riskyPairs)
+        : "0";
       drawOverlay(row.canvas, image, panels);
       scoreRow(row);
     } catch (error) {
@@ -258,10 +341,13 @@ function scoreRow(row) {
   if (detected === null) return;
 
   if (expected === null) {
-    row.node.className = "test-card unscored";
-    row.status.textContent = "Unscored";
+    const risky = row.page.reliability?.riskyPairs > 0;
+    row.node.className = risky ? "test-card failed" : "test-card unscored";
+    row.status.textContent = risky ? "Overlap risk" : "Unscored";
     row.delta.value.textContent = "-";
-    row.detail.textContent = "Enter the expected panel count for this page.";
+    row.detail.textContent = risky
+      ? `${row.page.reliability.riskyPairs} panel pair(s) substantially repeat the same page area.`
+      : "Enter the expected panel count for this page.";
     return;
   }
 
@@ -342,6 +428,9 @@ function updateSummary() {
   testEl.summaryLabeled.textContent = String(scored.length);
   testEl.summaryMatches.textContent = String(matches.length);
   testEl.summaryAccuracy.textContent = scored.length ? `${Math.round((matches.length / scored.length) * 100)}%` : "-";
+  testEl.summaryRisky.textContent = String(
+    testState.pages.reduce((sum, page) => sum + (page.reliability?.riskyPairs || 0), 0)
+  );
 }
 
 function resetSummary() {
@@ -349,6 +438,43 @@ function resetSummary() {
   testEl.summaryLabeled.textContent = "0";
   testEl.summaryMatches.textContent = "0";
   testEl.summaryAccuracy.textContent = "-";
+  testEl.summaryRisky.textContent = "0";
+}
+
+function panelReliability(panels) {
+  let riskyPairs = 0;
+  let maxContainment = 0;
+  let maxIou = 0;
+  for (let index = 0; index < panels.length; index += 1) {
+    for (let other = index + 1; other < panels.length; other += 1) {
+      const relation = panelOverlap(panels[index], panels[other]);
+      maxContainment = Math.max(maxContainment, relation.containment);
+      maxIou = Math.max(maxIou, relation.iou);
+      const alignedBand =
+        (relation.xContainment >= 0.94 && relation.yContainment >= 0.28) ||
+        (relation.yContainment >= 0.94 && relation.xContainment >= 0.28);
+      if (relation.iou >= 0.68 || relation.containment >= 0.82 || alignedBand) riskyPairs += 1;
+    }
+  }
+  return { riskyPairs, maxContainment, maxIou };
+}
+
+function panelOverlap(a, b) {
+  const x0 = Math.max(a.x, b.x);
+  const y0 = Math.max(a.y, b.y);
+  const x1 = Math.min(a.x + a.w, b.x + b.w);
+  const y1 = Math.min(a.y + a.h, b.y + b.h);
+  const overlapX = Math.max(0, x1 - x0);
+  const overlapY = Math.max(0, y1 - y0);
+  const intersection = overlapX * overlapY;
+  const areaA = Math.max(0.000001, a.w * a.h);
+  const areaB = Math.max(0.000001, b.w * b.h);
+  return {
+    iou: intersection / Math.max(0.000001, areaA + areaB - intersection),
+    containment: intersection / Math.min(areaA, areaB),
+    xContainment: overlapX / Math.max(0.000001, Math.min(a.w, b.w)),
+    yContainment: overlapY / Math.max(0.000001, Math.min(a.h, b.h)),
+  };
 }
 
 function expectationKey(page) {
@@ -419,6 +545,7 @@ function exportReport() {
         w: round(panel.w),
         h: round(panel.h),
       })),
+      reliability: page.reliability,
       error: page.error,
     })),
   };

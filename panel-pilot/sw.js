@@ -1,8 +1,8 @@
-const cacheName = "panel-pilot-v88";
+const cacheName = "panel-pilot-v90";
 const appShell = [
   "./styles.css?v=46",
-  "./script.js?v=83",
-  "./panel-test.js?v=6",
+  "./script.js?v=90",
+  "./panel-test.js?v=7",
   "./manifest.webmanifest",
 ];
 
