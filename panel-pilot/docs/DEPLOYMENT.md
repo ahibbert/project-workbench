@@ -77,7 +77,7 @@ should redirect to `/login`; sign in with the Panels credentials, then use
 **Settings → Suwayomi → Test connection** and **Load sources**.
 
 Panels uses its built-in browser detector by default. To enable the optional
-server-side manga panel and speech-bubble detectors, uncomment `COMPOSE_PROFILES` and
+server-side manga panel, speech-bubble, and Western-comic detectors, uncomment `COMPOSE_PROFILES` and
 `PANEL_PILOT_MANGA_DETECTOR_URL` in `.env`, then run `docker compose up -d`
 again. The detector stays private to the Compose network, and its model is
 downloaded from the checksum-pinned location documented in
@@ -144,7 +144,7 @@ this preserves the active reading position and queued progress first.
 Enabling the `manga-detector` profile builds an image that downloads and embeds
 third-party AGPL-3.0 model weights. Review and retain
 [`ml/MODEL-NOTICE.md`](../ml/MODEL-NOTICE.md) with any distribution of that
-image, preserve the upstream attribution, and make the corresponding source
+image, preserve the upstream attribution for both manga and comic models, and make the corresponding source
 for the detector image and your modifications available as required by the
 applicable license. The Manga109-s dataset itself is not distributed by this
 project and must not be added to the image or release artifacts.

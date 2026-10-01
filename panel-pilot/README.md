@@ -165,6 +165,9 @@ When the optional manga detector is enabled, Panels also detects speech bubbles
 and gently expands a crop when a balloon crosses the model's panel boundary.
 This is enabled by default and can be switched off in Reader controls or
 Settings without changing detection or reading order.
+The same private detector service uses a separate Inkwell model for Western
+comics and a learned ordering model for irregular LTR layouts. Comic mode falls
+back to the existing browser detector if either service route is unavailable.
 When you advance past the final panel of a Comick chapter, the reader attempts
 to load the next numbered chapter automatically.
 

@@ -1,15 +1,16 @@
-# Manga panel model
+# Manga and comic panel models
 
-This service is deliberately manga-only. Comic and webtoon detection remains
-separate so those formats can use their own models and thresholds.
+This private service keeps manga and Western-comic detection on separate model
+paths so each format can use its own model, thresholds, and reading order.
 
 The deployed panel model is the 10 MB ONNX export of
 `leoxs22/manga-panel-detector-yolo26n`. The same service also runs the 9.9 MB
 Poneglyph speech-bubble detector so the reader can keep balloons that cross a
 predicted panel edge inside the camera crop. The image build downloads pinned
-revisions and verifies both SHA-256 checksums. They run with ONNX Runtime on
-CPU; the existing browser detector is retained as an automatic availability
-fallback. See `MODEL-NOTICE.md` for attribution and licensing.
+revisions and verifies both SHA-256 checksums. Comic mode uses Inkwell's 12 MB
+YOLOv8-n detector plus its 103 KB pairwise reading-order model. All four models
+run with ONNX Runtime on CPU; the existing browser detectors remain automatic
+availability fallbacks. See `MODEL-NOTICE.md` for attribution and licensing.
 
 Compose builds this optional image from the repository root so the image can
 include the project license and model notice. For a direct build, use the same
@@ -61,16 +62,43 @@ crops for review. The corpus includes a non-standard-layout sample without
 publishing its pages or identifying library metadata. Zero-detection covers,
 title cards, and splash pages deliberately become a single full-page view.
 
+Build the initial private Western-comic corpus from the four named acceptance
+series, then benchmark both panel boxes and learned LTR reading order:
+
+```sh
+python tools/build_suwayomi_manga_test_manifest.py \
+  --mode comic \
+  --title "Darth Vader" \
+  --title "Invincible" \
+  --title "Saga" \
+  --title "Y: The Last Man" \
+  --out test-manifest.json
+python tools/download_suwayomi_manga_test_corpus.py \
+  --manifest test-manifest.json --out test-corpus --pages-per-chapter 3
+python ml/benchmark_onnx_detector.py \
+  --model /models/comic-panel-detector.onnx \
+  --order-model /models/comic-panel-order.onnx \
+  --kind yolov8 --direction ltr \
+  --pages test-corpus/pages \
+  --corpus test-corpus/corpus.json \
+  --out benchmark-results
+```
+
+The integration was also sanity-checked against a CC-BY Pepper & Carrot page:
+all six panels were found in the correct reading order in 77 ms on the local
+CPU. This public smoke page does not replace the four-series private corpus.
+
 ## Service contract
 
 - `GET /health`
 - `POST /v1/manga/panels` with raw image bytes and an `image/*` content type
+- `POST /v1/comic/panels` with the same request contract
 
 The response contains normalized panel and speech-bubble boxes with confidence
 scores. Bubble boxes adjust only the visible camera crop; they do not change
 panel detection or reading order. Keep port 8091 on the private Docker network.
-Panels uses the service only in manga mode and automatically returns to the
-browser detector when the service is not available.
+Panels chooses the corresponding endpoint by reader mode and automatically
+returns to that mode's browser detector when the service is not available.
 
 ## Optional future training
 

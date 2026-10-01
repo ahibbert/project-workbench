@@ -234,6 +234,66 @@ test("bubble-aware framing expands only the panel that owns a clipped speech bub
   expect(result.right.bubbleCount).toBe(1);
 });
 
+test("comic mode uses the ordered server model response", async ({ page }) => {
+  await stubBackend(page);
+  let requests = 0;
+  let modelAvailable = true;
+  await page.route("**/api/detect/comic", async (route) => {
+    requests += 1;
+    if (!modelAvailable) {
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "offline" }) });
+      return;
+    }
+    expect(route.request().headers()["content-type"]).toContain("image/jpeg");
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        model: "inkwell-yolov8n-640",
+        orderModel: "inkwell-gradient-boosting",
+        panels: [
+          { x: 0.08, y: 0.08, w: 0.38, h: 0.36, score: 0.96 },
+          { x: 0.54, y: 0.08, w: 0.38, h: 0.36, score: 0.94 },
+        ],
+      }),
+    });
+  });
+  await page.goto("/", { waitUntil: "networkidle" });
+
+  const panels = await page.evaluate(async () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 120;
+    canvas.height = 180;
+    canvas.getContext("2d").fillRect(0, 0, 120, 180);
+    const image = new Image();
+    image.src = canvas.toDataURL("image/png");
+    await image.decode();
+    return window.PanelPilot.detectComicPanelsWithModel(image, "ltr");
+  });
+
+  expect(requests).toBe(1);
+  expect(panels.map((panel) => panel.label)).toEqual(["Region 1", "Region 2"]);
+  expect(panels.map((panel) => panel.x)).toEqual([0.08, 0.54]);
+
+  modelAvailable = false;
+  const fallbackCount = await page.evaluate(async () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 120;
+    canvas.height = 180;
+    const context = canvas.getContext("2d");
+    context.fillStyle = "white";
+    context.fillRect(0, 0, 120, 180);
+    context.strokeStyle = "black";
+    context.strokeRect(5, 5, 110, 170);
+    const image = new Image();
+    image.src = canvas.toDataURL("image/png");
+    await image.decode();
+    return (await window.PanelPilot.detectComicPanels(image, "ltr")).length;
+  });
+  expect(requests).toBe(2);
+  expect(fallbackCount).toBeGreaterThan(0);
+});
+
 test("the demo chapter opens and advances to the next panel", async ({ page }) => {
   await stubBackend(page);
   const errors = watchRuntimeErrors(page);

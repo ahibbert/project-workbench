@@ -40,6 +40,8 @@ def arguments():
     parser.add_argument("--username", default=os.environ.get("PANEL_PILOT_AUTH_USER", ""))
     parser.add_argument("--password", default=os.environ.get("PANEL_PILOT_AUTH_PASSWORD", ""))
     parser.add_argument("--chapters-per-title", type=int, default=3)
+    parser.add_argument("--mode", choices=("manga", "comic", "webtoon"), default="manga")
+    parser.add_argument("--title", action="append", default=[], help="Include titles containing this text; repeat as needed")
     parser.add_argument("--out", type=Path, required=True)
     return parser.parse_args()
 
@@ -109,7 +111,13 @@ def main():
         raise SystemExit("PANEL_PILOT_AUTH_USER and PANEL_PILOT_AUTH_PASSWORD are required")
     opener = session(args.app, args.username, args.password)
     mangas = graphql(opener, args.app, args.base, LIBRARY_QUERY)["mangas"]["nodes"]
-    manifest = {"format": 1, "mode": "manga", "chapters_per_title": args.chapters_per_title, "titles": []}
+    requested_titles = {title.casefold() for title in args.title}
+    if requested_titles:
+        mangas = [manga for manga in mangas if any(title in manga["title"].casefold() for title in requested_titles)]
+        missing = sorted(title for title in requested_titles if not any(title in manga["title"].casefold() for manga in mangas))
+        if missing:
+            print(f"Warning: requested titles not found: {', '.join(missing)}")
+    manifest = {"format": 1, "mode": args.mode, "chapters_per_title": args.chapters_per_title, "titles": []}
     for manga in sorted(mangas, key=lambda item: item["title"].casefold()):
         source = manga.get("source") or {}
         try:

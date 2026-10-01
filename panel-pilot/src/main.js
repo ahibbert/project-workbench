@@ -24,7 +24,7 @@ const sourceIndexRequestTimeoutMs = 12000;
 const packageAppVersion = typeof __APP_VERSION__ === "string" ? __APP_VERSION__ : "";
 const appVersion = packageAppVersion ? `v${packageAppVersion}` : "source";
 const buildId = typeof __BUILD_ID__ === "string" ? __BUILD_ID__ : "source";
-const detectorVersion = "detector v18-ml-manga";
+const detectorVersion = "detector v19-ml-manga-comic";
 const pageImageRetryDelaysMs = [0, 350];
 const chapterFetchRetryDelaysMs = [0, 400];
 const readerLoadingGraceMs = 180;
@@ -462,6 +462,7 @@ const state = {
   nextChapterPrefetch: null,
   nextChapterPrefetchTimer: null,
   mangaModelAvailable: null,
+  comicModelAvailable: null,
   navigationPending: false,
   navigationRequestId: 0,
   navigationController: null,
@@ -3082,6 +3083,7 @@ async function startOrContinueCurrentManga(returnFocusTarget = null) {
   state.panelMode = inferredMediaFormat(state.currentManga);
   state.panelModeUserOverride = false;
   updatePanelModeControls();
+  setReadingDirection(state.panelMode === "comic" ? "ltr" : "rtl");
   el.chapterId.value = chapter.id;
   el.chapterTitle.textContent = chapter.name || `Chapter ${chapter.chapterNumber || chapter.sourceOrder || chapter.id}`;
   await loadChapterPages({ chapter, returnFocusTarget });
@@ -3891,6 +3893,7 @@ function setLibraryItemFormat(item, mediaFormat) {
       ...existing,
       mediaFormat,
       panelMode: mediaFormat,
+      readingDirection: mediaFormat === "comic" ? "ltr" : "rtl",
       updatedAt: new Date().toISOString(),
     };
     if (mediaFormat === "comic") {
@@ -3967,6 +3970,7 @@ async function selectLibraryManga(item, resume, returnFocusTarget = null) {
   state.panelMode = resume && isPanelMode(resumeMode) ? resumeMode : titleFormat;
   state.panelModeUserOverride = Boolean(resume && isPanelMode(resumeMode) && resumeMode !== titleFormat);
   updatePanelModeControls();
+  setReadingDirection(item.readingDirection || (titleFormat === "comic" ? "ltr" : "rtl"));
   if (!resume) {
     state.mangaDetailOrigin = "library";
     setActiveView("browse", { history: false });
@@ -6758,7 +6762,7 @@ async function preparePageEntry(page, index, totalPages, options = {}) {
     mode === "webtoon"
       ? makeWebtoonPanels(image)
       : mode === "comic"
-        ? await detectComicPanels(image, direction).catch(() => [fullPagePanel(naturalWidth, naturalHeight)])
+        ? await detectComicPanels(image, direction, page.url).catch(() => [fullPagePanel(naturalWidth, naturalHeight)])
         : await detectPanels(image, direction, page.url).catch(() => [fullPagePanel(naturalWidth, naturalHeight)]);
   state.performanceStats.detectorRuns += 1;
   if (!isCurrent()) {
@@ -7734,6 +7738,26 @@ async function detectPanels(image, direction, pageUrl = "") {
 
 async function detectMangaPanelsWithModel(image, direction, pageUrl = "") {
   if (state.mangaModelAvailable === false) return null;
+  const payload = await requestPanelModel(image, pageUrl, "manga");
+  state.mangaModelAvailable = true;
+  const bubbles = sanitizeDetectionBoxes(payload.bubbles);
+  if (!payload.panels.length) {
+    return attachDetectionBubbles([fullPagePanel(image.naturalWidth, image.naturalHeight)], bubbles);
+  }
+  const panels = payload.panels.map((panel) => ({
+    ...panel,
+    pageWidth: image.naturalWidth,
+    pageHeight: image.naturalHeight,
+  }));
+  const consolidated = consolidateMangaPanels(panels);
+  const sorted = repairReadingOrder(sortPanels(consolidated, direction), direction);
+  const detected = sorted.length ? sorted.map((panel, index) => ({ ...panel, label: `Panel ${index + 1}` })) : [
+    fullPagePanel(image.naturalWidth, image.naturalHeight),
+  ];
+  return attachDetectionBubbles(detected, bubbles);
+}
+
+async function requestPanelModel(image, pageUrl, mode) {
   let body;
   let contentType;
   try {
@@ -7753,39 +7777,25 @@ async function detectMangaPanelsWithModel(image, direction, pageUrl = "") {
     canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
     canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
     body = await new Promise((resolve, reject) => {
-      canvas.toBlob((value) => value ? resolve(value) : reject(new Error("Could not encode manga page")), "image/jpeg", 0.82);
+      canvas.toBlob((value) => value ? resolve(value) : reject(new Error("Could not encode page")), "image/jpeg", 0.82);
     });
     contentType = "image/jpeg";
   }
-  const response = await fetch("/api/detect/manga", {
+  const response = await fetch(`/api/detect/${mode}`, {
     method: "POST",
     headers: { "Content-Type": contentType },
     body,
   });
   if (!response.ok) {
     if (response.status === 404 || response.status === 502 || response.status === 503) {
-      state.mangaModelAvailable = false;
+      if (mode === "manga") state.mangaModelAvailable = false;
+      else state.comicModelAvailable = false;
     }
-    throw new Error(`Manga model returned ${response.status}`);
+    throw new Error(`${mode} model returned ${response.status}`);
   }
   const payload = await response.json();
-  if (!Array.isArray(payload.panels)) throw new Error("Manga model returned an invalid response");
-  state.mangaModelAvailable = true;
-  const bubbles = sanitizeDetectionBoxes(payload.bubbles);
-  if (!payload.panels.length) {
-    return attachDetectionBubbles([fullPagePanel(image.naturalWidth, image.naturalHeight)], bubbles);
-  }
-  const panels = payload.panels.map((panel) => ({
-    ...panel,
-    pageWidth: image.naturalWidth,
-    pageHeight: image.naturalHeight,
-  }));
-  const consolidated = consolidateMangaPanels(panels);
-  const sorted = repairReadingOrder(sortPanels(consolidated, direction), direction);
-  const detected = sorted.length ? sorted.map((panel, index) => ({ ...panel, label: `Panel ${index + 1}` })) : [
-    fullPagePanel(image.naturalWidth, image.naturalHeight),
-  ];
-  return attachDetectionBubbles(detected, bubbles);
+  if (!Array.isArray(payload.panels)) throw new Error(`${mode} model returned an invalid response`);
+  return payload;
 }
 
 function attachDetectionBubbles(panels, bubbles) {
@@ -7881,7 +7891,29 @@ async function detectPanelsHeuristic(image, direction) {
   ];
 }
 
-async function detectComicPanels(image, direction) {
+async function detectComicPanels(image, direction, pageUrl = "") {
+  const modelPanels = await detectComicPanelsWithModel(image, direction, pageUrl).catch(() => null);
+  if (modelPanels) return modelPanels;
+  return detectComicPanelsHeuristic(image, direction);
+}
+
+async function detectComicPanelsWithModel(image, direction, pageUrl = "") {
+  if (state.comicModelAvailable === false) return null;
+  const payload = await requestPanelModel(image, pageUrl, "comic");
+  state.comicModelAvailable = true;
+  if (!payload.panels.length) return [fullPagePanel(image.naturalWidth, image.naturalHeight)];
+  let panels = sanitizeDetectionBoxes(payload.panels).map((panel) => ({
+    ...panel,
+    pageWidth: image.naturalWidth,
+    pageHeight: image.naturalHeight,
+  }));
+  if (direction === "rtl") panels = repairReadingOrder(sortPanels(panels, direction), direction);
+  return panels.length ? panels.map((panel, index) => ({ ...panel, label: `Region ${index + 1}` })) : [
+    fullPagePanel(image.naturalWidth, image.naturalHeight),
+  ];
+}
+
+async function detectComicPanelsHeuristic(image, direction) {
   const maxSide = 900;
   const scale = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
   const width = Math.max(1, Math.round(image.naturalWidth * scale));
@@ -11207,6 +11239,8 @@ window.PanelPilot = {
   bubbleAwarePanelRect,
   bubblePanelIndex,
   consolidateMangaPanels,
+  detectComicPanels,
+  detectComicPanelsWithModel,
   detectPanels,
   fullPagePanel,
   loadImage,

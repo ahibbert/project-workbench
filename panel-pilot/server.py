@@ -1036,12 +1036,14 @@ def decode_readcomiconline_path(raw_path, replacements=None):
     return f"https://2.bp.blogspot.com/{decoded[:-2]}{suffix}{query}"
 
 
-def detect_manga_image(image_bytes, content_type="application/octet-stream"):
+def detect_panel_image(image_bytes, content_type="application/octet-stream", mode="manga"):
     detector_base = os.environ.get("PANEL_PILOT_MANGA_DETECTOR_URL", "").strip().rstrip("/")
     if not detector_base:
-        raise RuntimeError("Manga model service is not configured")
+        raise RuntimeError("Panel model service is not configured")
+    if mode not in ("manga", "comic"):
+        raise ValueError("Unsupported panel detector mode")
     cache_version = os.environ.get("PANEL_PILOT_MANGA_DETECTOR_CACHE_VERSION", "v1")
-    cache_key = hashlib.sha256(cache_version.encode("utf-8") + b"\0" + image_bytes).hexdigest()
+    cache_key = hashlib.sha256(cache_version.encode("utf-8") + b"\0" + mode.encode("ascii") + b"\0" + image_bytes).hexdigest()
     cache_dir = os.environ.get("PANEL_PILOT_MANGA_DETECTOR_CACHE_PATH", "/app/data/detector-cache")
     cache_path = os.path.join(cache_dir, f"{cache_key}.json")
     try:
@@ -1050,7 +1052,7 @@ def detect_manga_image(image_bytes, content_type="application/octet-stream"):
     except FileNotFoundError:
         pass
     request = Request(
-        f"{detector_base}/v1/manga/panels",
+        f"{detector_base}/v1/{mode}/panels",
         data=image_bytes,
         headers={"Content-Type": content_type, "Accept": "application/json"},
         method="POST",
@@ -1071,6 +1073,10 @@ def detect_manga_image(image_bytes, content_type="application/octet-stream"):
                 if temporary_path and os.path.exists(temporary_path):
                     os.unlink(temporary_path)
     return payload, "miss", status
+
+
+def detect_manga_image(image_bytes, content_type="application/octet-stream"):
+    return detect_panel_image(image_bytes, content_type, "manga")
 
 
 class DownloadBufferManager:
@@ -1710,7 +1716,10 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
                 self.handle_mangabaka_library_post()
                 return
             if parsed.path == "/api/detect/manga":
-                self.handle_manga_detection()
+                self.handle_panel_detection("manga")
+                return
+            if parsed.path == "/api/detect/comic":
+                self.handle_panel_detection("comic")
                 return
             if parsed.path == "/api/reading-stats/events":
                 self.handle_reading_stats_events()
@@ -1730,32 +1739,32 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
 
         self.send_json({"error": "Unknown POST endpoint"}, status=404)
 
-    def handle_manga_detection(self):
+    def handle_panel_detection(self, mode):
         detector_base = os.environ.get("PANEL_PILOT_MANGA_DETECTOR_URL", "").strip().rstrip("/")
         if not detector_base:
-            self.send_json({"error": "Manga model service is not configured"}, status=503)
+            self.send_json({"error": "Panel model service is not configured"}, status=503)
             return
         length = int(self.headers.get("Content-Length", "0"))
         if length < 1 or length > 12000000:
-            raise ValueError("Manga detector image is empty or too large")
+            raise ValueError("Panel detector image is empty or too large")
         content_type = self.headers.get("Content-Type", "application/octet-stream")
         request_body = self.rfile.read(length)
         if content_type.startswith("application/json"):
             if length > 16384:
-                raise ValueError("Manga detector URL request is too large")
+                raise ValueError("Panel detector URL request is too large")
             payload = json.loads(request_body.decode("utf-8"))
-            image_bytes, content_type = self.fetch_manga_detection_asset(payload.get("url", ""))
+            image_bytes, content_type = self.fetch_panel_detection_asset(payload.get("url", ""))
         elif content_type.startswith("image/"):
             image_bytes = request_body
         else:
-            raise ValueError("Manga detector expects an image or a Suwayomi asset URL")
-        payload, cache_state, status = detect_manga_image(image_bytes, content_type)
+            raise ValueError("Panel detector expects an image or a Suwayomi asset URL")
+        payload, cache_state, status = detect_panel_image(image_bytes, content_type, mode)
         self.send_detector_payload(payload, cache_state, status=status)
 
-    def fetch_manga_detection_asset(self, raw_url):
+    def fetch_panel_detection_asset(self, raw_url):
         parsed = urlparse(str(raw_url or ""))
         if parsed.scheme or parsed.netloc or parsed.path != "/api/suwayomi/asset":
-            raise ValueError("Manga detector URL must be a local Suwayomi asset")
+            raise ValueError("Panel detector URL must be a local Suwayomi asset")
         params = parse_qs(parsed.query)
         base = self.resolve_suwayomi_base(params.get("base", ["http://localhost:4567"])[0])
         path = safe_suwayomi_asset_path(params.get("path", [""])[0])
@@ -1767,7 +1776,7 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         with open_url(request, timeout=30) as response:
             image_bytes = response.read()
             if not image_bytes or len(image_bytes) > 12000000:
-                raise ValueError("Manga detector asset is empty or too large")
+                raise ValueError("Panel detector asset is empty or too large")
             return image_bytes, response.headers.get("Content-Type") or "application/octet-stream"
 
     def send_detector_payload(self, payload, cache_state, status=200):

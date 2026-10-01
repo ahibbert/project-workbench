@@ -1,5 +1,6 @@
 import pathlib
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -7,7 +8,30 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from server import PanelPilotHandler  # noqa: E402
+from server import PanelPilotHandler, detect_panel_image  # noqa: E402
+
+
+class DetectorProxyTests(unittest.TestCase):
+    def test_manga_and_comic_use_separate_routes_and_cache_entries(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = b'{"panels": []}'
+        response.status = 200
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict("os.environ", {
+            "PANEL_PILOT_MANGA_DETECTOR_URL": "http://detector:8091",
+            "PANEL_PILOT_MANGA_DETECTOR_CACHE_PATH": directory,
+            "PANEL_PILOT_MANGA_DETECTOR_CACHE_VERSION": "comic-test",
+        }), mock.patch("server.open_url", return_value=response) as opener:
+            manga = detect_panel_image(b"same-image", "image/jpeg", "manga")
+            comic = detect_panel_image(b"same-image", "image/jpeg", "comic")
+            cached_manga = detect_panel_image(b"same-image", "image/jpeg", "manga")
+
+        self.assertEqual(manga[1], "miss")
+        self.assertEqual(comic[1], "miss")
+        self.assertEqual(cached_manga[1], "hit")
+        self.assertEqual(opener.call_count, 2)
+        self.assertTrue(opener.call_args_list[0].args[0].full_url.endswith("/v1/manga/panels"))
+        self.assertTrue(opener.call_args_list[1].args[0].full_url.endswith("/v1/comic/panels"))
 
 
 class LibraryMergeTests(unittest.TestCase):

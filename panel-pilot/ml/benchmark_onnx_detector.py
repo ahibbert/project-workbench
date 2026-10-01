@@ -13,6 +13,8 @@ import numpy as np
 import onnxruntime as ort
 from PIL import Image, ImageDraw
 
+from serve_manga_detector import order_comic_panels
+
 
 TOOLS_DIR = Path(__file__).resolve().parents[1] / "tools"
 sys.path.insert(0, str(TOOLS_DIR))
@@ -28,7 +30,8 @@ from manga_detector_report import (  # noqa: E402
 def arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=Path, required=True)
-    parser.add_argument("--kind", choices=("rtdetr", "yolo26", "deepghs-yolo"), required=True)
+    parser.add_argument("--kind", choices=("rtdetr", "yolo26", "yolov8", "deepghs-yolo"), required=True)
+    parser.add_argument("--order-model", type=Path, help="Optional Inkwell comic reading-order ONNX model")
     parser.add_argument("--pages", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--corpus", type=Path, help="Optional corpus.json used for per-title summaries")
@@ -96,11 +99,12 @@ def normalize_boxes(boxes, width, height):
 
 
 class Detector:
-    def __init__(self, model, kind, threshold=None, input_size=None):
+    def __init__(self, model, kind, threshold=None, input_size=None, order_model=None):
         self.kind = kind
         self.session = ort.InferenceSession(str(model), providers=["CPUExecutionProvider"])
-        defaults = {"rtdetr": .5, "yolo26": .25, "deepghs-yolo": .361}
-        sizes = {"rtdetr": 1280, "yolo26": 1024, "deepghs-yolo": 1024}
+        self.order_session = ort.InferenceSession(str(order_model), providers=["CPUExecutionProvider"]) if order_model else None
+        defaults = {"rtdetr": .5, "yolo26": .25, "yolov8": .25, "deepghs-yolo": .361}
+        sizes = {"rtdetr": 1280, "yolo26": 1024, "yolov8": 640, "deepghs-yolo": 1024}
         self.threshold = defaults[kind] if threshold is None else threshold
         self.input_size = sizes[kind] if input_size is None else input_size
 
@@ -109,6 +113,9 @@ class Detector:
             return self.detect_rtdetr(image)
         if self.kind == "yolo26":
             return self.detect_yolo26(image)
+        if self.kind == "yolov8":
+            panels = self.detect_yolov8(image)
+            return [panels[index] for index in order_comic_panels(panels, self.order_session)]
         return self.detect_deepghs(image)
 
     def detect_rtdetr(self, image):
@@ -151,6 +158,31 @@ class Detector:
         kept = nms(xyxy, confidences)
         boxes = []
         for index in kept:
+            x0, y0, x1, y1 = xyxy[index]
+            boxes.append([(x0 - left) / scale, (y0 - top) / scale, (x1 - left) / scale, (y1 - top) / scale,
+                          confidences[index]])
+        return normalize_boxes(np.asarray(boxes).reshape(-1, 5), width, height)
+
+    def detect_yolov8(self, image):
+        width, height = image.size
+        tensor, scale, left, top = letterbox(image, self.input_size)
+        input_name = self.session.get_inputs()[0].name
+        output = np.asarray(self.session.run(None, {input_name: tensor})[0][0])
+        if output.shape[0] <= 8 and output.shape[1] > output.shape[0]:
+            output = output.T
+        confidences = output[:, 4]
+        keep = confidences >= self.threshold
+        predictions = output[keep, :4]
+        confidences = confidences[keep]
+        if not predictions.size:
+            return []
+        xyxy = np.empty_like(predictions)
+        xyxy[:, 0] = predictions[:, 0] - predictions[:, 2] / 2
+        xyxy[:, 1] = predictions[:, 1] - predictions[:, 3] / 2
+        xyxy[:, 2] = predictions[:, 0] + predictions[:, 2] / 2
+        xyxy[:, 3] = predictions[:, 1] + predictions[:, 3] / 2
+        boxes = []
+        for index in nms(xyxy, confidences, .45):
             x0, y0, x1, y1 = xyxy[index]
             boxes.append([(x0 - left) / scale, (y0 - top) / scale, (x1 - left) / scale, (y1 - top) / scale,
                           confidences[index]])
@@ -224,7 +256,7 @@ def main():
     args.out.mkdir(parents=True, exist_ok=True)
     overlays = args.out / "overlays"
     overlays.mkdir(exist_ok=True)
-    detector = Detector(args.model, args.kind, args.threshold, args.input_size)
+    detector = Detector(args.model, args.kind, args.threshold, args.input_size, args.order_model)
     corpus = load_corpus(args.corpus)
     rows = []
     contacts = []
@@ -235,8 +267,9 @@ def main():
         started = time.perf_counter()
         raw = detector(image)
         elapsed_ms = (time.perf_counter() - started) * 1000
-        panels = consolidate_manga_panels(raw)
-        panels = repair_reading_order(sort_panels(panels, args.direction), args.direction)
+        panels = raw if args.kind == "yolov8" else consolidate_manga_panels(raw)
+        if args.kind != "yolov8" or not args.order_model:
+            panels = repair_reading_order(sort_panels(panels, args.direction), args.direction)
         reasons = suspicious_reasons(panels, image)
         violations = order_violations(panels, args.direction)
         if violations:

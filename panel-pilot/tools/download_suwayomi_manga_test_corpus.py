@@ -90,7 +90,7 @@ def main():
     opener = session(args.app, args.username, args.password)
     page_dir = args.out / "pages"
     page_dir.mkdir(parents=True, exist_ok=True)
-    corpus = {"format": 1, "mode": "manga", "pages_per_chapter": args.pages_per_chapter, "pages": [], "errors": []}
+    corpus = {"format": 1, "mode": manifest.get("mode", "manga"), "pages_per_chapter": args.pages_per_chapter, "pages": [], "errors": []}
 
     for title in manifest["titles"]:
         for chapter in title.get("chapters", []):
