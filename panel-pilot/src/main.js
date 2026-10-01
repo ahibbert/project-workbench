@@ -1903,9 +1903,13 @@ function openReaderModal(modal) {
   syncReaderInteractionIsolation();
 }
 
-function rememberReaderModalFocus() {
+function rememberReaderModalFocus(trigger = document.activeElement) {
   if (state.readerModalReturnFocus) return;
-  state.readerModalReturnFocus = document.activeElement;
+  // Safari pointer activation does not consistently move focus to a button,
+  // so callers pass the control that initiated reader loading explicitly.
+  state.readerModalReturnFocus = trigger?.isConnected && typeof trigger.focus === "function"
+    ? trigger
+    : document.activeElement;
   const target = state.readerModalReturnFocus;
   const chapterAction = target?.dataset?.chapterAction;
   const chapterId = target?.closest?.("[data-chapter-id]")?.dataset?.chapterId;
@@ -2667,10 +2671,10 @@ function updateMangaDetailActions() {
   }
 }
 
-async function startOrContinueCurrentManga() {
+async function startOrContinueCurrentManga(returnFocusTarget = null) {
   const item = currentMangaLibraryItem();
   if (item?.chapterId) {
-    await selectLibraryManga(item, true);
+    await selectLibraryManga(item, true, returnFocusTarget);
     return;
   }
   const chapters = state.chapterView.length ? state.chapterView : visibleChapters();
@@ -2684,7 +2688,7 @@ async function startOrContinueCurrentManga() {
   }
   el.chapterId.value = chapter.id;
   el.chapterTitle.textContent = chapter.name || `Chapter ${chapter.chapterNumber || chapter.sourceOrder || chapter.id}`;
-  await loadChapterPages({ chapter });
+  await loadChapterPages({ chapter, returnFocusTarget });
 }
 
 async function addCurrentMangaToLibrary() {
@@ -3085,7 +3089,7 @@ function renderLibrary() {
       eyebrow: item.chapterTitle || item.sourceLabel || "Suwayomi library",
       meta: resumable ? (item.progressLabel || "Resume reading") : "View chapters",
     });
-    cover.addEventListener("click", () => void selectLibraryManga(item, resumable).catch((error) => {
+    cover.addEventListener("click", (event) => void selectLibraryManga(item, resumable, event.currentTarget).catch((error) => {
       const message = friendlySourceErrorMessage(error);
       if (resumable) {
         setActiveView("reader");
@@ -3205,7 +3209,8 @@ function updateReaderNav() {
   el.navReaderImage.src = coverUrl;
 }
 
-async function openReaderFromNav() {
+async function openReaderFromNav(returnFocusTarget = null) {
+  const focusTarget = returnFocusTarget?.currentTarget || returnFocusTarget;
   const item = readerResumeItem();
   if (!item) {
     if (state.activeChapter && state.pages.length) setActiveView("reader");
@@ -3224,7 +3229,7 @@ async function openReaderFromNav() {
   }
   el.navReader.setAttribute("aria-busy", "true");
   try {
-    await selectLibraryManga(item, true);
+    await selectLibraryManga(item, true, focusTarget);
     if (!state.activeChapter || !state.pages.length) {
       setActiveView("reader");
       if (el.readerError?.hidden) {
@@ -3353,7 +3358,7 @@ function isNsfwLibraryItem(item) {
   return label.includes("manhwa18") || label.includes("manhwa18.cc");
 }
 
-async function selectLibraryManga(item, resume) {
+async function selectLibraryManga(item, resume, returnFocusTarget = null) {
   const serverUrl = String(item.serverUrl || currentDeviceServerUrl()).trim().replace(/\/+$/, "");
   state.currentManga = {
     id: item.mangaId,
@@ -3378,6 +3383,7 @@ async function selectLibraryManga(item, resume) {
   el.chapterTitle.textContent = item.chapterTitle || item.mangaTitle || "Selected manga";
   state.pendingResume = resume ? item : null;
   if (resume) {
+    rememberReaderModalFocus(returnFocusTarget || document.activeElement);
     setActiveView("reader");
     const findReadyDevicePackage = async () => {
       const direct = devicePackageForChapter(item.chapterId, serverUrl);
@@ -5649,6 +5655,7 @@ function renderChapters() {
         await loadChapterPages({
           serverUrl: chapterServerUrl,
           skipLibraryEnsure: chapterServerUrl !== currentDeviceServerUrl(),
+          returnFocusTarget: button,
         });
       } else {
         showToast("This chapter has not been saved on this device.", "bad");
@@ -5729,7 +5736,7 @@ async function loadChapterPages(options = {}) {
   state.readerLoadController = loadController;
   const loadIsCurrent = () => loadRequestId === state.readerLoadRequestId && !loadController.signal.aborted;
 
-  rememberReaderModalFocus();
+  rememberReaderModalFocus(options.returnFocusTarget || document.activeElement);
   setActiveView("reader");
   hideReaderError();
   setReaderChromeVisible(true);
@@ -10091,7 +10098,7 @@ function wireEvents() {
       setDownloadStatusSheet(false);
       const targetView = button.dataset.targetView;
       if (targetView === "reader") {
-        openReaderFromNav();
+        openReaderFromNav(button);
         return;
       }
       if (targetView === "browse" && el.mangaDetail && !el.mangaDetail.hidden) {
@@ -10163,7 +10170,7 @@ function wireEvents() {
   el.libraryFilters.forEach((button) => button.addEventListener("click", () => setLibraryFilter(button.dataset.libraryFilter)));
   el.toggleBrowsePanel?.addEventListener("click", toggleBrowsePanel);
   el.closeMangaDetail?.addEventListener("click", closeMangaDetail);
-  el.detailPrimary?.addEventListener("click", () => { void startOrContinueCurrentManga(); });
+  el.detailPrimary?.addEventListener("click", (event) => { void startOrContinueCurrentManga(event.currentTarget); });
   el.detailLibrary?.addEventListener("click", () => { void addCurrentMangaToLibrary(); });
   el.browseOpenSettings?.addEventListener("click", () => {
     openSuwayomiSetup();
@@ -10182,7 +10189,9 @@ function wireEvents() {
     saveSettings();
     renderChapters();
   });
-  el.loadChapterPages.addEventListener("click", loadChapterPages);
+  el.loadChapterPages.addEventListener("click", (event) => {
+    void loadChapterPages({ returnFocusTarget: event.currentTarget });
+  });
   el.loadDemo.addEventListener("click", loadDemo);
   el.loadComickChapters?.addEventListener("click", loadComickChapters);
   el.loadComickLatest?.addEventListener("click", loadComickLatest);
