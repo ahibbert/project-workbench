@@ -34,6 +34,27 @@ can retain pending sync operations and account-link metadata. An environment
 token must be removed by the operator outside the app; logs and backups may
 retain older data according to the operator's retention policy.
 
+## Optional reading stats
+
+Reading stats are off by default and begin prospectively only after a user
+enables them. Panels can then record capped active-reading minutes, page views,
+chapter finishes and rereads, titles marked complete, reading days, rhythm, and
+achievements. The browser keeps a stable random device identifier and a durable
+offline outbox. Before upload it converts server, title, and chapter references
+to opaque SHA-256 keys; the server applies its own secret-keyed HMAC before
+writing events to its SQLite database. Raw title names, cover URLs, content
+URLs, device identifiers, and client IP addresses are not stored in the stats
+tables.
+
+The Panels server caps credited activity at 60 seconds per UTC minute across
+devices and applies the selected timezone and day boundary when calculating
+reading days. Stats are not sent to MangaBaka, Suwayomi, or an analytics
+provider. Users can pause collection, export their stats, or permanently reset
+them under **Settings → Reading stats**. A stats reset leaves the Suwayomi
+library and reading progress unchanged. Browser storage, server database files,
+logs, exports, and backups remain under the same operator and device protections
+described elsewhere in this document.
+
 ## Development content adapters
 
 The Comick adapter is an opt-in development and Test Lab feature. It runs only

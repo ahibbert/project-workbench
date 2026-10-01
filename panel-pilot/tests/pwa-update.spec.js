@@ -170,7 +170,7 @@ test("a v103 worker waits for consent, preserves state, and reloads exactly once
       legacyCachePresent: true,
     });
 
-    await page.goto(`${fixture.origin}/`, { waitUntil: "networkidle" });
+    await page.goto(`${fixture.origin}/`, { waitUntil: "load" });
     await expect(page.locator("#app-update")).toBeVisible();
     await page.locator("#nav-settings").click();
     await expect(page.locator("#settings-view")).toHaveClass(/\bactive\b/);
@@ -178,7 +178,9 @@ test("a v103 worker waits for consent, preserves state, and reloads exactly once
     await expect(page.locator("#app-update")).toBeVisible();
     const loadsBeforeActivation = await page.evaluate(() => Number(sessionStorage.getItem("panel-pilot-test-loads")));
 
+    const appliedNavigation = page.waitForEvent("load");
     await page.locator("#apply-app-update").click();
+    await appliedNavigation;
     await expect.poll(
       () => page.evaluate(() => Number(sessionStorage.getItem("panel-pilot-test-loads"))),
       { timeout: 15_000 },
@@ -253,14 +255,16 @@ test("the global Update ready control activates a waiting worker and reloads exa
       });
     });
 
-    await page.goto(`${fixture.origin}/`, { waitUntil: "networkidle" });
+    await page.goto(`${fixture.origin}/`, { waitUntil: "load" });
     const updateReady = page.locator("#app-update");
     await expect(updateReady).toBeVisible();
     const loadsBeforeActivation = await page.evaluate(
       () => Number(sessionStorage.getItem("panel-pilot-global-update-loads")),
     );
 
+    const globalNavigation = page.waitForEvent("load");
     await updateReady.click();
+    await globalNavigation;
     await expect.poll(
       () => page.evaluate(() => Number(sessionStorage.getItem("panel-pilot-global-update-loads"))),
       { timeout: 15_000 },
@@ -289,7 +293,7 @@ test("a registration failure does not prevent the online application or Test Lab
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   try {
-    const response = await page.goto(`${fixture.origin}/`, { waitUntil: "networkidle" });
+    const response = await page.goto(`${fixture.origin}/`, { waitUntil: "load" });
     expect(response?.ok()).toBeTruthy();
     await expect(page.locator("#library-view")).toHaveClass(/\bactive\b/);
     await expect.poll(() => page.evaluate(() => typeof window.PanelPilot?.detectPanels)).toBe("function");
@@ -323,7 +327,7 @@ test("a manual update check reports the current build when no update is waiting"
       }
     });
 
-    await page.goto(`${fixture.origin}/`, { waitUntil: "networkidle" });
+    await page.goto(`${fixture.origin}/`, { waitUntil: "load" });
     await page.locator("#nav-settings").click();
     await expect(page.locator("#settings-view")).toHaveClass(/\bactive\b/);
     await page.locator("#check-app-update").click();

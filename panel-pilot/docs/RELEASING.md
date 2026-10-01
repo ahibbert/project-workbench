@@ -18,6 +18,8 @@ python tools/test_server_security.py
 python tools/test_server_state.py
 python tools/test_manga_detector.py
 python tools/test_download_buffer.py
+python tools/test_reading_stats.py
+python tools/test_reading_stats_http.py
 ```
 
 Review the version-only changes to both `package.json` and `package-lock.json`.
@@ -115,6 +117,9 @@ Verify through the public HTTPS origin:
 6. `/server.py`, `/data/`, `/package.json`, and `/src/` return 404.
 7. Container restart count is stable and `data/panels` is mounted at
    `/app/data`.
+8. Reading stats remain off until explicitly enabled; after enabling them,
+   one page view syncs, export downloads JSON, and confirmed reset removes the
+   history without changing Suwayomi progress.
 
 For the real-device gate, keep iOS/iPadOS 16.4 as the core install and reader
 floor, but judge optional platform features against their actual WebKit floor:

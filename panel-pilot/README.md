@@ -105,6 +105,21 @@ responses, sign-in and sign-out, Test Lab, and chapter media that were not
 explicitly saved to the device are never served from the application-shell
 fallback.
 
+## Private reading stats
+
+The **Stats** tab can build a prospective, private reading history with active
+reading time, pages, finished and reread chapters, reading days, completed
+titles, rhythm, and achievements. Tracking is off by default and cannot
+reconstruct activity from before it was enabled. Activity queues on the device
+while offline and syncs to the self-hosted Panels server; it is never sent to a
+third-party analytics service.
+
+Under **Settings → Reading stats**, users can pause collection, hide totals or
+rhythm, disable milestone celebrations, export their data, or permanently
+reset stats. Resetting stats does not alter the Suwayomi library or reading
+progress. See the [privacy and data-flow notes](docs/PRIVACY.md) for storage
+details.
+
 ### Apple platform support
 
 The supported baseline is iOS/iPadOS 16.4 for Home Screen installation and

@@ -127,7 +127,7 @@ function startOfflineFixture({ healthySuwayomi = false } = {}) {
 }
 
 async function establishControlledApp(page, origin) {
-  await page.goto(`${origin}/`, { waitUntil: "networkidle" });
+  await page.goto(`${origin}/`, { waitUntil: "load" });
   await page.evaluate(async () => {
     await navigator.serviceWorker.ready;
     if (navigator.serviceWorker.controller) return;
@@ -142,8 +142,11 @@ async function establishControlledApp(page, origin) {
       }, { once: true });
     });
   });
-  await page.reload({ waitUntil: "networkidle" });
+  await page.reload({ waitUntil: "load" });
   await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+  await expect(page.locator("#connection-note")).not.toHaveText(
+    "Connecting to Suwayomi through the Panels proxy.",
+  );
 }
 
 async function seedLocalAppState(page) {
@@ -191,7 +194,7 @@ test("a controlled app reloads its shell and local state while offline", async (
   try {
     await establishControlledApp(page, fixture.origin);
     await seedLocalAppState(page);
-    await page.reload({ waitUntil: "networkidle" });
+    await page.reload({ waitUntil: "load" });
     await expect(page.getByText("Offline Fixture Library Title", { exact: true })).toBeVisible();
 
     await context.setOffline(true);

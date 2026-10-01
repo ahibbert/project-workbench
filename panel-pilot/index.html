@@ -250,6 +250,60 @@
         </section>
       </section>
 
+      <section class="app-view stats-view" id="stats-view" data-view="stats" aria-label="Reading activity" hidden>
+        <header class="view-header">
+          <div>
+            <h1>Reading stats</h1>
+            <p class="view-subtitle">Your private Panels activity</p>
+          </div>
+          <span class="small-count" id="stats-since">Not started</span>
+        </header>
+
+        <section class="panel stats-welcome" id="stats-welcome" aria-labelledby="stats-welcome-title">
+          <p class="kicker">Optional and private</p>
+          <h2 id="stats-welcome-title">Build your reading story</h2>
+          <p>Panels can celebrate reading time, finished chapters, reading days, and milestones. It starts tracking when you enable it, cannot reconstruct past reading, and never sends activity to a third party.</p>
+          <button class="wide-button" id="stats-enable" type="button">Start tracking my reading</button>
+        </section>
+
+        <div class="stats-dashboard" id="stats-dashboard" hidden>
+          <label class="stats-range" for="stats-range-select"><span>Range</span><select id="stats-range-select" aria-label="Stats range"><option value="7d">7 days</option><option value="30d" selected>30 days</option><option value="365d">Year</option><option value="all">All time</option></select></label>
+
+          <section class="stats-summary-grid" aria-label="Reading summary">
+            <article class="stats-metric stats-metric-primary"><span>Active reading</span><strong id="stats-active-time">0m</strong><small>Estimated while pages were visible</small></article>
+            <article class="stats-metric"><span>Chapters finished</span><strong id="stats-chapters">0</strong><small id="stats-rereads">0 unique · 0 rereads</small></article>
+            <article class="stats-metric"><span>Pages explored</span><strong id="stats-pages">0</strong><small>Pages opened while reading</small></article>
+            <article class="stats-metric"><span>Reading days</span><strong id="stats-days">0</strong><small id="stats-titles">0 titles explored</small></article>
+            <article class="stats-metric"><span>Titles completed</span><strong id="stats-completed-titles">0</strong><small>Marked complete in your library</small></article>
+          </section>
+
+          <section class="panel stats-rhythm" id="stats-rhythm" aria-labelledby="stats-rhythm-title">
+            <div class="panel-heading">
+              <div>
+                <p class="kicker">Reading rhythm</p>
+                <h2 id="stats-rhythm-title">A little momentum</h2>
+              </div>
+              <span class="small-count" id="stats-current-rhythm">0 days</span>
+            </div>
+            <p class="note" id="stats-rhythm-note">Read when it feels good. Missing a day never erases what you’ve enjoyed.</p>
+            <div class="stats-calendar" id="stats-calendar" role="img" aria-label="No reading days recorded yet"></div>
+            <p class="note" id="stats-longest-rhythm">Longest rhythm: 0 days</p>
+          </section>
+
+          <section class="panel stats-achievements" aria-labelledby="stats-achievements-title">
+            <div class="panel-heading">
+              <div>
+                <p class="kicker">Milestones</p>
+                <h2 id="stats-achievements-title">Your shelf of firsts</h2>
+              </div>
+              <span class="small-count" id="stats-achievement-count">0 unlocked</span>
+            </div>
+            <div class="achievement-grid" id="stats-achievement-list"></div>
+          </section>
+
+        </div>
+      </section>
+
       <section class="app-view settings-view" id="settings-view" data-view="settings" aria-label="Settings">
         <header class="view-header">
           <div>
@@ -451,6 +505,32 @@
           <p class="note">Metadata and recommendations provided by <a href="https://mangabaka.org" target="_blank" rel="noopener">MangaBaka</a>.</p>
         </section>
 
+        <section class="panel stats-controls" role="group" aria-labelledby="stats-controls-title">
+          <div class="panel-heading"><h2 id="stats-controls-title">Reading stats</h2></div>
+          <p class="note">Activity is stored only by your Panels server. Manga titles, cover images, source URLs, and page images are not recorded in stats.</p>
+          <label class="checkbox-field"><input id="stats-enabled" type="checkbox"><span>Track reading activity</span></label>
+          <label class="checkbox-field"><input id="stats-show-summary" type="checkbox" checked><span>Show totals and milestones</span></label>
+          <label class="checkbox-field"><input id="stats-show-rhythm" type="checkbox" checked><span>Show reading rhythm</span></label>
+          <label class="checkbox-field"><input id="stats-celebrations" type="checkbox" checked><span>Show gentle milestone celebrations</span></label>
+          <div class="button-row">
+            <button id="stats-export" type="button">Export reading stats</button>
+            <button class="danger-button" id="stats-reset" type="button">Reset reading stats</button>
+          </div>
+          <p class="note" id="stats-status" role="status" aria-live="polite">Reading stats are checking server support…</p>
+        </section>
+
+        <dialog class="device-storage-dialog stats-reset-dialog" id="stats-reset-dialog" aria-labelledby="stats-reset-title" aria-describedby="stats-reset-description">
+          <form method="dialog">
+            <h2 id="stats-reset-title">Reset reading stats?</h2>
+            <p id="stats-reset-description">Type ERASE to permanently remove Panels stats and achievements. Your Suwayomi library and reading progress are not affected.</p>
+            <label class="field"><span>Confirmation</span><input id="stats-reset-confirmation" type="text" autocomplete="off" spellcheck="false"></label>
+            <div class="button-row device-storage-dialog-actions">
+              <button id="stats-reset-cancel" type="submit" value="cancel" autofocus>Cancel</button>
+              <button class="danger-button" id="stats-reset-confirm" type="button">Reset reading stats</button>
+            </div>
+          </form>
+        </dialog>
+
         <section class="panel account-panel">
           <div class="panel-heading">
             <h2>Account</h2>
@@ -519,6 +599,10 @@
       <button class="app-nav-button" id="nav-browse" type="button" data-target-view="browse">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>
         <span>Browse</span>
+      </button>
+      <button class="app-nav-button" id="nav-stats" type="button" data-target-view="stats">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V10m7 10V4m7 16v-7"/><path d="M3 20h18"/></svg>
+        <span>Stats</span>
       </button>
       <button class="app-nav-button" id="nav-settings" type="button" data-target-view="settings">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 13.5v-3l-2-.7a7 7 0 0 0-.7-1.7l.9-1.9-2.1-2.1-1.9.9a7 7 0 0 0-1.7-.7L10.8 2h-3l-.7 2.3a7 7 0 0 0-1.7.7l-1.9-.9-2.1 2.1.9 1.9a7 7 0 0 0-.7 1.7l-2 .7v3l2 .7a7 7 0 0 0 .7 1.7l-.9 1.9 2.1 2.1 1.9-.9a7 7 0 0 0 1.7.7l.7 2.3h3l.7-2.3a7 7 0 0 0 1.7-.7l1.9.9 2.1-2.1-.9-1.9a7 7 0 0 0 .7-1.7l2-.7Z" transform="translate(2.2 0) scale(.8)"/></svg>

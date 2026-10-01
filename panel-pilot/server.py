@@ -3,6 +3,7 @@ from urllib.parse import parse_qs, quote, unquote, urlencode, urljoin, urlparse
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 from urllib.error import HTTPError
 import base64
+from contextlib import contextmanager
 import hashlib
 import hmac
 import html
@@ -13,12 +14,14 @@ import posixpath
 from pathlib import Path
 import re
 import secrets
+import sqlite3
 import sys
 import tempfile
 import threading
 import time
 from http.cookies import SimpleCookie
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 USER_AGENT = (
@@ -29,6 +32,11 @@ LIBRARY_PATH = os.environ.get("PANEL_PILOT_LIBRARY_PATH", "/app/data/library.jso
 REPORTS_PATH = os.environ.get("PANEL_PILOT_REPORTS_PATH", "/app/data/panel-reports")
 DOWNLOAD_BUFFER_PATH = os.environ.get("PANEL_PILOT_DOWNLOAD_BUFFER_PATH", "/app/data/download-buffer.json")
 MANGABAKA_CONFIG_PATH = os.environ.get("PANEL_PILOT_MANGABAKA_CONFIG_PATH", "/app/data/mangabaka-config.json")
+DATA_ROOT = os.environ.get("PANEL_PILOT_DATA_ROOT", "/app/data")
+READING_STATS_PATH = os.environ.get(
+    "PANEL_PILOT_READING_STATS_PATH",
+    os.path.join(DATA_ROOT, "reading-stats.sqlite3"),
+)
 MANGABAKA_API_BASE = "https://api.mangabaka.org"
 LIBRARY_LIMIT = 5000
 LIBRARY_LOCK = threading.Lock()
@@ -36,6 +44,7 @@ REPORT_LOCK = threading.Lock()
 DETECTOR_CACHE_LOCK = threading.Lock()
 MANGABAKA_LOCK = threading.Lock()
 DOWNLOAD_BUFFER_MANAGER = None
+READING_STATS_LOCK = threading.RLock()
 
 
 IMAGE_CDN_DOMAINS = (
@@ -218,6 +227,669 @@ def resolve_static_root():
             f"Missing required build output: {', '.join(missing)}."
         )
     return root
+
+
+class ReadingStatsRequestError(ValueError):
+    def __init__(self, message, status=400):
+        super().__init__(message)
+        self.status = status
+
+
+class ReadingStatsStore:
+    """Private, prospective reading telemetry stored on the Panels server only."""
+
+    SCHEMA_VERSION = 1
+    EVENT_TYPES = {"active_minute", "page_view", "chapter_finish", "title_complete"}
+    RANGE_DAYS = {"7d": 7, "30d": 30, "365d": 365, "all": None}
+    ACHIEVEMENTS = (
+        ("first-finish", "First finish", "Finish your first chapter"),
+        ("ten-finishes", "Ten chapters", "Finish 10 unique chapters"),
+        ("fifty-finishes", "Fifty chapters", "Finish 50 unique chapters"),
+        ("three-titles", "Curious reader", "Explore three titles"),
+        ("seven-reading-days", "A week of reading", "Read on seven days"),
+        ("three-day-rhythm", "Finding a rhythm", "Read for three days in a row"),
+        ("seven-day-rhythm", "Seven-day rhythm", "Read for seven days in a row"),
+        ("first-reread", "Worth another look", "Finish a chapter again"),
+    )
+
+    def __init__(self, path=None):
+        self.path = str(path or READING_STATS_PATH)
+        self._initialize()
+
+    @staticmethod
+    def _utc_now():
+        return datetime.now(timezone.utc).replace(microsecond=0)
+
+    @staticmethod
+    def _iso(value):
+        return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+    @classmethod
+    def _parse_timestamp(cls, value, field="occurredAt"):
+        if not isinstance(value, str) or len(value) > 40:
+            raise ReadingStatsRequestError(f"{field} must be an ISO-8601 timestamp")
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise ReadingStatsRequestError(f"{field} must be an ISO-8601 timestamp") from error
+        if parsed.tzinfo is None:
+            raise ReadingStatsRequestError(f"{field} must include a timezone")
+        return parsed.astimezone(timezone.utc).replace(microsecond=0)
+
+    def _connect(self):
+        connection = sqlite3.connect(self.path, timeout=10)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA busy_timeout = 10000")
+        return connection
+
+    @contextmanager
+    def _database(self):
+        connection = self._connect()
+        try:
+            yield connection
+            if connection.in_transaction:
+                connection.commit()
+        except Exception:
+            if connection.in_transaction:
+                connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def _initialize(self):
+        directory = os.path.dirname(self.path) or "."
+        os.makedirs(directory, exist_ok=True)
+        with READING_STATS_LOCK, self._database() as connection:
+            connection.execute("PRAGMA journal_mode = WAL")
+            version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+            if version > self.SCHEMA_VERSION:
+                raise RuntimeError(
+                    f"Reading stats database schema {version} is newer than supported schema {self.SCHEMA_VERSION}"
+                )
+            if version < 1:
+                self._migrate_v1(connection)
+            connection.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
+
+    def _migrate_v1(self, connection):
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS stats_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS stats_profile (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+                show_stats INTEGER NOT NULL CHECK (show_stats IN (0, 1)),
+                show_rhythm INTEGER NOT NULL CHECK (show_rhythm IN (0, 1)),
+                celebrations INTEGER NOT NULL CHECK (celebrations IN (0, 1)),
+                timezone TEXT NOT NULL,
+                day_start_hour INTEGER NOT NULL CHECK (day_start_hour BETWEEN 0 AND 12),
+                prospective_since TEXT,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS ingested_events (
+                event_id TEXT PRIMARY KEY,
+                event_type TEXT NOT NULL,
+                occurred_at TEXT NOT NULL,
+                ingested_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS activity_minutes (
+                minute_utc TEXT PRIMARY KEY,
+                seconds INTEGER NOT NULL CHECK (seconds BETWEEN 0 AND 60),
+                last_event_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS activity_minute_titles (
+                minute_utc TEXT NOT NULL,
+                title_hash TEXT NOT NULL,
+                seconds INTEGER NOT NULL CHECK (seconds BETWEEN 0 AND 60),
+                PRIMARY KEY (minute_utc, title_hash),
+                FOREIGN KEY (minute_utc) REFERENCES activity_minutes(minute_utc) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS page_views (
+                event_id TEXT PRIMARY KEY,
+                title_hash TEXT NOT NULL,
+                chapter_hash TEXT NOT NULL,
+                page_hash TEXT NOT NULL,
+                occurred_at TEXT NOT NULL,
+                FOREIGN KEY (event_id) REFERENCES ingested_events(event_id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS chapter_finishes (
+                event_id TEXT PRIMARY KEY,
+                title_hash TEXT NOT NULL,
+                chapter_hash TEXT NOT NULL,
+                attempt_hash TEXT NOT NULL,
+                occurred_at TEXT NOT NULL,
+                UNIQUE (title_hash, chapter_hash, attempt_hash),
+                FOREIGN KEY (event_id) REFERENCES ingested_events(event_id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS title_completions (
+                event_id TEXT PRIMARY KEY,
+                title_hash TEXT NOT NULL UNIQUE,
+                occurred_at TEXT NOT NULL,
+                FOREIGN KEY (event_id) REFERENCES ingested_events(event_id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS achievements (
+                achievement_id TEXT PRIMARY KEY,
+                unlocked_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_events_occurred ON ingested_events(occurred_at);
+            CREATE INDEX IF NOT EXISTS idx_pages_occurred ON page_views(occurred_at);
+            CREATE INDEX IF NOT EXISTS idx_finishes_occurred ON chapter_finishes(occurred_at);
+            """
+        )
+        now = self._iso(self._utc_now())
+        connection.execute(
+            "INSERT OR IGNORE INTO stats_meta(key, value) VALUES ('identifier_salt', ?)",
+            (secrets.token_hex(32),),
+        )
+        connection.execute(
+            """INSERT OR IGNORE INTO stats_profile(
+                id, enabled, show_stats, show_rhythm, celebrations, timezone,
+                day_start_hour, prospective_since, updated_at
+            ) VALUES (1, 0, 1, 1, 1, 'UTC', 4, NULL, ?)""",
+            (now,),
+        )
+
+    @staticmethod
+    def _validate_identity(value, field):
+        if not isinstance(value, str) or not value.strip() or len(value) > 500:
+            raise ReadingStatsRequestError(f"{field} must be a non-empty string of at most 500 characters")
+        return value.strip()
+
+    @staticmethod
+    def _validate_token(value, field, maximum=160):
+        if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9._:-]{8,%d}" % maximum, value):
+            raise ReadingStatsRequestError(f"{field} has an invalid format")
+        return value
+
+    @staticmethod
+    def _active_seconds(event):
+        seconds = event.get("seconds")
+        if isinstance(seconds, int) and not isinstance(seconds, bool) and 1 <= seconds <= 60:
+            return seconds
+        active_ms = event.get("activeMs")
+        if isinstance(active_ms, (int, float)) and not isinstance(active_ms, bool) and 0 < active_ms <= 60000:
+            return min(60, max(1, int((active_ms + 999) // 1000)))
+        raise ReadingStatsRequestError("active_minute must include seconds from 1 to 60 or activeMs from 1 to 60000")
+
+    @classmethod
+    def _page_identity(cls, event):
+        page_key = event.get("pageKey")
+        if page_key is not None:
+            return cls._validate_identity(page_key, "pageKey")
+        page_index = event.get("pageIndex")
+        if isinstance(page_index, bool) or not isinstance(page_index, int) or page_index < 0:
+            raise ReadingStatsRequestError("page_view must include pageKey or a non-negative pageIndex")
+        return f"index:{page_index}"
+
+    def _hash(self, connection, namespace, value):
+        salt = connection.execute(
+            "SELECT value FROM stats_meta WHERE key = 'identifier_salt'"
+        ).fetchone()[0]
+        return hmac.new(
+            bytes.fromhex(salt),
+            f"{namespace}\0{value}".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+
+    @staticmethod
+    def _settings_from_row(row):
+        return {
+            "enabled": bool(row["enabled"]),
+            "showStats": bool(row["show_stats"]),
+            "showRhythm": bool(row["show_rhythm"]),
+            "celebrations": bool(row["celebrations"]),
+            "timezone": row["timezone"],
+            "dayStartHour": row["day_start_hour"],
+        }
+
+    def get_settings(self):
+        with READING_STATS_LOCK, self._database() as connection:
+            row = connection.execute("SELECT * FROM stats_profile WHERE id = 1").fetchone()
+            return {
+                "schemaVersion": self.SCHEMA_VERSION,
+                "prospectiveSince": row["prospective_since"],
+                "since": row["prospective_since"],
+                **self._settings_from_row(row),
+            }
+
+    def update_settings(self, payload):
+        if not isinstance(payload, dict):
+            raise ReadingStatsRequestError("Settings must be an object")
+        allowed = {
+            "enabled", "showStats", "showRhythm", "celebrations", "timezone", "dayStartHour",
+            # Device-local metadata is accepted but never persisted server-side.
+            "since", "prospectiveSince", "startedAt", "updatedAt", "schemaVersion",
+        }
+        unknown = set(payload) - allowed
+        if unknown:
+            raise ReadingStatsRequestError(f"Unknown settings: {', '.join(sorted(unknown))}")
+        with READING_STATS_LOCK, self._database() as connection:
+            row = connection.execute("SELECT * FROM stats_profile WHERE id = 1").fetchone()
+            values = self._settings_from_row(row)
+            for field in ("enabled", "showStats", "showRhythm", "celebrations"):
+                if field in payload:
+                    if not isinstance(payload[field], bool):
+                        raise ReadingStatsRequestError(f"{field} must be true or false")
+                    values[field] = payload[field]
+            if "timezone" in payload:
+                timezone_name = payload["timezone"]
+                if not isinstance(timezone_name, str) or len(timezone_name) > 100:
+                    raise ReadingStatsRequestError("timezone must be an IANA timezone name")
+                try:
+                    ZoneInfo(timezone_name)
+                except (ZoneInfoNotFoundError, ValueError) as error:
+                    raise ReadingStatsRequestError("timezone must be an IANA timezone name") from error
+                values["timezone"] = timezone_name
+            if "dayStartHour" in payload:
+                hour = payload["dayStartHour"]
+                if isinstance(hour, bool) or not isinstance(hour, int) or not 0 <= hour <= 12:
+                    raise ReadingStatsRequestError("dayStartHour must be an integer from 0 to 12")
+                values["dayStartHour"] = hour
+            prospective_since = row["prospective_since"]
+            if values["enabled"] and not bool(row["enabled"]) and not prospective_since:
+                prospective_since = self._iso(self._utc_now())
+            connection.execute(
+                """UPDATE stats_profile SET enabled=?, show_stats=?, show_rhythm=?, celebrations=?,
+                    timezone=?, day_start_hour=?, prospective_since=?, updated_at=? WHERE id=1""",
+                (
+                    int(values["enabled"]), int(values["showStats"]), int(values["showRhythm"]),
+                    int(values["celebrations"]), values["timezone"], values["dayStartHour"],
+                    prospective_since,
+                    self._iso(self._utc_now()),
+                ),
+            )
+        return self.get_settings()
+
+    def ingest(self, events):
+        if not isinstance(events, list) or not events or len(events) > 500:
+            raise ReadingStatsRequestError("events must contain 1 to 500 event objects")
+        # Validate the entire batch even while collection is disabled. This keeps
+        # the versioned API contract predictable and prevents malformed offline
+        # outbox entries from appearing to have synced successfully.
+        for event in events:
+            if not isinstance(event, dict):
+                raise ReadingStatsRequestError("Each reading event must be an object")
+            self._validate_token(event.get("eventId"), "eventId")
+            event_type = event.get("type")
+            if event_type not in self.EVENT_TYPES:
+                raise ReadingStatsRequestError("Unsupported reading event type")
+            occurred = self._parse_timestamp(event.get("occurredAt"))
+            if occurred > self._utc_now() + timedelta(hours=24):
+                raise ReadingStatsRequestError("occurredAt cannot be more than 24 hours in the future")
+            self._validate_identity(event.get("titleKey"), "titleKey")
+            if event_type == "active_minute":
+                self._active_seconds(event)
+                if event.get("minuteKey") is not None or event.get("minute") is not None:
+                    self._parse_timestamp(event.get("minuteKey") or event.get("minute"), "minuteKey")
+            elif event_type == "page_view":
+                self._validate_identity(event.get("chapterKey"), "chapterKey")
+                self._page_identity(event)
+            elif event_type == "chapter_finish":
+                self._validate_identity(event.get("chapterKey"), "chapterKey")
+                if event.get("attemptId") is not None:
+                    self._validate_identity(event.get("attemptId"), "attemptId")
+        accepted = 0
+        duplicate = 0
+        acknowledged = [event["eventId"] for event in events]
+        now = self._utc_now()
+        with READING_STATS_LOCK, self._database() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            profile = connection.execute("SELECT * FROM stats_profile WHERE id=1").fetchone()
+            if not profile["enabled"]:
+                connection.rollback()
+                return {"schemaVersion": 1, "accepted": 0, "duplicate": 0, "duplicates": 0, "disabled": True, "acknowledgedEventIds": [], "newAchievements": [], "newlyUnlocked": []}
+            if not profile["prospective_since"]:
+                connection.execute(
+                    "UPDATE stats_profile SET prospective_since=?, updated_at=? WHERE id=1",
+                    (self._iso(now), self._iso(now)),
+                )
+            before = {row[0] for row in connection.execute("SELECT achievement_id FROM achievements")}
+            for event in events:
+                if not isinstance(event, dict):
+                    raise ReadingStatsRequestError("Each reading event must be an object")
+                event_id = self._validate_token(event.get("eventId"), "eventId")
+                stored_event_id = self._hash(connection, "event", event_id)
+                event_type = event.get("type")
+                if event_type not in self.EVENT_TYPES:
+                    raise ReadingStatsRequestError("Unsupported reading event type")
+                occurred = self._parse_timestamp(event.get("occurredAt"))
+                occurred_iso = self._iso(occurred)
+                inserted = connection.execute(
+                    "INSERT OR IGNORE INTO ingested_events(event_id,event_type,occurred_at,ingested_at) VALUES (?,?,?,?)",
+                    (stored_event_id, event_type, occurred_iso, self._iso(now)),
+                ).rowcount
+                if not inserted:
+                    duplicate += 1
+                    continue
+                title_key = self._validate_identity(event.get("titleKey"), "titleKey")
+                title_hash = self._hash(connection, "title", title_key)
+                changed = True
+                if event_type == "active_minute":
+                    seconds = self._active_seconds(event)
+                    bucket_time = self._parse_timestamp(
+                        event.get("minuteKey") or event.get("minute") or occurred_iso,
+                        "minuteKey",
+                    )
+                    minute = bucket_time.replace(second=0)
+                    minute_iso = self._iso(minute)
+                    existing = connection.execute(
+                        "SELECT seconds FROM activity_minutes WHERE minute_utc=?", (minute_iso,)
+                    ).fetchone()
+                    available = 60 - (existing["seconds"] if existing else 0)
+                    credited = min(seconds, max(0, available))
+                    if existing:
+                        connection.execute(
+                            "UPDATE activity_minutes SET seconds=seconds+?, last_event_at=? WHERE minute_utc=?",
+                            (credited, occurred_iso, minute_iso),
+                        )
+                    else:
+                        connection.execute(
+                            "INSERT INTO activity_minutes(minute_utc,seconds,last_event_at) VALUES (?,?,?)",
+                            (minute_iso, credited, occurred_iso),
+                        )
+                    if credited:
+                        connection.execute(
+                            """INSERT INTO activity_minute_titles(minute_utc,title_hash,seconds) VALUES (?,?,?)
+                            ON CONFLICT(minute_utc,title_hash) DO UPDATE SET seconds=seconds+excluded.seconds""",
+                            (minute_iso, title_hash, credited),
+                        )
+                elif event_type == "page_view":
+                    chapter = self._validate_identity(event.get("chapterKey"), "chapterKey")
+                    page = self._page_identity(event)
+                    connection.execute(
+                        "INSERT INTO page_views(event_id,title_hash,chapter_hash,page_hash,occurred_at) VALUES (?,?,?,?,?)",
+                        (stored_event_id, title_hash, self._hash(connection, "chapter", chapter), self._hash(connection, "page", page), occurred_iso),
+                    )
+                elif event_type == "chapter_finish":
+                    chapter = self._validate_identity(event.get("chapterKey"), "chapterKey")
+                    attempt = event.get("attemptId") or f"first:{chapter}"
+                    attempt = self._validate_identity(attempt, "attemptId")
+                    changed = bool(connection.execute(
+                        "INSERT OR IGNORE INTO chapter_finishes(event_id,title_hash,chapter_hash,attempt_hash,occurred_at) VALUES (?,?,?,?,?)",
+                        (stored_event_id, title_hash, self._hash(connection, "chapter", chapter), self._hash(connection, "attempt", attempt), occurred_iso),
+                    ).rowcount)
+                else:
+                    changed = bool(connection.execute(
+                        "INSERT OR IGNORE INTO title_completions(event_id,title_hash,occurred_at) VALUES (?,?,?)",
+                        (stored_event_id, title_hash, occurred_iso),
+                    ).rowcount)
+                if changed:
+                    accepted += 1
+                else:
+                    duplicate += 1
+            self._refresh_achievements(connection, profile)
+            after_rows = connection.execute("SELECT achievement_id, unlocked_at FROM achievements").fetchall()
+            connection.commit()
+        new_achievements = [
+            {"id": row["achievement_id"], "unlockedAt": row["unlocked_at"]}
+            for row in after_rows if row["achievement_id"] not in before
+        ]
+        return {
+            "schemaVersion": self.SCHEMA_VERSION,
+            "accepted": accepted,
+            "duplicate": duplicate,
+            "duplicates": duplicate,
+            "disabled": False,
+            "acknowledgedEventIds": acknowledged,
+            "newAchievements": new_achievements,
+            "newlyUnlocked": new_achievements,
+        }
+
+    @staticmethod
+    def _reading_date(timestamp, timezone_name, day_start_hour):
+        instant = ReadingStatsStore._parse_timestamp(timestamp, "stored timestamp")
+        local = instant.astimezone(ZoneInfo(timezone_name)) - timedelta(hours=day_start_hour)
+        return local.date().isoformat()
+
+    def _all_rows(self, connection):
+        return {
+            "activity": connection.execute(
+                "SELECT minute_utc, seconds, last_event_at FROM activity_minutes ORDER BY minute_utc"
+            ).fetchall(),
+            "activityTitles": connection.execute(
+                "SELECT minute_utc, title_hash, seconds FROM activity_minute_titles ORDER BY minute_utc"
+            ).fetchall(),
+            "pages": connection.execute("SELECT * FROM page_views ORDER BY occurred_at,event_id").fetchall(),
+            "finishes": connection.execute("SELECT * FROM chapter_finishes ORDER BY occurred_at,event_id").fetchall(),
+            "completions": connection.execute("SELECT * FROM title_completions ORDER BY occurred_at,event_id").fetchall(),
+        }
+
+    def _aggregate(self, rows, settings, first_day=None, last_day=None):
+        timezone_name = settings["timezone"]
+        boundary = settings["dayStartHour"]
+        days = {}
+        titles = {}
+
+        def day_for(timestamp):
+            return self._reading_date(timestamp, timezone_name, boundary)
+
+        def included(day):
+            return (first_day is None or day >= first_day) and (last_day is None or day <= last_day)
+
+        def bucket(day):
+            return days.setdefault(day, {"date": day, "activeSeconds": 0, "pages": 0, "chapterFinishes": 0, "completedTitles": 0})
+
+        for row in rows["activity"]:
+            day = day_for(row["minute_utc"])
+            if included(day):
+                bucket(day)["activeSeconds"] += row["seconds"]
+        for row in rows["activityTitles"]:
+            day = day_for(row["minute_utc"])
+            if included(day):
+                titles[row["title_hash"]] = titles.get(row["title_hash"], 0) + row["seconds"]
+        for row in rows["pages"]:
+            day = day_for(row["occurred_at"])
+            if included(day):
+                bucket(day)["pages"] += 1
+        finishes = []
+        for row in rows["finishes"]:
+            day = day_for(row["occurred_at"])
+            if included(day):
+                bucket(day)["chapterFinishes"] += 1
+                finishes.append(row)
+                titles.setdefault(row["title_hash"], 0)
+        completions = []
+        for row in rows["completions"]:
+            day = day_for(row["occurred_at"])
+            if included(day):
+                bucket(day)["completedTitles"] += 1
+                completions.append(row)
+                titles.setdefault(row["title_hash"], 0)
+        day_list = [days[key] for key in sorted(days)]
+        for day in day_list:
+            day["readingDay"] = day["activeSeconds"] >= 120 or day["chapterFinishes"] >= 1
+        reading_days = [day for day in day_list if day["readingDay"]]
+        unique_chapters = {(row["title_hash"], row["chapter_hash"]) for row in finishes}
+        explored = {key for key, seconds in titles.items() if seconds >= 60}
+        explored.update(row["title_hash"] for row in finishes)
+        explored.update(row["title_hash"] for row in completions)
+        totals = {
+            "pages": sum(day["pages"] for day in day_list),
+            "activeSeconds": sum(day["activeSeconds"] for day in day_list),
+            "chapterFinishes": len(finishes),
+            "uniqueChapters": len(unique_chapters),
+            "rereads": max(0, len(finishes) - len(unique_chapters)),
+            "completedTitles": len({row["title_hash"] for row in completions}),
+            "readingDays": len(reading_days),
+            "titlesExplored": len(explored),
+        }
+        return {"totals": totals, "days": day_list, "readingDayDates": [day["date"] for day in reading_days]}
+
+    @staticmethod
+    def _rhythm(reading_dates, today):
+        dates = sorted(datetime.fromisoformat(day).date() for day in set(reading_dates))
+        longest = 0
+        run = 0
+        previous = None
+        for day in dates:
+            run = run + 1 if previous and day == previous + timedelta(days=1) else 1
+            longest = max(longest, run)
+            previous = day
+        active_end = today if today in dates else today - timedelta(days=1)
+        current = 0
+        cursor = active_end
+        date_set = set(dates)
+        while cursor in date_set:
+            current += 1
+            cursor -= timedelta(days=1)
+        return {"currentDays": current, "longestDays": longest, "through": active_end.isoformat() if current else None}
+
+    def _achievement_candidates(self, rows, settings):
+        all_data = self._aggregate(rows, settings)
+        totals = all_data["totals"]
+        candidates = {}
+        finishes = list(rows["finishes"])
+        if finishes:
+            candidates["first-finish"] = finishes[0]["occurred_at"]
+        unique_seen = set()
+        for row in finishes:
+            unique_seen.add((row["title_hash"], row["chapter_hash"]))
+            if len(unique_seen) == 10 and "ten-finishes" not in candidates:
+                candidates["ten-finishes"] = row["occurred_at"]
+            if len(unique_seen) == 50 and "fifty-finishes" not in candidates:
+                candidates["fifty-finishes"] = row["occurred_at"]
+        if totals["rereads"]:
+            seen = set()
+            for row in finishes:
+                key = (row["title_hash"], row["chapter_hash"])
+                if key in seen:
+                    candidates["first-reread"] = row["occurred_at"]
+                    break
+                seen.add(key)
+        title_qualified_at = {}
+        title_active_seconds = {}
+        for row in rows["activityTitles"]:
+            title_hash = row["title_hash"]
+            title_active_seconds[title_hash] = title_active_seconds.get(title_hash, 0) + row["seconds"]
+            if title_active_seconds[title_hash] >= 60 and title_hash not in title_qualified_at:
+                title_qualified_at[title_hash] = row["minute_utc"]
+        for collection in (finishes, rows["completions"]):
+            for row in collection:
+                title_hash = row["title_hash"]
+                title_qualified_at[title_hash] = min(
+                    title_qualified_at.get(title_hash, row["occurred_at"]),
+                    row["occurred_at"],
+                )
+        if len(title_qualified_at) >= 3:
+            candidates["three-titles"] = sorted(title_qualified_at.values())[2]
+        reading_dates = sorted(all_data["readingDayDates"])
+        if len(reading_dates) >= 7:
+            candidates["seven-reading-days"] = f"{reading_dates[6]}T23:59:59Z"
+        date_values = [datetime.fromisoformat(day).date() for day in reading_dates]
+        for target, achievement_id in ((3, "three-day-rhythm"), (7, "seven-day-rhythm")):
+            run = 0
+            previous = None
+            for day in date_values:
+                run = run + 1 if previous and day == previous + timedelta(days=1) else 1
+                if run >= target:
+                    candidates[achievement_id] = f"{day.isoformat()}T23:59:59Z"
+                    break
+                previous = day
+        return candidates
+
+    def _refresh_achievements(self, connection, profile=None):
+        profile = profile or connection.execute("SELECT * FROM stats_profile WHERE id=1").fetchone()
+        settings = self._settings_from_row(profile)
+        candidates = self._achievement_candidates(self._all_rows(connection), settings)
+        for achievement_id, unlocked_at in candidates.items():
+            connection.execute(
+                """INSERT INTO achievements(achievement_id,unlocked_at) VALUES (?,?)
+                ON CONFLICT(achievement_id) DO UPDATE SET unlocked_at=MIN(unlocked_at,excluded.unlocked_at)""",
+                (achievement_id, unlocked_at),
+            )
+
+    def summary(self, range_name, now=None):
+        if range_name not in self.RANGE_DAYS:
+            raise ReadingStatsRequestError("range must be one of 7d, 30d, 365d, or all")
+        now = now or self._utc_now()
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        with READING_STATS_LOCK, self._database() as connection:
+            profile = connection.execute("SELECT * FROM stats_profile WHERE id=1").fetchone()
+            settings = self._settings_from_row(profile)
+            rows = self._all_rows(connection)
+            self._refresh_achievements(connection, profile)
+            achievement_rows = connection.execute("SELECT * FROM achievements ORDER BY unlocked_at,achievement_id").fetchall()
+        local_today = (now.astimezone(ZoneInfo(settings["timezone"])) - timedelta(hours=settings["dayStartHour"])).date()
+        length = self.RANGE_DAYS[range_name]
+        first_day = (local_today - timedelta(days=length - 1)).isoformat() if length else None
+        current = self._aggregate(rows, settings, first_day, local_today.isoformat())
+        previous = None
+        if length:
+            previous_last = local_today - timedelta(days=length)
+            previous_first = previous_last - timedelta(days=length - 1)
+            previous = self._aggregate(rows, settings, previous_first.isoformat(), previous_last.isoformat())["totals"]
+        all_through_today = self._aggregate(rows, settings, last_day=local_today.isoformat())
+        rhythm_all = self._rhythm(all_through_today["readingDayDates"], local_today)
+        definitions = {item[0]: item[1:] for item in self.ACHIEVEMENTS}
+        achievements = [
+            {"id": row["achievement_id"], "name": definitions[row["achievement_id"]][0], "title": definitions[row["achievement_id"]][0],
+             "description": definitions[row["achievement_id"]][1], "unlockedAt": row["unlocked_at"]}
+            for row in achievement_rows if row["achievement_id"] in definitions
+        ]
+        return {
+            "schemaVersion": self.SCHEMA_VERSION,
+            "range": range_name,
+            "generatedAt": self._iso(now),
+            "prospectiveSince": profile["prospective_since"],
+            "since": profile["prospective_since"],
+            "settings": settings,
+            **current["totals"],
+            "totals": current["totals"],
+            "calendar": current["days"],
+            "trend": current["days"],
+            "trendComparison": {"current": current["totals"], "previous": previous},
+            "rhythm": {
+                **rhythm_all,
+                "current": rhythm_all["currentDays"],
+                "longest": rhythm_all["longestDays"],
+                "currentRhythm": rhythm_all["currentDays"],
+                "longestRhythm": rhythm_all["longestDays"],
+            },
+            "currentRhythm": rhythm_all["currentDays"],
+            "longestRhythm": rhythm_all["longestDays"],
+            "achievements": achievements,
+            "privacy": {"storage": "self-hosted", "thirdPartyTelemetry": False, "identifiers": "opaque-hmac-sha256"},
+        }
+
+    def export_data(self):
+        with READING_STATS_LOCK, self._database() as connection:
+            profile = connection.execute("SELECT * FROM stats_profile WHERE id=1").fetchone()
+            tables = {}
+            for table in ("activity_minutes", "activity_minute_titles", "page_views", "chapter_finishes", "title_completions", "achievements"):
+                tables[table] = [dict(row) for row in connection.execute(f"SELECT * FROM {table}").fetchall()]
+        return {
+            "schemaVersion": self.SCHEMA_VERSION,
+            "exportedAt": self._iso(self._utc_now()),
+            "prospectiveSince": profile["prospective_since"],
+            "settings": self._settings_from_row(profile),
+            "data": tables,
+            "notice": "Identifiers are opaque hashes. Panels does not store title names, covers, URLs, or IP addresses in reading stats.",
+        }
+
+    def reset(self, confirm, scope="all"):
+        if confirm != "ERASE":
+            raise ReadingStatsRequestError("Reset requires confirm to equal ERASE")
+        if scope not in {"all", "activity", "achievements"}:
+            raise ReadingStatsRequestError("scope must be all, activity, or achievements")
+        with READING_STATS_LOCK, self._database() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if scope in {"all", "activity"}:
+                for table in ("activity_minute_titles", "activity_minutes", "page_views", "chapter_finishes", "title_completions", "ingested_events", "achievements"):
+                    connection.execute(f"DELETE FROM {table}")
+                if scope == "all":
+                    now = self._iso(self._utc_now())
+                    connection.execute(
+                        "UPDATE stats_profile SET enabled=0, prospective_since=NULL, updated_at=? WHERE id=1",
+                        (now,),
+                    )
+            else:
+                connection.execute("DELETE FROM achievements")
+            connection.commit()
+        return {"schemaVersion": self.SCHEMA_VERSION, "erased": True, "reset": True, "scope": scope}
 
 
 def read_mangabaka_token():
@@ -1040,6 +1712,18 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/detect/manga":
                 self.handle_manga_detection()
                 return
+            if parsed.path == "/api/reading-stats/events":
+                self.handle_reading_stats_events()
+                return
+            if parsed.path == "/api/reading-stats/settings":
+                self.handle_reading_stats_settings()
+                return
+            if parsed.path == "/api/reading-stats/reset":
+                self.handle_reading_stats_reset()
+                return
+        except ReadingStatsRequestError as error:
+            self.send_json({"error": str(error)}, status=error.status)
+            return
         except Exception as error:
             self.send_json({"error": str(error)}, status=502)
             return
@@ -1159,6 +1843,18 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/mangabaka/search":
                 self.handle_mangabaka_search(parsed)
                 return
+            if parsed.path == "/api/reading-stats":
+                self.handle_reading_stats_get(parsed)
+                return
+            if parsed.path == "/api/reading-stats/export":
+                self.send_json_attachment(
+                    ReadingStatsStore().export_data(),
+                    f"panels-reading-stats-{datetime.now(timezone.utc).date().isoformat()}.json",
+                )
+                return
+        except ReadingStatsRequestError as error:
+            self.send_json({"error": str(error)}, status=error.status)
+            return
         except Exception as error:
             self.send_json({"error": str(error)}, status=502)
             return
@@ -1199,6 +1895,30 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         if length < 1 or length > maximum:
             raise ValueError("Request body is empty or too large")
         return json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+
+    def handle_reading_stats_events(self):
+        payload = self.read_json_request(524288)
+        if not isinstance(payload, dict):
+            raise ReadingStatsRequestError("Reading stats payload must be an object")
+        version = payload.get("schemaVersion", 1)
+        if version != ReadingStatsStore.SCHEMA_VERSION:
+            raise ReadingStatsRequestError("Unsupported reading event schemaVersion", status=409)
+        self.send_json(ReadingStatsStore().ingest(payload.get("events")))
+
+    def handle_reading_stats_settings(self):
+        payload = self.read_json_request(16384)
+        self.send_json(ReadingStatsStore().update_settings(payload))
+
+    def handle_reading_stats_reset(self):
+        payload = self.read_json_request(16384)
+        if not isinstance(payload, dict):
+            raise ReadingStatsRequestError("Reset payload must be an object")
+        self.send_json(ReadingStatsStore().reset(payload.get("confirm"), payload.get("scope", "all")))
+
+    def handle_reading_stats_get(self, parsed):
+        params = parse_qs(parsed.query)
+        range_name = params.get("range", ["30d"])[0]
+        self.send_json(ReadingStatsStore().summary(range_name))
 
     def handle_mangabaka_config_post(self):
         payload = self.read_json_request(16384)
@@ -1760,6 +2480,17 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def send_json_attachment(self, payload, filename):
+        body = json.dumps(payload).encode("utf-8")
+        safe_filename = re.sub(r"[^a-zA-Z0-9._-]", "-", filename)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Disposition", f'attachment; filename="{safe_filename}"')
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)

@@ -15,6 +15,9 @@ RUN npm run build
 FROM python:3.12-slim
 
 WORKDIR /app
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tzdata \
+    && rm -rf /var/lib/apt/lists/*
 ENV PANEL_PILOT_STATIC_ROOT=/app/web
 ENV PANEL_PILOT_BIND_ADDRESS=0.0.0.0
 

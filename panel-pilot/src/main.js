@@ -12,6 +12,7 @@ import {
   requestDeviceChapterPersistence,
 } from "./device-chapters.js";
 import { reconcileReadingProgress } from "./progress-reconciliation.js";
+import { createReadingStatsClient } from "./reading-stats.js";
 
 const storeKey = "panel-pilot-settings";
 const panelModeStoreKey = "panel-pilot-panel-mode";
@@ -194,6 +195,7 @@ const el = {
   appViews: [...document.querySelectorAll(".app-view")],
   appNavButtons: [...document.querySelectorAll("[data-target-view]")],
   navLibrary: document.querySelector("#nav-library"),
+  navStats: document.querySelector("#nav-stats"),
   navReader: document.querySelector("#nav-reader"),
   navReaderCover: document.querySelector("#nav-reader-cover"),
   navReaderFallback: document.querySelector("#nav-reader-fallback"),
@@ -335,6 +337,37 @@ const el = {
   offlineNote: document.querySelector("#offline-note"),
   appToast: document.querySelector("#app-toast"),
   appUpdate: document.querySelector("#app-update"),
+  statsWelcome: document.querySelector("#stats-welcome"),
+  statsEnable: document.querySelector("#stats-enable"),
+  statsDashboard: document.querySelector("#stats-dashboard"),
+  statsSince: document.querySelector("#stats-since"),
+  statsRangeSelect: document.querySelector("#stats-range-select"),
+  statsActiveTime: document.querySelector("#stats-active-time"),
+  statsChapters: document.querySelector("#stats-chapters"),
+  statsRereads: document.querySelector("#stats-rereads"),
+  statsPages: document.querySelector("#stats-pages"),
+  statsDays: document.querySelector("#stats-days"),
+  statsTitles: document.querySelector("#stats-titles"),
+  statsCompletedTitles: document.querySelector("#stats-completed-titles"),
+  statsSummaryGrid: document.querySelector(".stats-summary-grid"),
+  statsRhythm: document.querySelector("#stats-rhythm"),
+  statsCurrentRhythm: document.querySelector("#stats-current-rhythm"),
+  statsLongestRhythm: document.querySelector("#stats-longest-rhythm"),
+  statsCalendar: document.querySelector("#stats-calendar"),
+  statsAchievementsPanel: document.querySelector(".stats-achievements"),
+  statsAchievementCount: document.querySelector("#stats-achievement-count"),
+  statsAchievementList: document.querySelector("#stats-achievement-list"),
+  statsEnabled: document.querySelector("#stats-enabled"),
+  statsShowSummary: document.querySelector("#stats-show-summary"),
+  statsShowRhythm: document.querySelector("#stats-show-rhythm"),
+  statsCelebrations: document.querySelector("#stats-celebrations"),
+  statsExport: document.querySelector("#stats-export"),
+  statsReset: document.querySelector("#stats-reset"),
+  statsStatus: document.querySelector("#stats-status"),
+  statsResetDialog: document.querySelector("#stats-reset-dialog"),
+  statsResetCancel: document.querySelector("#stats-reset-cancel"),
+  statsResetConfirm: document.querySelector("#stats-reset-confirm"),
+  statsResetConfirmation: document.querySelector("#stats-reset-confirmation"),
   appInstallState: document.querySelector("#app-install-state"),
   appInstallNote: document.querySelector("#app-install-note"),
   installApp: document.querySelector("#install-app"),
@@ -522,7 +555,17 @@ const state = {
   readerModalReturnFocus: null,
   readerModalReturnFocusSelector: "",
   initialRoute: null,
+  readingStatsSettings: null,
+  readingStatsSummary: null,
+  readingStatsRange: "30d",
+  readingStatsTracker: null,
+  readingStatsAttemptId: "",
+  readingStatsFinishedAttempt: "",
+  readingStatsPageViews: new Set(),
+  readingStatsRefreshTimer: 0,
 };
+
+const readingStatsClient = createReadingStatsClient();
 
 let networkReconnectPromise = null;
 let suwayomiRecoveryPromise = null;
@@ -610,8 +653,298 @@ function saveSettings() {
   );
 }
 
+const readingAchievementDefinitions = [
+  { id: "first-finish", name: "First finish", description: "Finish your first chapter", mark: "1" },
+  { id: "ten-finishes", name: "Ten chapters", description: "Finish 10 chapters", mark: "10" },
+  { id: "fifty-finishes", name: "Fifty chapters", description: "Finish 50 chapters", mark: "50" },
+  { id: "three-titles", name: "Curious reader", description: "Explore 3 titles", mark: "3" },
+  { id: "seven-reading-days", name: "A week of reading", description: "Read on 7 different days", mark: "7" },
+  { id: "three-day-rhythm", name: "Finding a rhythm", description: "Read 3 days in a row", mark: "3d" },
+  { id: "seven-day-rhythm", name: "Seven-day rhythm", description: "Read 7 days in a row", mark: "7d" },
+  { id: "first-reread", name: "Worth another look", description: "Reread a chapter", mark: "↻" },
+];
+
+function defaultReadingStatsSettings() {
+  return {
+    enabled: false,
+    showStats: true,
+    showRhythm: true,
+    celebrations: true,
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+    dayStartHour: 4,
+  };
+}
+
+function normalizedReadingStatsSummary(summary = {}) {
+  const totals = summary.totals || summary;
+  const rhythm = summary.rhythm || summary;
+  return {
+    ...summary,
+    since: summary.since || summary.prospectiveSince || null,
+    activeSeconds: Number(totals.activeSeconds) || 0,
+    pages: Number(totals.pages ?? totals.pageViews) || 0,
+    chapterFinishes: Number(totals.chapterFinishes) || 0,
+    uniqueChapters: Number(totals.uniqueChapters) || 0,
+    rereads: Number(totals.rereads) || 0,
+    completedTitles: Number(totals.completedTitles) || 0,
+    readingDays: Number(totals.readingDays) || 0,
+    titlesExplored: Number(totals.titlesExplored) || 0,
+    currentRhythm: Number(rhythm.currentRhythm ?? rhythm.current ?? rhythm.currentDays) || 0,
+    longestRhythm: Number(rhythm.longestRhythm ?? rhythm.longest ?? rhythm.longestDays) || 0,
+    calendar: Array.isArray(summary.calendar) ? summary.calendar : (Array.isArray(summary.days) ? summary.days : []),
+    achievements: Array.isArray(summary.achievements) ? summary.achievements : [],
+  };
+}
+
+function formatReadingDuration(seconds) {
+  const totalMinutes = Math.max(0, Math.round((Number(seconds) || 0) / 60));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours && minutes) return `${hours}h ${minutes}m`;
+  if (hours) return `${hours}h`;
+  return `${minutes}m`;
+}
+
+function formatStatsSince(value) {
+  if (!value) return "Not started";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Since you enabled it";
+  return `Since ${new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(date)}`;
+}
+
+function renderReadingStats() {
+  const settings = { ...defaultReadingStatsSettings(), ...(state.readingStatsSettings || {}) };
+  const summary = normalizedReadingStatsSummary(state.readingStatsSummary || {});
+  const since = summary.since || settings.since || settings.startedAt || null;
+  const hasStarted = Boolean(since || settings.enabled);
+  if (el.statsWelcome) el.statsWelcome.hidden = hasStarted;
+  if (el.statsDashboard) el.statsDashboard.hidden = !hasStarted;
+  if (el.statsSince) el.statsSince.textContent = formatStatsSince(since);
+  if (el.statsEnabled) el.statsEnabled.checked = Boolean(settings.enabled);
+  if (el.statsShowSummary) el.statsShowSummary.checked = settings.showStats !== false;
+  if (el.statsShowRhythm) el.statsShowRhythm.checked = settings.showRhythm !== false;
+  if (el.statsCelebrations) el.statsCelebrations.checked = settings.celebrations !== false;
+  if (el.statsRangeSelect) el.statsRangeSelect.value = state.readingStatsRange;
+  if (el.statsSummaryGrid) el.statsSummaryGrid.hidden = settings.showStats === false;
+  if (el.statsAchievementsPanel) el.statsAchievementsPanel.hidden = settings.showStats === false;
+  if (el.statsRhythm) el.statsRhythm.hidden = settings.showRhythm === false;
+
+  if (el.statsActiveTime) el.statsActiveTime.textContent = formatReadingDuration(summary.activeSeconds);
+  if (el.statsChapters) el.statsChapters.textContent = String(summary.chapterFinishes);
+  if (el.statsRereads) el.statsRereads.textContent = `${summary.uniqueChapters} unique · ${summary.rereads} reread${summary.rereads === 1 ? "" : "s"}`;
+  if (el.statsPages) el.statsPages.textContent = String(summary.pages);
+  if (el.statsDays) el.statsDays.textContent = String(summary.readingDays);
+  if (el.statsTitles) el.statsTitles.textContent = `${summary.titlesExplored} title${summary.titlesExplored === 1 ? "" : "s"} explored`;
+  if (el.statsCompletedTitles) el.statsCompletedTitles.textContent = String(summary.completedTitles);
+  if (el.statsCurrentRhythm) el.statsCurrentRhythm.textContent = `Current: ${summary.currentRhythm} day${summary.currentRhythm === 1 ? "" : "s"}`;
+  if (el.statsLongestRhythm) el.statsLongestRhythm.textContent = `Longest rhythm: ${summary.longestRhythm} day${summary.longestRhythm === 1 ? "" : "s"}`;
+
+  if (el.statsCalendar) {
+    el.statsCalendar.replaceChildren();
+    const days = summary.calendar.slice(-28);
+    days.forEach((day) => {
+      const activeSeconds = Number(day.activeSeconds) || 0;
+      const finishes = Number(day.chapterFinishes) || 0;
+      const cell = document.createElement("span");
+      cell.className = "stats-calendar-day";
+      cell.dataset.level = activeSeconds >= 3600 || finishes >= 4 ? "3" : activeSeconds >= 1200 || finishes >= 2 ? "2" : (day.readingDay || activeSeconds || finishes) ? "1" : "0";
+      cell.setAttribute("aria-label", `${day.date}: ${formatReadingDuration(activeSeconds)}, ${finishes} chapter${finishes === 1 ? "" : "s"} finished`);
+      cell.title = cell.getAttribute("aria-label");
+      el.statsCalendar.append(cell);
+    });
+    el.statsCalendar.setAttribute("aria-label", days.length
+      ? `Reading activity across ${days.length} recorded day${days.length === 1 ? "" : "s"}`
+      : "No reading activity recorded yet");
+  }
+
+  if (el.statsAchievementList) {
+    el.statsAchievementList.replaceChildren();
+    const unlockedById = new Map(summary.achievements.map((achievement) => [achievement.id || achievement.key, achievement]));
+    const definitions = [...readingAchievementDefinitions];
+    summary.achievements.forEach((achievement) => {
+      const id = achievement.id || achievement.key;
+      if (id && !definitions.some((item) => item.id === id)) {
+        definitions.push({ id, name: achievement.name || achievement.title || "Reading milestone", description: achievement.description || "A personal reading milestone", mark: "★" });
+      }
+    });
+    definitions.forEach((definition) => {
+      const unlocked = unlockedById.get(definition.id);
+      const card = document.createElement("article");
+      card.className = "achievement-card";
+      card.dataset.unlocked = unlocked ? "true" : "false";
+      const mark = document.createElement("span");
+      mark.className = "achievement-mark";
+      mark.setAttribute("aria-hidden", "true");
+      mark.textContent = unlocked ? "★" : definition.mark;
+      const copy = document.createElement("span");
+      copy.className = "achievement-copy";
+      const title = document.createElement("strong");
+      title.textContent = unlocked?.name || unlocked?.title || definition.name;
+      const note = document.createElement("small");
+      note.textContent = unlocked ? "Unlocked" : definition.description;
+      copy.append(title, note);
+      card.append(mark, copy);
+      el.statsAchievementList.append(card);
+    });
+  }
+  if (el.statsAchievementCount) {
+    const unlockedCount = summary.achievements.length;
+    el.statsAchievementCount.textContent = `${unlockedCount} unlocked`;
+  }
+}
+
+async function flushReadingStats({ celebrate = true } = {}) {
+  const result = await readingStatsClient.flush();
+  const unlocked = Array.isArray(result.newAchievements) ? result.newAchievements : [];
+  if (celebrate && state.readingStatsSettings?.celebrations !== false && unlocked.length) {
+    const id = unlocked[0]?.id || unlocked[0]?.key;
+    const definition = readingAchievementDefinitions.find((item) => item.id === id);
+    const title = unlocked[0]?.name || unlocked[0]?.title || definition?.name || "Reading milestone";
+    showToast(unlocked.length === 1 ? `Achievement unlocked: ${title}` : `${unlocked.length} reading achievements unlocked`, "good");
+  }
+  return result;
+}
+
+async function refreshReadingStats({ flush = true } = {}) {
+  if (flush && state.readingStatsSettings?.enabled) await flushReadingStats();
+  const result = await readingStatsClient.getSummary(state.readingStatsRange);
+  if (result.summary) {
+    state.readingStatsSummary = result.summary;
+    if (result.summary.settings) {
+      state.readingStatsSettings = { ...defaultReadingStatsSettings(), ...state.readingStatsSettings, ...result.summary.settings };
+    }
+  }
+  if (el.statsStatus) {
+    el.statsStatus.textContent = result.status === "unsupported"
+      ? "Reading stats are unavailable until this Panels server is updated. Everything else still works."
+      : result.status === "fresh"
+        ? (state.readingStatsSettings?.enabled ? "Reading activity is private and synced." : "Tracking is paused. Your existing history is still private.")
+        : "Reading activity is available from this device and will sync when the server reconnects.";
+  }
+  renderReadingStats();
+  return result;
+}
+
+async function initializeReadingStats() {
+  try {
+    await readingStatsClient.initialize();
+    state.readingStatsSettings = { ...defaultReadingStatsSettings(), ...(await readingStatsClient.getSettings()) };
+    await refreshReadingStats({ flush: false });
+    syncReadingStatsTracker();
+    window.clearInterval(state.readingStatsRefreshTimer);
+    state.readingStatsRefreshTimer = window.setInterval(() => {
+      if (state.readingStatsTracker) void state.readingStatsTracker.checkpoint();
+      if (navigator.onLine && state.readingStatsSettings?.enabled) void flushReadingStats();
+    }, 15_000);
+  } catch (error) {
+    if (el.statsStatus) el.statsStatus.textContent = `Reading stats are unavailable on this device: ${error.message}`;
+    renderReadingStats();
+  }
+}
+
+async function updateReadingStatsSettings(patch) {
+  const wasEnabled = Boolean(state.readingStatsSettings?.enabled);
+  const next = { ...defaultReadingStatsSettings(), ...state.readingStatsSettings, ...patch };
+  if (next.enabled && !wasEnabled && !next.since && !next.startedAt) next.startedAt = new Date().toISOString();
+  state.readingStatsSettings = await readingStatsClient.setSettings(next);
+  renderReadingStats();
+  syncReadingStatsTracker();
+  await refreshReadingStats({ flush: next.enabled });
+}
+
+function readingStatsContext() {
+  const chapterId = Number(state.activeChapter?.chapterId);
+  const mangaId = Number(state.currentManga?.id || state.currentManga?.mangaId);
+  if (state.activeChapter?.type !== "suwayomi" || !Number.isInteger(chapterId) || !Number.isInteger(mangaId)) return null;
+  return {
+    serverUrl: state.activeChapter.serverUrl || currentDeviceServerUrl(),
+    mangaId,
+    chapterId,
+    offline: Boolean(state.activeChapter.deviceLocal || !navigator.onLine),
+  };
+}
+
+function readingStatsEligible() {
+  return Boolean(
+    state.readingStatsSettings?.enabled &&
+    state.activeView === "reader" &&
+    state.pages.length &&
+    readingStatsContext() &&
+    !state.readerLifecyclePaused &&
+    !state.navigationPending &&
+    !activeReaderOverlay()
+  );
+}
+
+function syncReadingStatsTracker() {
+  if (!readingStatsEligible()) {
+    const tracker = state.readingStatsTracker;
+    state.readingStatsTracker = null;
+    if (tracker) void tracker.stop().then(() => flushReadingStats());
+    return;
+  }
+  if (state.readingStatsTracker?.running) return;
+  state.readingStatsTracker = readingStatsClient.createActivityTracker();
+  state.readingStatsTracker.start(readingStatsContext());
+}
+
+function prepareReadingStatsChapterAttempt() {
+  state.readingStatsAttemptId = readingStatsClient.createAttemptId();
+  state.readingStatsFinishedAttempt = "";
+  state.readingStatsPageViews = new Set();
+}
+
+function recordCurrentReadingStatsPage() {
+  if (!state.readingStatsSettings?.enabled) return;
+  const context = readingStatsContext();
+  if (!context) return;
+  const viewKey = `${context.chapterId}:${state.pageIndex}`;
+  if (state.readingStatsPageViews.has(viewKey)) return;
+  state.readingStatsPageViews.add(viewKey);
+  void readingStatsClient.recordPageView({ ...context, pageIndex: state.pageIndex }).then(() => flushReadingStats());
+}
+
+function recordCurrentReadingStatsFinish() {
+  const context = readingStatsContext();
+  const attemptId = state.readingStatsAttemptId;
+  if (!state.readingStatsSettings?.enabled || !context || !attemptId || state.readingStatsFinishedAttempt === attemptId) return;
+  state.readingStatsFinishedAttempt = attemptId;
+  void readingStatsClient.recordChapterFinish({ ...context, attemptId }).then(() => flushReadingStats());
+}
+
+async function exportReadingStats() {
+  const payload = await readingStatsClient.exportData();
+  const blob = new Blob([`${JSON.stringify(payload, null, 2)}\n`], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "panels-reading-stats.json";
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+async function resetReadingStats() {
+  if (el.statsResetConfirmation?.value !== "ERASE") {
+    el.statsResetConfirmation?.setCustomValidity("Type ERASE to confirm.");
+    el.statsResetConfirmation?.reportValidity();
+    return;
+  }
+  await readingStatsClient.reset({ confirm: "ERASE" });
+  state.readingStatsSettings = defaultReadingStatsSettings();
+  state.readingStatsSummary = null;
+  state.readingStatsAttemptId = "";
+  state.readingStatsPageViews.clear();
+  syncReadingStatsTracker();
+  el.statsResetDialog?.close();
+  if (el.statsResetConfirmation) el.statsResetConfirmation.value = "";
+  if (el.statsStatus) el.statsStatus.textContent = "Reading activity was reset. Suwayomi progress was not changed.";
+  renderReadingStats();
+}
+
 function isAppView(view) {
-  return view === "library" || view === "browse" || view === "reader" || view === "settings";
+  return view === "library" || view === "browse" || view === "stats" || view === "reader" || view === "settings";
 }
 
 function navigationHash(view, detail = false) {
@@ -709,6 +1042,7 @@ function setActiveView(view, options = {}) {
   document.body.classList.toggle("reader-active", view === "reader");
   if (view === "reader") setDownloadStatusSheet(false);
   if (view === "settings") void refreshDeviceStorage();
+  if (view === "stats") void refreshReadingStats();
 
   if (view === "reader") {
     setReaderFocus(isReaderFocusAvailable());
@@ -728,6 +1062,7 @@ function setActiveView(view, options = {}) {
   if (options.history !== false) {
     recordNavigationState(previous === view ? "replace" : "push", false);
   }
+  syncReadingStatsTracker();
 }
 
 function leaveReaderView() {
@@ -1871,6 +2206,7 @@ function syncReaderInteractionIsolation() {
       item.inert = wasInert;
     });
     readerIsolationPrevious.clear();
+    syncReadingStatsTracker();
     return;
   }
 
@@ -1884,6 +2220,7 @@ function syncReaderInteractionIsolation() {
     if (!readerIsolationPrevious.has(item)) readerIsolationPrevious.set(item, item.inert);
     item.inert = readerChildren.includes(item) ? item !== surface : true;
   });
+  syncReadingStatsTracker();
 }
 
 function closeReaderOverlaysForExit() {
@@ -3488,6 +3825,13 @@ function setLibraryItemStatus(item, status, { sync = true } = {}) {
   saveLibraryItems();
   renderLibrary({ preserveInteractions: false });
   if (sync) enqueueMangaBakaLibraryItem(updated);
+  if (status === "completed" && updated && state.readingStatsSettings?.enabled) {
+    void readingStatsClient.recordTitleComplete({
+      serverUrl: updated.serverUrl || currentDeviceServerUrl(),
+      mangaId: updated.mangaId,
+      offline: !navigator.onLine,
+    }).then(() => flushReadingStats());
+  }
   if (status === "plan_to_read" && previousStatus !== "plan_to_read") {
     void enqueuePlanToReadServerBuffer(updated);
   } else if (status !== "plan_to_read") {
@@ -4210,6 +4554,7 @@ async function flushSuwayomiProgressOutbox({ manual = false } = {}) {
 
 async function finishChapterAndLoadNext() {
   const keepFullPageReading = state.fullPage;
+  recordCurrentReadingStatsFinish();
   if (state.activeChapter?.type === "suwayomi") {
     window.clearTimeout(state.suwayomiSyncTimer);
     enqueueCurrentSuwayomiProgress({ completed: true });
@@ -6045,6 +6390,7 @@ async function loadChapter(pageUrls, title, options = {}) {
   state.pageIndex = 0;
   state.panelIndex = 0;
   state.fullPage = false;
+  prepareReadingStatsChapterAttempt();
   updateReaderViewToggle();
   el.chapterTitle.textContent = title;
   el.stage.classList.add("has-image");
@@ -6357,6 +6703,7 @@ function pauseReaderLifecycle({ pageHiding = false } = {}) {
   persistSuwayomiProgressOutbox();
   persistMangaBakaOutbox();
   void releaseReaderWakeLock();
+  syncReadingStatsTracker();
   if (pageHiding) state.readerResumePromise = null;
 }
 
@@ -6383,6 +6730,7 @@ function resumeReaderLifecycle() {
       if (state.readerResumePromise === resume) state.readerResumePromise = null;
     });
   state.readerResumePromise = resume;
+  syncReadingStatsTracker();
   return resume;
 }
 
@@ -8704,6 +9052,7 @@ function renderCurrentPage() {
   el.stageImage.alt = `${el.chapterTitle.textContent}, page ${state.pageIndex + 1}`;
   el.stageImage.onload = null;
   el.stageImage.onerror = () => recoverRenderedPageImage(page, state.pageIndex);
+  if (pageChanged) recordCurrentReadingStatsPage();
   scheduleCameraFit();
 }
 
@@ -9124,6 +9473,7 @@ function setReaderNavigationPending(pending) {
   el.stage?.setAttribute("aria-busy", state.navigationPending ? "true" : "false");
   if (el.prevPanel) el.prevPanel.disabled = state.navigationPending;
   if (el.nextPanel) el.nextPanel.disabled = state.navigationPending;
+  syncReadingStatsTracker();
 }
 
 function cancelReaderNavigation() {
@@ -9216,6 +9566,7 @@ async function moveToAdjacentPage(delta) {
         : state.activeChapter?.type === "comick";
       if (!hasNextChapter) {
         if (state.activeChapter?.type === "suwayomi") {
+          recordCurrentReadingStatsFinish();
           enqueueCurrentSuwayomiProgress({ completed: true });
           void flushSuwayomiProgressOutbox().catch(() => false);
           completeMangaBakaChapter();
@@ -9876,6 +10227,8 @@ async function activateAppUpdate() {
   }
 
   preserveReaderStateForUpdate();
+  await state.readingStatsTracker?.checkpoint().catch(() => null);
+  await flushReadingStats({ celebrate: false }).catch(() => null);
   serviceWorkerReloadPending = true;
   if (el.appUpdate) {
     el.appUpdate.disabled = true;
@@ -10343,6 +10696,25 @@ function wireEvents() {
   });
   el.readerTapHintClose?.addEventListener("click", dismissReaderTapHint);
   el.appUpdate?.addEventListener("click", () => { void activateAppUpdate(); });
+  el.statsEnable?.addEventListener("click", () => { void updateReadingStatsSettings({ enabled: true }); });
+  el.statsRangeSelect?.addEventListener("change", (event) => {
+    state.readingStatsRange = event.target.value;
+    void refreshReadingStats();
+  });
+  el.statsEnabled?.addEventListener("change", (event) => { void updateReadingStatsSettings({ enabled: event.target.checked }); });
+  el.statsShowSummary?.addEventListener("change", (event) => { void updateReadingStatsSettings({ showStats: event.target.checked }); });
+  el.statsShowRhythm?.addEventListener("change", (event) => { void updateReadingStatsSettings({ showRhythm: event.target.checked }); });
+  el.statsCelebrations?.addEventListener("change", (event) => { void updateReadingStatsSettings({ celebrations: event.target.checked }); });
+  el.statsExport?.addEventListener("click", () => { void exportReadingStats(); });
+  el.statsReset?.addEventListener("click", () => {
+    if (el.statsResetConfirmation) {
+      el.statsResetConfirmation.value = "";
+      el.statsResetConfirmation.setCustomValidity("");
+    }
+    el.statsResetDialog?.showModal();
+  });
+  el.statsResetConfirmation?.addEventListener("input", () => el.statsResetConfirmation.setCustomValidity(""));
+  el.statsResetConfirm?.addEventListener("click", () => { void resetReadingStats(); });
   el.installApp?.addEventListener("click", () => { void promptAppInstall(); });
   el.checkAppUpdate?.addEventListener("click", () => { void checkForAppUpdate(); });
   el.applyAppUpdate?.addEventListener("click", () => { void activateAppUpdate(); });
@@ -10454,7 +10826,12 @@ function wireEvents() {
   window.visualViewport?.addEventListener("scroll", scheduleViewportFit);
   window.addEventListener("orientationchange", scheduleViewportFit);
   window.addEventListener("popstate", applyNavigationHistory);
-  window.addEventListener("online", () => { void reconnectPanelPilot(); });
+  window.addEventListener("online", () => {
+    void reconnectPanelPilot();
+    if (state.readingStatsSettings?.enabled) {
+      void flushReadingStats().then(() => refreshReadingStats({ flush: false }));
+    }
+  });
   window.addEventListener("offline", handleBrowserOffline);
   document.addEventListener("visibilitychange", () => {
     handleReaderVisibilityChange();
@@ -10474,6 +10851,7 @@ function wireEvents() {
   });
   window.addEventListener("pagehide", () => {
     pauseReaderLifecycle({ pageHiding: true });
+    void state.readingStatsTracker?.checkpoint().then(() => flushReadingStats({ celebrate: false }));
   });
   window.addEventListener("pageshow", (event) => {
     state.readerLifecyclePaused = false;
@@ -10594,6 +10972,7 @@ window.PanelPilot = {
   handleReaderVisibilityChange,
   pauseReaderLifecycle,
   resumeReaderLifecycle,
+  readingStats: readingStatsClient,
   trimReaderMemory,
   getPerformanceStats: () => ({
     ...state.performanceStats,
@@ -10646,6 +11025,7 @@ if (el.stage) {
   wireEvents();
   startBackgroundHealthChecks();
   setActiveView(state.activeView, { history: false });
+  void initializeReadingStats();
   if (state.initialRoute.detail && state.initialRoute.manga) {
     el.mangaId.value = state.initialRoute.manga.id;
     showMangaDetail(state.initialRoute.manga, state.initialRoute.manga.sourceLabel, { history: false });

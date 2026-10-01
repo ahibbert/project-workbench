@@ -2829,7 +2829,7 @@ body.has-network-status.reader-focus .reader-topbar {
   left: max(0.75rem, env(safe-area-inset-left), calc((100vw - 50rem) / 2 + 0.75rem));
   right: max(0.75rem, env(safe-area-inset-right), calc((100vw - 50rem) / 2 + 0.75rem));
   bottom: var(--app-nav-bottom-inset);
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.2rem;
   min-height: var(--app-nav-height);
   border: 1px solid rgba(201, 208, 203, 0.92);
@@ -3199,6 +3199,179 @@ body.has-reading-miniplayer .download-status-button {
 body.download-sheet-open {
   overflow: hidden;
   overscroll-behavior: none;
+}
+
+.stats-view {
+  --stats-warm: #fff7df;
+  --stats-warm-line: #ead6a0;
+}
+
+.stats-welcome {
+  padding: clamp(1rem, 4vw, 1.5rem);
+  background: linear-gradient(145deg, #fffaf0, #edf6f5 72%);
+}
+
+.stats-welcome h2 {
+  margin: 0.15rem 0 0.5rem;
+  font-size: clamp(1.35rem, 6vw, 2rem);
+}
+
+.stats-welcome p:not(.kicker) {
+  max-width: 42rem;
+  color: var(--muted);
+}
+
+.stats-dashboard {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.stats-range {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 760;
+}
+
+.stats-range select {
+  width: auto;
+  min-width: 8rem;
+}
+
+.stats-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+}
+
+.stats-metric {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 0.12rem;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 0.9rem;
+  background: var(--panel);
+  box-shadow: 0 8px 22px rgba(35, 42, 37, 0.07);
+}
+
+.stats-metric-primary {
+  border-color: var(--stats-warm-line);
+  background: var(--stats-warm);
+}
+
+.stats-metric span,
+.stats-metric small {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.stats-metric strong {
+  color: var(--ink);
+  font-size: clamp(1.55rem, 8vw, 2.5rem);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+
+.stats-rhythm .panel-heading,
+.stats-achievements .panel-heading {
+  align-items: start;
+}
+
+.stats-rhythm .panel-heading h2,
+.stats-achievements .panel-heading h2 {
+  margin-top: 0.08rem;
+}
+
+.stats-calendar {
+  display: grid;
+  grid-template-columns: repeat(14, minmax(0, 1fr));
+  gap: 0.3rem;
+  margin: 0.9rem 0 0.6rem;
+}
+
+.stats-calendar-day {
+  aspect-ratio: 1;
+  border: 1px solid #dfe3de;
+  border-radius: 4px;
+  background: #f1f3ef;
+}
+
+.stats-calendar-day[data-level="1"] { background: #cfe3dc; border-color: #b8d4ca; }
+.stats-calendar-day[data-level="2"] { background: #79afa4; border-color: #659e94; }
+.stats-calendar-day[data-level="3"] { background: #276f71; border-color: #205e60; }
+
+.achievement-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.achievement-card {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 2.4rem minmax(0, 1fr);
+  align-items: center;
+  gap: 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 0.7rem;
+  background: var(--panel-strong);
+}
+
+.achievement-card[data-unlocked="true"] {
+  border-color: var(--stats-warm-line);
+  background: var(--stats-warm);
+}
+
+.achievement-mark {
+  width: 2.4rem;
+  height: 2.4rem;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: #dfe3de;
+  color: var(--muted);
+  font-size: 1.1rem;
+}
+
+.achievement-card[data-unlocked="true"] .achievement-mark {
+  background: #e7bd52;
+  color: #453100;
+}
+
+.achievement-copy {
+  min-width: 0;
+  display: grid;
+  gap: 0.08rem;
+}
+
+.achievement-copy strong { font-size: 0.82rem; }
+.achievement-copy small { color: var(--muted); font-size: 0.75rem; }
+
+.stats-controls .checkbox-field {
+  margin-top: 0.45rem;
+}
+
+.stats-controls .button-row {
+  margin-top: 0.8rem;
+}
+
+.stats-controls > .text-button {
+  margin-top: 0.55rem;
+}
+
+@media (min-width: 46rem) {
+  .stats-summary-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .achievement-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 .kicker,
