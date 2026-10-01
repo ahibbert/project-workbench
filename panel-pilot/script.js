@@ -5,7 +5,7 @@ const sourceIndexStoreKey = "panel-pilot-source-index";
 const sourceIndexTtlMs = 24 * 60 * 60 * 1000;
 const sourceIndexPageLimit = 6;
 const sourceIndexRequestTimeoutMs = 12000;
-const appVersion = "v100";
+const appVersion = "v101";
 const appBuildTime = "2026-10-01";
 const detectorVersion = "detector v18-ml-manga";
 const pageImageRetryDelaysMs = [0, 350];
@@ -3184,6 +3184,38 @@ function chapterSequenceFor(chapterId) {
   return state.chapterView.length ? state.chapterView : visibleChapters();
 }
 
+function downloadBufferStatusText(status) {
+  const active = Number(status?.activeChapterId) || 0;
+  const queued = Number(status?.queued) || 0;
+  const failed = Number(status?.failedInWindow ?? status?.failed) || 0;
+  const retrying = Number(status?.retrying) || 0;
+  const queuedFresh = Number(status?.queuedFresh) || Math.max(0, queued - retrying);
+  const total = Number(status?.windowSize) || 0;
+  const downloaded = Number(status?.downloaded) || 0;
+  const panelReady = Number(status?.panelReady) || 0;
+  const known = Boolean(status?.downloadStateKnown);
+  const nextAttemptAt = Number(status?.nextAttemptAt) || 0;
+  const waitMs = Math.max(0, nextAttemptAt * 1000 - Date.now());
+  const parts = [];
+
+  if (known && total) parts.push(`${downloaded}/${total} downloaded`);
+  if (active) parts.push("downloading now");
+  if (retrying) parts.push(`${retrying} retrying`);
+  if (queuedFresh) parts.push(`${queuedFresh} queued`);
+  if (failed) parts.push(`${failed} failed`);
+  if (!active && (retrying || queuedFresh) && waitMs > 1000) {
+    parts.push(`next retry in about ${Math.max(1, Math.ceil(waitMs / 60000))} min`);
+  }
+  if (known && total && downloaded === total) {
+    parts.length = 0;
+    parts.push(`all ${total} chapters downloaded`);
+    parts.push(panelReady === total ? "panels prepared" : `${panelReady}/${total} panels prepared`);
+  }
+  if (!parts.length && queued) parts.push(`${queued} queued`);
+  if (!parts.length) return "Server chapter buffer: no chapters are currently queued.";
+  return `Server chapter buffer: ${parts.join(" · ")}.`;
+}
+
 async function ensureDownloadAhead(chapterId) {
   const candidates = downloadAheadChapters(chapterId);
   const chapters = candidates;
@@ -3196,11 +3228,7 @@ async function ensureDownloadAhead(chapterId) {
   if (el.offlineNote) el.offlineNote.textContent = `Server chapter buffer: sending ${ids.length} chapter${ids.length === 1 ? "" : "s"} to the background queue…`;
   try {
     const status = await postLocalJson("/api/download-buffer", { chapterIds: ids });
-    if (el.offlineNote) {
-      el.offlineNote.textContent = status.queued
-        ? `Server chapter buffer: ${status.queued} chapter${status.queued === 1 ? "" : "s"} queued with paced retries.`
-        : `Server chapter buffer: the current and next ${downloadAheadChapterCount} chapters are ready.`;
-    }
+    if (el.offlineNote) el.offlineNote.textContent = downloadBufferStatusText(status);
   } catch (error) {
     if (el.offlineNote) el.offlineNote.textContent = `Server chapter buffer will retry when this title is opened again: ${friendlySourceErrorMessage(error)}`;
   }
@@ -7045,22 +7073,9 @@ async function refreshDownloadStatus() {
     return null;
   }
   const status = await localJson("/api/download-buffer/status");
-  const active = Number(status.activeChapterId) || 0;
-  const queued = Number(status.queued) || 0;
   const failed = Number(status.failed) || 0;
   if (el.retryDownloads) el.retryDownloads.hidden = failed < 1;
-  const nextAttemptAt = Number(status.nextAttemptAt) || 0;
-  if (active) {
-    el.offlineNote.textContent = `Server chapter buffer: downloading chapter ${active}; ${Math.max(0, queued - 1)} waiting${failed ? ` · ${failed} need attention` : ""}.`;
-  } else if (queued) {
-    const waitMs = Math.max(0, nextAttemptAt * 1000 - Date.now());
-    const waitLabel = waitMs > 1000 ? ` · retrying in about ${Math.max(1, Math.ceil(waitMs / 60000))} min` : "";
-    el.offlineNote.textContent = `Server chapter buffer: ${queued} queued${waitLabel}${failed ? ` · ${failed} need attention` : ""}.`;
-  } else if (failed) {
-    el.offlineNote.textContent = `Server chapter buffer: ${failed} chapter${failed === 1 ? "" : "s"} need attention.`;
-  } else {
-    el.offlineNote.textContent = "Server chapter buffer: current reading window is ready.";
-  }
+  el.offlineNote.textContent = downloadBufferStatusText(status);
   return status;
 }
 

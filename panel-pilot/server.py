@@ -226,6 +226,7 @@ class DownloadBufferManager:
         self.wake = threading.Event()
         self.failures = []
         self.prepared_chapters = set()
+        self.requested_chapter_ids = []
         self.tasks = self.load_tasks()
         self.active_chapter_id = None
         self.thread = threading.Thread(target=self.run, name="panel-pilot-download-buffer", daemon=True)
@@ -244,6 +245,9 @@ class DownloadBufferManager:
             self.prepared_chapters = {
                 int(value) for value in payload.get("preparedChapters", []) if str(value).isdigit()
             }
+        self.requested_chapter_ids = [
+            int(value) for value in payload.get("requestedChapterIds", [])[:25] if str(value).isdigit()
+        ]
         tasks = []
         seen = set()
         for item in payload.get("tasks", []):
@@ -285,6 +289,7 @@ class DownloadBufferManager:
                     "failures": self.failures[-100:],
                     "preparedVersion": os.environ.get("PANEL_PILOT_MANGA_DETECTOR_CACHE_VERSION", "v1"),
                     "preparedChapters": sorted(self.prepared_chapters)[-1000:],
+                    "requestedChapterIds": self.requested_chapter_ids,
                 }, handle, separators=(",", ":"))
             os.replace(temporary_path, self.path)
         finally:
@@ -293,7 +298,16 @@ class DownloadBufferManager:
 
     def enqueue(self, chapter_ids):
         added = 0
+        requested = []
+        for raw_id in chapter_ids[:25]:
+            try:
+                chapter_id = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+            if chapter_id > 0 and chapter_id not in requested:
+                requested.append(chapter_id)
         with self.lock:
+            self.requested_chapter_ids = requested
             existing = {item["chapterId"] for item in self.tasks}
             if self.active_chapter_id:
                 existing.add(self.active_chapter_id)
@@ -310,11 +324,10 @@ class DownloadBufferManager:
                 self.tasks.append({"chapterId": chapter_id, "attempts": 0, "notBefore": 0, "lastError": ""})
                 existing.add(chapter_id)
                 added += 1
-            if added:
+            if added or requested:
                 self.save_locked()
-            status = self.status_locked()
         self.wake.set()
-        return {**status, "added": added}
+        return {**self.status(), "added": added}
 
     def status_locked(self):
         return {
@@ -322,6 +335,7 @@ class DownloadBufferManager:
             "queued": len(self.tasks),
             "failed": len(self.failures),
             "prepared": len(self.prepared_chapters),
+            "requestedChapterIds": list(self.requested_chapter_ids),
             "nextAttemptAt": min((item["notBefore"] for item in self.tasks), default=0),
             "tasks": [
                 {
@@ -336,7 +350,48 @@ class DownloadBufferManager:
 
     def status(self):
         with self.lock:
-            return self.status_locked()
+            status = self.status_locked()
+            requested = list(self.requested_chapter_ids)
+            requested_set = set(requested)
+            task_by_id = {item["chapterId"]: dict(item) for item in self.tasks if item["chapterId"] in requested_set}
+            failed_ids = {item["chapterId"] for item in self.failures}
+            prepared_chapters = set(self.prepared_chapters)
+        status.update({
+            "windowSize": len(requested),
+            "downloaded": 0,
+            "downloadStateKnown": not requested,
+            "queuedFresh": sum(1 for chapter_id in requested if task_by_id.get(chapter_id, {}).get("attempts", 0) == 0 and chapter_id in task_by_id),
+            "retrying": sum(1 for chapter_id in requested if task_by_id.get(chapter_id, {}).get("attempts", 0) > 0),
+            "failedInWindow": len(requested_set & failed_ids),
+            "panelReady": len(requested_set & prepared_chapters),
+        })
+        if requested:
+            try:
+                states = self.chapter_download_states(requested)
+                status["downloaded"] = sum(1 for chapter_id in requested if states.get(chapter_id))
+                status["downloadStateKnown"] = True
+            except Exception as error:
+                status["statusError"] = str(error)[:300]
+        return status
+
+    def remove(self, chapter_ids):
+        remove_ids = set()
+        for raw_id in chapter_ids[:100]:
+            try:
+                chapter_id = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+            if chapter_id > 0:
+                remove_ids.add(chapter_id)
+        with self.lock:
+            before = len(self.tasks) + len(self.failures)
+            self.tasks = [item for item in self.tasks if item["chapterId"] not in remove_ids]
+            self.failures = [item for item in self.failures if item["chapterId"] not in remove_ids]
+            self.requested_chapter_ids = [chapter_id for chapter_id in self.requested_chapter_ids if chapter_id not in remove_ids]
+            removed = before - len(self.tasks) - len(self.failures)
+            self.save_locked()
+        self.wake.set()
+        return {**self.status(), "removed": removed}
 
     def retry_failures(self):
         with self.lock:
@@ -351,9 +406,8 @@ class DownloadBufferManager:
                 restored += 1
             self.failures = []
             self.save_locked()
-            status = self.status_locked()
         self.wake.set()
-        return {**status, "restored": restored}
+        return {**self.status(), "restored": restored}
 
     def graphql(self, query, variables=None, timeout=30):
         base = os.environ.get("SUWAYOMI_INTERNAL_URL", "http://localhost:4567").strip().rstrip("/")
@@ -377,6 +431,24 @@ class DownloadBufferManager:
             {"id": chapter_id},
         )
         return bool(data.get("chapter", {}).get("isDownloaded")), data.get("downloadStatus", {}).get("state")
+
+    def chapter_download_states(self, chapter_ids):
+        ids = []
+        for chapter_id in chapter_ids[:25]:
+            chapter_id = int(chapter_id)
+            if chapter_id > 0 and chapter_id not in ids:
+                ids.append(chapter_id)
+        if not ids:
+            return {}
+        fields = " ".join(
+            f"chapter{index}:chapter(id:{chapter_id}){{id isDownloaded}}"
+            for index, chapter_id in enumerate(ids)
+        )
+        data = self.graphql(f"query{{{fields}}}", timeout=10)
+        return {
+            chapter_id: bool((data.get(f"chapter{index}") or {}).get("isDownloaded"))
+            for index, chapter_id in enumerate(ids)
+        }
 
     def warm_chapter_detection(self, chapter_id):
         data = self.graphql(
@@ -737,6 +809,10 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         payload = json.loads(self.rfile.read(length).decode("utf-8"))
         if payload.get("retryFailed") is True:
             self.send_json(DOWNLOAD_BUFFER_MANAGER.retry_failures())
+            return
+        remove_chapter_ids = payload.get("removeChapterIds")
+        if isinstance(remove_chapter_ids, list):
+            self.send_json(DOWNLOAD_BUFFER_MANAGER.remove(remove_chapter_ids))
             return
         chapter_ids = payload.get("chapterIds")
         if not isinstance(chapter_ids, list):
