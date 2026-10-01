@@ -334,6 +334,7 @@ class DownloadBufferManager:
             "queued": len(self.tasks),
             "failed": len(self.failures),
             "prepared": len(self.prepared_chapters),
+            "preparedChapterIds": sorted(self.prepared_chapters)[-1000:],
             "requestedChapterIds": list(self.requested_chapter_ids),
             "nextAttemptAt": min((item["notBefore"] for item in self.tasks), default=0),
             "tasks": [
@@ -465,7 +466,7 @@ class DownloadBufferManager:
         if not ids:
             return {}
         fields = " ".join(
-            f"chapter{index}:chapter(id:{chapter_id}){{id name chapterNumber isDownloaded manga{{title source{{displayName}}}}}}"
+            f"chapter{index}:chapter(id:{chapter_id}){{id name chapterNumber isDownloaded manga{{id sourceId title source{{displayName}}}}}}"
             for index, chapter_id in enumerate(ids)
         )
         data = self.graphql(f"query{{{fields}}}", timeout=10)
@@ -479,6 +480,8 @@ class DownloadBufferManager:
                 "name": str(chapter.get("name") or ""),
                 "chapterNumber": chapter.get("chapterNumber"),
                 "isDownloaded": bool(chapter.get("isDownloaded")),
+                "mangaId": manga.get("id"),
+                "sourceId": manga.get("sourceId"),
                 "mangaTitle": str(manga.get("title") or ""),
                 "sourceLabel": str(source.get("displayName") or ""),
             }

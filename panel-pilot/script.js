@@ -5,7 +5,7 @@ const sourceIndexStoreKey = "panel-pilot-source-index";
 const sourceIndexTtlMs = 24 * 60 * 60 * 1000;
 const sourceIndexPageLimit = 6;
 const sourceIndexRequestTimeoutMs = 12000;
-const appVersion = "v102";
+const appVersion = "v103";
 const appBuildTime = "2026-10-01";
 const detectorVersion = "detector v18-ml-manga";
 const pageImageRetryDelaysMs = [0, 350];
@@ -394,6 +394,8 @@ const state = {
   downloadStatusTimer: null,
   downloadStatus: null,
   downloadStatusSheetOpen: false,
+  libraryOfflineWindows: new Map(),
+  libraryOfflineReadiness: new Map(),
   historyApplying: false,
   viewScrollPositions: { library: 0, browse: 0, settings: 0 },
   browseDiscoveryScroll: 0,
@@ -2403,6 +2405,76 @@ function mergeLibraryItems(...lists) {
   return merged;
 }
 
+function offlineWindowForStoredChapters(chapters, resumeChapterId) {
+  const ordered = chapters
+    .filter((chapter) => Number.isInteger(Number(chapter?.id)) && Number(chapter.id) > 0)
+    .slice()
+    .sort((a, b) => Number(b.sourceOrder ?? b.chapterNumber ?? 0) - Number(a.sourceOrder ?? a.chapterNumber ?? 0));
+  if (!ordered.length) return [];
+
+  const resumeIndex = ordered.findIndex((chapter) => Number(chapter.id) === Number(resumeChapterId));
+  let candidates;
+  if (resumeIndex >= 0) {
+    const resumeScanlator = scanlatorName(ordered[resumeIndex]);
+    const sameReleaseStream = resumeScanlator
+      ? ordered.filter((chapter) => scanlatorName(chapter) === resumeScanlator)
+      : ordered;
+    const streamIndex = sameReleaseStream.findIndex((chapter) => Number(chapter.id) === Number(resumeChapterId));
+    candidates = sameReleaseStream.slice(Math.max(0, streamIndex - downloadAheadChapterCount), streamIndex).reverse();
+  } else {
+    const unread = ordered.filter((chapter) => !chapter.isRead);
+    candidates = (unread.length ? unread : ordered).slice(-downloadAheadChapterCount).reverse();
+  }
+  return candidates.slice(0, downloadAheadChapterCount).map((chapter) => ({
+    chapterId: Number(chapter.id),
+    isDownloaded: Boolean(chapter.isDownloaded),
+  }));
+}
+
+function updateLibraryOfflineReadiness(status = state.downloadStatus) {
+  const preparedIds = new Set(
+    (Array.isArray(status?.preparedChapterIds) ? status.preparedChapterIds : [])
+      .map(Number)
+      .filter((chapterId) => Number.isInteger(chapterId) && chapterId > 0)
+  );
+  const readiness = new Map();
+  state.libraryOfflineWindows.forEach((chapters, key) => {
+    const total = chapters.length;
+    const downloaded = chapters.filter((chapter) => chapter.isDownloaded).length;
+    const panelReady = chapters.filter((chapter) => chapter.isDownloaded && preparedIds.has(chapter.chapterId)).length;
+    if (total) readiness.set(key, { total, downloaded, panelReady });
+  });
+
+  const activeChapters = Array.isArray(status?.windowChapters) ? status.windowChapters : [];
+  const activeIdentity = activeChapters.find((chapter) => chapter?.mangaId && chapter?.sourceId);
+  const activeKey = activeIdentity ? libraryItemKey(activeIdentity) : "";
+  if (activeKey && activeChapters.length) {
+    readiness.set(activeKey, {
+      total: activeChapters.length,
+      downloaded: activeChapters.filter((chapter) => chapter.isDownloaded).length,
+      panelReady: activeChapters.filter((chapter) => chapter.isDownloaded && chapter.panelReady).length,
+      failed: activeChapters.filter((chapter) => chapter.state === "failed").length,
+      working: activeChapters.some((chapter) => ["downloading", "retrying", "queued", "pending"].includes(chapter.state)),
+    });
+  }
+  state.libraryOfflineReadiness = readiness;
+}
+
+function createLibraryOfflineBadge(item) {
+  const readiness = state.libraryOfflineReadiness.get(libraryItemKey(item));
+  if (!readiness?.total) return null;
+  const complete = readiness.downloaded === readiness.total && readiness.panelReady === readiness.total;
+  const badge = document.createElement("span");
+  badge.className = `manga-card-badge offline-readiness-badge${complete ? " ready" : readiness.failed ? " failed" : " pending"}`;
+  badge.textContent = `${complete ? "✓" : "↓"} ${readiness.panelReady}/${readiness.total}`;
+  const title = item.mangaTitle || "This title";
+  badge.setAttribute("aria-label", complete
+    ? `${title}: ${readiness.total} of ${readiness.total} buffered chapters are downloaded to the server and panel-ready.`
+    : `${title}: ${readiness.downloaded} of ${readiness.total} buffered chapters downloaded to the server; ${readiness.panelReady} panel-ready.`);
+  badge.title = badge.getAttribute("aria-label");
+  return badge;
+}
+
 function renderLibrary() {
   if (!el.libraryList || !el.libraryCount) return;
   el.libraryList.replaceChildren();
@@ -2470,6 +2542,8 @@ function renderLibrary() {
 
     const badges = document.createElement("div");
     badges.className = "manga-card-badges";
+    const offlineBadge = createLibraryOfflineBadge(item);
+    if (offlineBadge) badges.append(offlineBadge);
     if (item.pinned) {
       const pinned = document.createElement("span");
       pinned.className = "manga-card-badge";
@@ -2786,6 +2860,8 @@ async function syncSuwayomiLibrary({ announce = false } = {}) {
 async function hydrateImportedReadingProgress(mangas) {
   const candidates = mangas.slice(0, 60);
   const updates = new Map();
+  const existingItems = new Map(state.libraryItems.map((item) => [libraryItemKey(item), item]));
+  const offlineWindows = new Map();
   await mapWithConcurrency(candidates, 3, async (manga) => {
     try {
       const data = await graphQL(queries.storedChapters, { mangaId: Number(manga.id) }, { timeoutMs: 10000 });
@@ -2805,11 +2881,17 @@ async function hydrateImportedReadingProgress(mangas) {
         }
       }
       const started = nodes.some((chapter) => chapter.isRead || Number(chapter.lastPageRead) > 0);
-      updates.set(libraryItemKey({ mangaId: manga.id, sourceId: manga.sourceId }), { chapter: active, started });
+      const key = libraryItemKey({ mangaId: manga.id, sourceId: manga.sourceId });
+      const existing = existingItems.get(key);
+      const resumeChapterId = existing?.chapterId || active?.id;
+      offlineWindows.set(key, offlineWindowForStoredChapters(nodes, resumeChapterId));
+      updates.set(key, { chapter: active, started });
     } catch {
       // One title should not block the rest of the library reconciliation.
     }
   });
+  state.libraryOfflineWindows = offlineWindows;
+  updateLibraryOfflineReadiness();
   if (!updates.size) return;
   state.libraryItems = state.libraryItems.map((item) => {
     const update = updates.get(libraryItemKey(item));
@@ -3268,6 +3350,8 @@ function downloadChapterStateLabel(chapter) {
 
 function renderDownloadStatus(status) {
   state.downloadStatus = status || null;
+  updateLibraryOfflineReadiness(status);
+  if (state.activeView === "library") renderLibrary();
   if (!el.downloadStatusButton) return;
   const total = Number(status?.windowSize) || 0;
   const downloaded = Number(status?.downloaded) || 0;
@@ -3290,7 +3374,7 @@ function renderDownloadStatus(status) {
   el.downloadStatusButton.dataset.tone = tone;
   el.downloadStatusLabel.textContent = tone === "bad"
     ? "Downloads need attention"
-    : (working ? "Preparing offline chapters" : "Offline chapters ready");
+    : (working ? "Preparing server chapters" : "Server chapters ready");
   el.downloadStatusCount.textContent = total ? `${downloaded}/${total} ready` : (globalFailed ? `${globalFailed} failed` : "Checking…");
   el.downloadStatusButton.setAttribute("aria-label", `${el.downloadStatusLabel.textContent}, ${el.downloadStatusCount.textContent}. Open details.`);
 
@@ -7281,11 +7365,18 @@ function wireEvents() {
   el.appNavButtons.forEach((button) => {
     button.addEventListener("click", () => {
       setDownloadStatusSheet(false);
-      if (button.dataset.targetView === "reader") {
+      const targetView = button.dataset.targetView;
+      if (targetView === "reader") {
         openReaderFromNav();
         return;
       }
-      setActiveView(button.dataset.targetView);
+      if (targetView === "browse" && el.mangaDetail && !el.mangaDetail.hidden) {
+        closeMangaDetail({ history: false });
+        setActiveView("browse");
+        state.viewScrollPositions.browse = state.browseDiscoveryScroll || 0;
+        return;
+      }
+      setActiveView(targetView);
     });
   });
   el.navReader?.addEventListener("click", openReaderFromNav);

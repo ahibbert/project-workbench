@@ -124,8 +124,8 @@ select {
   margin: -0.85rem -0.85rem 0.85rem;
   padding: max(0.75rem, env(safe-area-inset-top)) 0.85rem 0.7rem;
   border-bottom: 1px solid rgba(217, 221, 216, 0.78);
-  background: rgba(255, 255, 255, 0.92);
-  backdrop-filter: blur(18px);
+  background: #ffffff;
+  backdrop-filter: none;
 }
 
 .reader-title {
@@ -982,6 +982,23 @@ h2 {
 
 .manga-card-badge.muted-badge {
   background: rgba(32, 37, 34, 0.78);
+}
+
+.manga-card-badge.offline-readiness-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.18rem;
+  border-color: rgba(255, 255, 255, 0.72);
+  background: rgba(91, 75, 24, 0.92);
+  font-variant-numeric: tabular-nums;
+}
+
+.manga-card-badge.offline-readiness-badge.ready {
+  background: rgba(29, 111, 67, 0.94);
+}
+
+.manga-card-badge.offline-readiness-badge.failed {
+  background: rgba(157, 55, 48, 0.94);
 }
 
 .manga-card-actions {
