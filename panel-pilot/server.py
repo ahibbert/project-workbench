@@ -298,14 +298,16 @@ class DownloadBufferManager:
 
     def enqueue(self, chapter_ids):
         added = 0
-        requested = []
+        candidates = []
         for raw_id in chapter_ids[:25]:
             try:
                 chapter_id = int(raw_id)
             except (TypeError, ValueError):
                 continue
-            if chapter_id > 0 and chapter_id not in requested:
-                requested.append(chapter_id)
+            if chapter_id > 0 and chapter_id not in candidates:
+                candidates.append(chapter_id)
+        requested = self.library_chapter_ids(candidates)
+        rejected = len(candidates) - len(requested)
         with self.lock:
             self.requested_chapter_ids = requested
             existing = {item["chapterId"] for item in self.tasks}
@@ -327,7 +329,7 @@ class DownloadBufferManager:
             if added or requested:
                 self.save_locked()
         self.wake.set()
-        return {**self.status(), "added": added}
+        return {**self.status(), "added": added, "rejected": rejected}
 
     def status_locked(self):
         return {
@@ -449,6 +451,24 @@ class DownloadBufferManager:
             chapter_id: bool((data.get(f"chapter{index}") or {}).get("isDownloaded"))
             for index, chapter_id in enumerate(ids)
         }
+
+    def library_chapter_ids(self, chapter_ids):
+        ids = []
+        for chapter_id in chapter_ids[:25]:
+            chapter_id = int(chapter_id)
+            if chapter_id > 0 and chapter_id not in ids:
+                ids.append(chapter_id)
+        if not ids:
+            return []
+        fields = " ".join(
+            f"chapter{index}:chapter(id:{chapter_id}){{id manga{{inLibrary}}}}"
+            for index, chapter_id in enumerate(ids)
+        )
+        data = self.graphql(f"query{{{fields}}}", timeout=10)
+        return [
+            chapter_id for index, chapter_id in enumerate(ids)
+            if bool(((data.get(f"chapter{index}") or {}).get("manga") or {}).get("inLibrary"))
+        ]
 
     def warm_chapter_detection(self, chapter_id):
         data = self.graphql(
