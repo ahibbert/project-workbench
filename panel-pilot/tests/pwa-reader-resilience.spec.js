@@ -456,6 +456,58 @@ test("an image held while hidden resumes without a false timeout", async ({ page
   expect(await loadResult).toMatchObject({ ok: true, width: 360 });
 });
 
+test("the current stage image recovers transiently and keeps permanent failures actionable without losing position", async ({ page }) => {
+  await seedSettings(page);
+  const backend = await installBackend(page, { chapterIds: [1101], pageCount: 1 });
+  await gotoApp(page);
+  await openFixtureChapter(page);
+
+  await page.locator("#next-panel").click();
+  await expect(page.locator("#panel-stat")).toHaveText(/^Panel 2 \/ /);
+  const position = await page.evaluate(() => ({
+    page: document.querySelector("#page-stat")?.textContent,
+    panel: document.querySelector("#panel-stat")?.textContent,
+    detectorRuns: window.PanelPilot.getReaderLifecycleDiagnostics().detectorRuns,
+  }));
+  const initialRequests = backend.imageRequestCount(1101, 1);
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Network.clearBrowserCache");
+
+  backend.failImage(1101, 1, 1);
+  await page.locator("#stage-image").evaluate((image) => image.dispatchEvent(new Event("error")));
+  await expect.poll(() => backend.imageRequestCount(1101, 1), { timeout: 15_000 })
+    .toBeGreaterThanOrEqual(initialRequests + 2);
+  await expect(page.locator("#reader-error")).toBeHidden();
+  await expect.poll(() => page.evaluate(() => ({
+    page: document.querySelector("#page-stat")?.textContent,
+    panel: document.querySelector("#panel-stat")?.textContent,
+    detectorRuns: window.PanelPilot.getReaderLifecycleDiagnostics().detectorRuns,
+  }))).toEqual(position);
+
+  const beforePermanentFailure = backend.imageRequestCount(1101, 1);
+  await cdp.send("Network.clearBrowserCache");
+  backend.failImage(1101, 1, 20);
+  await page.locator("#stage-image").evaluate((image) => image.dispatchEvent(new Event("error")));
+  await expect(page.locator("#reader-error")).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator("#reader-error-title")).toHaveText("Could not load this page");
+  await expect.poll(() => page.evaluate(() => ({
+    page: document.querySelector("#page-stat")?.textContent,
+    panel: document.querySelector("#panel-stat")?.textContent,
+    detectorRuns: window.PanelPilot.getReaderLifecycleDiagnostics().detectorRuns,
+  }))).toEqual(position);
+  expect(backend.imageRequestCount(1101, 1)).toBeGreaterThan(beforePermanentFailure);
+
+  backend.failImage(1101, 1, 0);
+  await page.locator("#reader-error-retry").click();
+  await expect(page.locator("#reader-error")).toBeHidden({ timeout: 15_000 });
+  await expect(page.locator("#stage-image")).toBeVisible();
+  await expect.poll(() => page.evaluate(() => ({
+    page: document.querySelector("#page-stat")?.textContent,
+    panel: document.querySelector("#panel-stat")?.textContent,
+    detectorRuns: window.PanelPilot.getReaderLifecycleDiagnostics().detectorRuns,
+  }))).toEqual(position);
+});
+
 test("stale and cancelled chapter responses cannot replace current reader state", async ({ page }) => {
   await seedSettings(page);
   const backend = await installBackend(page, { pageCount: 2 });
@@ -530,6 +582,48 @@ test("pagehide preserves the exact page and panel while BFCache pageshow resumes
     panel: document.querySelector("#panel-stat")?.textContent,
     detectorRuns: window.PanelPilot.getReaderLifecycleDiagnostics().detectorRuns,
   }))).toEqual(positionBeforeHide);
+});
+
+test("next-chapter prefetch pauses and restarts across hidden and pagehide lifecycle transitions", async ({ page }) => {
+  await seedSettings(page);
+  await installVisibilityShim(page);
+  const backend = await installBackend(page, { chapterIds: [1101, 1102], pageCount: 3 });
+  const releaseBackgroundPage = backend.holdImage(1101, 2);
+  await gotoApp(page);
+  await openFixtureChapter(page, 1101);
+
+  const position = await page.evaluate(() => ({
+    page: document.querySelector("#page-stat")?.textContent,
+    panel: document.querySelector("#panel-stat")?.textContent,
+  }));
+  await expect.poll(() => backend.imageRequestCount(1101, 2)).toBe(1);
+  await page.evaluate(() => window.__setReaderTestVisibility("hidden"));
+  releaseBackgroundPage();
+  await expect.poll(() => page.evaluate(() => window.PanelPilot.getReaderLifecycleDiagnostics().prefetchStatus))
+    .toBe("idle");
+  await page.waitForTimeout(500);
+  expect(backend.payloadRequestCount(1102)).toBe(0);
+
+  await page.evaluate(() => window.__setReaderTestVisibility("visible"));
+  await expect.poll(() => backend.payloadRequestCount(1102), { timeout: 30_000 }).toBe(1);
+  await expect.poll(() => page.evaluate(() => window.PanelPilot.getReaderLifecycleDiagnostics().prefetchStatus), {
+    timeout: 30_000,
+  }).toBe("ready");
+
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true })));
+  await expect.poll(() => page.evaluate(() => window.PanelPilot.getReaderLifecycleDiagnostics().prefetchStatus))
+    .toBe("idle");
+  await page.waitForTimeout(500);
+  expect(backend.payloadRequestCount(1102)).toBe(1);
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })));
+  await expect.poll(() => backend.payloadRequestCount(1102), { timeout: 30_000 }).toBe(2);
+  await expect.poll(() => page.evaluate(() => window.PanelPilot.getReaderLifecycleDiagnostics().prefetchStatus), {
+    timeout: 30_000,
+  }).toBe("ready");
+  await expect.poll(() => page.evaluate(() => ({
+    page: document.querySelector("#page-stat")?.textContent,
+    panel: document.querySelector("#panel-stat")?.textContent,
+  }))).toEqual(position);
 });
 
 test("reader memory stays capped and revisiting a prepared page does not rerun detection", async ({ page }) => {
@@ -767,7 +861,7 @@ test("rotation preserves page and panel, coalesces one refit, and does not rerun
   });
 });
 
-test("the built shell keeps the standalone safe-area and non-composited header invariants", async ({ page }) => {
+test("the built shell keeps safe-area, no-collision, and non-composited header invariants across supported widths", async ({ page }) => {
   await seedSettings(page);
   await installBackend(page);
   await gotoApp(page);
@@ -822,6 +916,83 @@ test("the built shell keeps the standalone safe-area and non-composited header i
     headerBackdrop: "none",
     navigationBottom: 31,
   });
+
+  for (const viewport of [
+    { width: 320, height: 720 },
+    { width: 390, height: 844 },
+    { width: 507, height: 768 },
+    { width: 820, height: 1180 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await openDemo(page);
+    const readerLayout = await page.evaluate(() => {
+      document.body.classList.remove("reader-chrome-hidden");
+      const rect = (selector) => {
+        const bounds = document.querySelector(selector).getBoundingClientRect();
+        return {
+          top: Math.round(bounds.top),
+          right: Math.round(bounds.right),
+          bottom: Math.round(bounds.bottom),
+          left: Math.round(bounds.left),
+        };
+      };
+      return {
+        documentWidth: document.documentElement.scrollWidth,
+        reader: rect("#reader-view"),
+        topbar: rect(".reader-topbar"),
+        controls: rect(".reader-controls"),
+      };
+    });
+    expect(readerLayout.documentWidth).toBeLessThanOrEqual(viewport.width);
+    expect(readerLayout.reader).toMatchObject({ left: 0, right: viewport.width });
+    expect(readerLayout.topbar.left).toBeGreaterThanOrEqual(0);
+    expect(readerLayout.topbar.right).toBeLessThanOrEqual(viewport.width);
+    expect(readerLayout.topbar.top).toBeGreaterThanOrEqual(0);
+    expect(readerLayout.controls.left).toBeGreaterThanOrEqual(0);
+    expect(readerLayout.controls.right).toBeLessThanOrEqual(viewport.width);
+    expect(readerLayout.controls.bottom).toBeLessThanOrEqual(viewport.height);
+    expect(readerLayout.topbar.bottom).toBeLessThan(readerLayout.controls.top);
+
+    await page.locator("#reader-back").click();
+    await expect(page.locator("#settings-view")).toHaveClass(/\bactive\b/);
+    const shellLayout = await page.evaluate(async () => {
+      document.body.classList.add("has-reading-miniplayer", "has-download-status");
+      document.querySelector("#nav-reader").hidden = false;
+      document.querySelector("#download-status-button").hidden = false;
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const rect = (selector) => {
+        const bounds = document.querySelector(selector).getBoundingClientRect();
+        return {
+          top: Math.round(bounds.top),
+          right: Math.round(bounds.right),
+          bottom: Math.round(bounds.bottom),
+          left: Math.round(bounds.left),
+        };
+      };
+      const navigation = rect(".app-nav");
+      return {
+        documentWidth: document.documentElement.scrollWidth,
+        viewportHeight: innerHeight,
+        bodyPaddingBottom: Number.parseFloat(getComputedStyle(document.body).paddingBottom),
+        navigation,
+        miniplayer: rect("#nav-reader"),
+        downloads: rect("#download-status-button"),
+      };
+    });
+    expect(shellLayout.documentWidth).toBeLessThanOrEqual(viewport.width);
+    expect(shellLayout.viewportHeight - shellLayout.navigation.bottom).toBe(31);
+    expect(shellLayout.navigation.left).toBeGreaterThanOrEqual(0);
+    expect(shellLayout.navigation.right).toBeLessThanOrEqual(viewport.width);
+    expect(shellLayout.miniplayer.left).toBeGreaterThanOrEqual(0);
+    expect(shellLayout.miniplayer.right).toBeLessThanOrEqual(viewport.width);
+    expect(shellLayout.miniplayer.bottom).toBeLessThanOrEqual(shellLayout.navigation.top);
+    expect(shellLayout.downloads.left).toBeGreaterThanOrEqual(0);
+    expect(shellLayout.downloads.right).toBeLessThanOrEqual(viewport.width);
+    expect(shellLayout.downloads.bottom).toBeLessThanOrEqual(shellLayout.miniplayer.top);
+    expect(shellLayout.bodyPaddingBottom).toBeGreaterThanOrEqual(
+      shellLayout.viewportHeight - shellLayout.downloads.top,
+    );
+  }
 });
 
 test("iPad full-page reading advances whole pages and returns to panel navigation", async ({ page }) => {

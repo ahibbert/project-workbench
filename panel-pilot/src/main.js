@@ -4429,7 +4429,13 @@ function clearNextChapterPrefetch({ release = true } = {}) {
 }
 
 function scheduleNextChapterPrefetch(generation = state.prepareGeneration, delayMs = 900) {
-  if (state.activeChapter?.type !== "suwayomi" || state.activeChapter.deviceLocal || !navigator.onLine) return;
+  if (
+    state.activeChapter?.type !== "suwayomi" ||
+    state.activeChapter.deviceLocal ||
+    state.activeView !== "reader" ||
+    !readerIsVisible() ||
+    !navigator.onLine
+  ) return;
   const fromChapterId = Number(state.activeChapter.chapterId);
   const serverUrl = state.activeChapter.serverUrl || currentDeviceServerUrl();
   const chapter = nextSuwayomiChapterAfter(fromChapterId);
@@ -4464,14 +4470,25 @@ function scheduleNextChapterPrefetch(generation = state.prepareGeneration, delay
   };
   state.nextChapterPrefetch = record;
   state.nextChapterPrefetchTimer = window.setTimeout(() => {
-    if (state.nextChapterPrefetch !== record || generation !== state.prepareGeneration) return;
+    if (
+      state.nextChapterPrefetch !== record ||
+      generation !== state.prepareGeneration ||
+      state.activeView !== "reader" ||
+      !readerIsVisible()
+    ) return;
     startNextChapterPrefetch(record);
   }, Math.max(0, delayMs));
   return record;
 }
 
 function startNextChapterPrefetch(record) {
-  if (!record || record.promise) return record?.promise || null;
+  if (
+    !record ||
+    record.promise ||
+    state.nextChapterPrefetch !== record ||
+    state.activeView !== "reader" ||
+    !readerIsVisible()
+  ) return record?.promise || null;
   record.status = "loading";
   record.attempts += 1;
   record.promise = prefetchSuwayomiChapter(record)

@@ -468,20 +468,14 @@ async function prepareApp(page, context, fixture, { controlled = false } = {}) {
   });
   await page.goto(`${fixture.origin}/`, { waitUntil: "networkidle" });
   if (!controlled) return;
-  await page.evaluate(async () => {
-    await navigator.serviceWorker.ready;
-    if (navigator.serviceWorker.controller) return;
-    await new Promise((resolveController, rejectController) => {
-      const timeout = setTimeout(
-        () => rejectController(new Error("The fixture did not become service-worker controlled")),
-        10_000,
-      );
-      navigator.serviceWorker.addEventListener("controllerchange", () => {
-        clearTimeout(timeout);
-        resolveController();
-      }, { once: true });
-    });
-  });
+  await page.evaluate(() => navigator.serviceWorker.ready.then(() => true));
+  await expect.poll(
+    () => page.evaluate(() => Boolean(navigator.serviceWorker.controller)),
+    {
+      message: "the initial app page should be claimed by the active service worker",
+      timeout: 20_000,
+    },
+  ).toBe(true);
   await page.reload({ waitUntil: "networkidle" });
   await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
 }
