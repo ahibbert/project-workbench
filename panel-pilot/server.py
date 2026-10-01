@@ -309,15 +309,12 @@ class DownloadBufferManager:
         requested = self.library_chapter_ids(candidates)
         rejected = len(candidates) - len(requested)
         with self.lock:
+            window_changed = requested != self.requested_chapter_ids
             self.requested_chapter_ids = requested
             existing = {item["chapterId"] for item in self.tasks}
             if self.active_chapter_id:
                 existing.add(self.active_chapter_id)
-            for raw_id in chapter_ids:
-                try:
-                    chapter_id = int(raw_id)
-                except (TypeError, ValueError):
-                    continue
+            for chapter_id in requested:
                 if chapter_id < 1 or chapter_id in existing:
                     continue
                 if chapter_id in self.prepared_chapters:
@@ -326,7 +323,7 @@ class DownloadBufferManager:
                 self.tasks.append({"chapterId": chapter_id, "attempts": 0, "notBefore": 0, "lastError": ""})
                 existing.add(chapter_id)
                 added += 1
-            if added or requested:
+            if added or window_changed:
                 self.save_locked()
         self.wake.set()
         return {**self.status(), "added": added, "rejected": rejected}
