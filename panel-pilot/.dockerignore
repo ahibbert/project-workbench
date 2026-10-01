@@ -3,6 +3,11 @@ backups
 .env
 .env.*
 test-output
+test-manifest.json
+test-corpus
+benchmark-results
+deploy
+docker-compose.remote.yml
 dist
 node_modules
 playwright-report

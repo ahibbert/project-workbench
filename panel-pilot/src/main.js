@@ -37,6 +37,8 @@ const tapHintStoreKey = "panel-pilot-tap-hint-seen";
 const reconnectIntervalMs = 45 * 1000;
 const downloadStatusPollMs = 15 * 1000;
 const allSourcesValue = "__all__";
+const defaultSuwayomiUrl = "http://localhost:4567";
+const suwayomiCredentialsError = "Suwayomi URL must not include a username or password. Configure credentials on the server instead.";
 const libraryStatuses = ["reading", "plan_to_read", "paused", "completed", "dropped", "rereading", "considering"];
 const libraryFilterValues = ["reading", "plan_to_read", "paused", "completed", "other", "all"];
 const libraryStatusLabels = {
@@ -48,13 +50,6 @@ const libraryStatusLabels = {
   rereading: "Rereading",
   considering: "Considering",
 };
-const defaultComickChapter = {
-  label: "Frieren chapter 1",
-  chap: "1",
-  group: "Kirei Cake",
-  url: "https://comick.live/comic/00-sousou-no-frieren/gx1Lk-chapter-1-en",
-};
-
 const queries = {
   health: `query HEALTH { __schema { queryType { name } mutationType { name } } }`,
   sources: `query GET_SOURCES_LIST {
@@ -373,7 +368,6 @@ const el = {
   comickUrl: document.querySelector("#comick-url"),
   loadComickChapters: document.querySelector("#load-comick-chapters"),
   loadComickLatest: document.querySelector("#load-comick-latest"),
-  loadComickDefault: document.querySelector("#load-comick-default"),
   comickChapterNumber: document.querySelector("#comick-chapter-number"),
   loadComickNumber: document.querySelector("#load-comick-number"),
   loadComickMore: document.querySelector("#load-comick-more"),
@@ -384,7 +378,7 @@ const el = {
 const readerIsolationPrevious = new Map();
 
 const state = {
-  baseUrl: "http://localhost:4567",
+  baseUrl: defaultSuwayomiUrl,
   sources: [],
   visibleSources: [],
   sourceIndex: { entries: [], updatedAt: "", sourceIds: [] },
@@ -523,9 +517,18 @@ let suwayomiRecoveryPromise = null;
 let networkStatusHideTimer = 0;
 
 function loadSettings() {
+  let savedSuwayomiUrlError = "";
   try {
     const saved = JSON.parse(localStorage.getItem(storeKey) || "{}");
-    if (saved.baseUrl) state.baseUrl = saved.baseUrl;
+    if (saved.baseUrl) {
+      const migration = migratePersistedSuwayomiUrl(saved.baseUrl);
+      state.baseUrl = migration.url;
+      if (migration.changed) {
+        saved.baseUrl = migration.url;
+        localStorage.setItem(storeKey, JSON.stringify(saved));
+        savedSuwayomiUrlError = migration.message;
+      }
+    }
     if (typeof saved.suwayomiSetupOpen === "boolean") state.suwayomiSetupOpen = saved.suwayomiSetupOpen;
     if (typeof saved.showNsfwSources === "boolean") state.showNsfwSources = saved.showNsfwSources;
     if (typeof saved.showHiddenLibrary === "boolean") state.showHiddenLibrary = saved.showHiddenLibrary;
@@ -561,14 +564,23 @@ function loadSettings() {
   updatePanelModeControls();
   applyReaderMotion();
   setReadingDirection(state.readingDirection);
+  if (savedSuwayomiUrlError) {
+    setConnection(false, savedSuwayomiUrlError, "bad");
+  }
 }
 
 function saveSettings() {
+  let persistedBaseUrl = defaultSuwayomiUrl;
+  try {
+    persistedBaseUrl = normalizeSuwayomiBaseUrl(state.baseUrl);
+  } catch {
+    state.baseUrl = defaultSuwayomiUrl;
+  }
   localStorage.setItem(panelModeStoreKey, state.panelMode);
   localStorage.setItem(
     storeKey,
     JSON.stringify({
-      baseUrl: state.baseUrl,
+      baseUrl: persistedBaseUrl,
       panelMode: state.panelMode,
       readingDirection: state.readingDirection,
       readerMotion: state.readerMotion,
@@ -729,8 +741,15 @@ function abortActiveReaderLoad() {
 }
 
 function cleanBaseUrl() {
-  const rawUrl = el.serverUrl?.value || state.baseUrl || "http://localhost:4567";
-  state.baseUrl = rawUrl.trim().replace(/\/+$/, "");
+  const rawUrl = el.serverUrl?.value || state.baseUrl || defaultSuwayomiUrl;
+  let normalizedUrl = "";
+  try {
+    normalizedUrl = normalizeSuwayomiBaseUrl(rawUrl);
+  } catch (error) {
+    setConnection(false, error.message, "bad");
+    throw error;
+  }
+  state.baseUrl = normalizedUrl;
   if (el.serverUrl) el.serverUrl.value = state.baseUrl;
   updateSuwayomiLink();
   saveSettings();
@@ -739,8 +758,78 @@ function cleanBaseUrl() {
 
 function updateSuwayomiLink() {
   if (!el.openSuwayomi) return;
-  const url = (el.serverUrl?.value || state.baseUrl || "http://localhost:4567").trim() || "http://localhost:4567";
-  el.openSuwayomi.href = externalSuwayomiUrl(url);
+  const rawUrl = el.serverUrl?.value || state.baseUrl || defaultSuwayomiUrl;
+  try {
+    const url = normalizeSuwayomiBaseUrl(rawUrl);
+    el.openSuwayomi.href = externalSuwayomiUrl(url);
+  } catch (error) {
+    el.openSuwayomi.removeAttribute("href");
+    setConnection(false, error.message, "bad");
+  }
+}
+
+function normalizeSuwayomiBaseUrl(value) {
+  const raw = String(value || defaultSuwayomiUrl).trim() || defaultSuwayomiUrl;
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error("Suwayomi URL must be an absolute http:// or https:// URL.");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("Suwayomi URL must start with http:// or https://.");
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error(suwayomiCredentialsError);
+  }
+  parsed.hash = "";
+  if (parsed.pathname !== "/") parsed.pathname = parsed.pathname.replace(/\/+$/, "");
+  else parsed.pathname = "";
+  return parsed.href.replace(/\/$/, "");
+}
+
+function migratePersistedSuwayomiUrl(value) {
+  const raw = String(value || "").trim();
+  try {
+    const url = normalizeSuwayomiBaseUrl(raw);
+    return { url, changed: url !== raw, message: "" };
+  } catch (error) {
+    try {
+      const parsed = new URL(raw);
+      if (
+        (parsed.protocol === "http:" || parsed.protocol === "https:")
+        && (parsed.username || parsed.password)
+      ) {
+        parsed.username = "";
+        parsed.password = "";
+        const url = normalizeSuwayomiBaseUrl(parsed.href);
+        return {
+          url,
+          changed: true,
+          message: `Saved credentials were removed from the Suwayomi URL. Reconnect to ${url}.`,
+        };
+      }
+    } catch {
+      // Fall through to the safe local default for malformed persisted values.
+    }
+    return {
+      url: defaultSuwayomiUrl,
+      changed: true,
+      message: `${error?.message || "The saved Suwayomi URL was invalid."} The saved URL was reset to ${defaultSuwayomiUrl}.`,
+    };
+  }
+}
+
+function sanitizePersistedSuwayomiUrl(value) {
+  return migratePersistedSuwayomiUrl(value).url;
+}
+
+function sanitizeLibraryServerUrls(items) {
+  return items.map((item) => {
+    if (!item?.serverUrl) return item;
+    const serverUrl = sanitizePersistedSuwayomiUrl(item.serverUrl);
+    return serverUrl === item.serverUrl ? item : { ...item, serverUrl };
+  });
 }
 
 function externalSuwayomiUrl(url) {
@@ -1089,7 +1178,7 @@ function updateBrowseAvailability() {
 
 async function graphQL(query, variables = {}, options = {}) {
   const baseUrl = options.baseUrl
-    ? String(options.baseUrl).trim().replace(/\/+$/, "")
+    ? normalizeSuwayomiBaseUrl(options.baseUrl)
     : cleanBaseUrl();
   const controller = (options.timeoutMs || options.signal) ? new AbortController() : null;
   const cancelFromExternalSignal = () => controller?.abort();
@@ -1131,6 +1220,7 @@ async function graphQL(query, variables = {}, options = {}) {
 
 function friendlySourceErrorMessage(error) {
   const message = error?.message || "Unknown error";
+  if (/^Suwayomi URL\b/i.test(message)) return message;
   if (/urlopen error|winerror\s*10061|connection refused|actively refused|failed to fetch/i.test(message)) {
     return "The reading server is unavailable right now. Check the connection and try again.";
   }
@@ -1651,7 +1741,7 @@ function normalizeUrl(url) {
 function normalizeSuwayomiPageUrl(url, baseUrlOverride = "") {
   if (!url) return "";
   if (url.startsWith("/api/image")) return appUrl(url);
-  const base = baseUrlOverride || cleanBaseUrl();
+  const base = baseUrlOverride ? normalizeSuwayomiBaseUrl(baseUrlOverride) : cleanBaseUrl();
   let target = url;
   if (/^https?:/i.test(url)) {
     const parsed = new URL(url);
@@ -1963,10 +2053,6 @@ async function loadComickLatest() {
   }
 }
 
-async function loadComickDefault() {
-  await loadComickChapter(defaultComickChapter);
-}
-
 async function loadComickMore() {
   await loadComickChapters({ append: true, page: state.comickPage + 1 || 2 });
 }
@@ -1996,17 +2082,11 @@ async function loadComickNumber() {
 
 function chooseComickChapter(chapters) {
   if (!chapters.length) return null;
-  return (
-    chapters.find((chapter) => chapter.group?.includes("Kirei Cake")) ||
-    chapters.find((chapter) => chapter.group?.includes("Official")) ||
-    chapters.find((chapter) => chapter.title) ||
-    chapters[0]
-  );
+  return chapters.find((chapter) => chapter.title) || chapters[0];
 }
 
 async function loadComickChapter(chapter) {
   setBusy(el.loadComickLatest, true, "Loading");
-  setBusy(el.loadComickDefault, true, "Loading");
   setBusy(el.loadComickNumber, true, "Loading");
   try {
     const payload = await localJson(`/api/comick/chapter?url=${encodeURIComponent(chapter.url)}`);
@@ -2029,7 +2109,6 @@ async function loadComickChapter(chapter) {
     setConnection(state.connected, `Could not load Comick chapter: ${error.message}`, "bad");
   } finally {
     setBusy(el.loadComickLatest, false);
-    setBusy(el.loadComickDefault, false);
     setBusy(el.loadComickNumber, false);
   }
 }
@@ -2691,8 +2770,8 @@ function coverHue(title) {
 function normalizeMangaCoverUrl(url) {
   const raw = String(url || "").trim();
   if (!raw || /^data:|^blob:/i.test(raw)) return raw;
-  const base = String(el.serverUrl?.value || state.baseUrl || "http://localhost:4567").trim().replace(/\/+$/, "");
   try {
+    const base = normalizeSuwayomiBaseUrl(state.baseUrl || defaultSuwayomiUrl);
     let target = raw;
     if (/^https?:/i.test(raw)) {
       const parsed = new URL(raw);
@@ -2751,12 +2830,16 @@ function createCoverButton(item, content) {
 
 async function loadLibraryItems() {
   let localItems = [];
+  let localItemsChanged = false;
   try {
     localItems = JSON.parse(localStorage.getItem(libraryStoreKey) || "[]");
   } catch {
     localItems = [];
   }
-  state.libraryItems = Array.isArray(localItems) ? localItems : [];
+  const localItemsBeforeSanitization = Array.isArray(localItems) ? JSON.stringify(localItems) : "[]";
+  state.libraryItems = sanitizeLibraryServerUrls(Array.isArray(localItems) ? localItems : []);
+  localItemsChanged = JSON.stringify(state.libraryItems) !== localItemsBeforeSanitization;
+  persistLibraryItemsLocally();
   renderLibrary();
 
   if (!navigator.onLine) return;
@@ -2764,9 +2847,11 @@ async function loadLibraryItems() {
   try {
     const payload = await localJson("/api/library");
     const remoteItems = Array.isArray(payload.items) ? payload.items : [];
-    state.libraryItems = mergeLibraryItems(remoteItems, state.libraryItems);
+    const sanitizedRemoteItems = sanitizeLibraryServerUrls(remoteItems);
+    const remoteItemsChanged = JSON.stringify(sanitizedRemoteItems) !== JSON.stringify(remoteItems);
+    state.libraryItems = sanitizeLibraryServerUrls(mergeLibraryItems(sanitizedRemoteItems, state.libraryItems));
     persistLibraryItemsLocally();
-    if (state.libraryItems.length !== remoteItems.length) {
+    if (localItemsChanged || remoteItemsChanged || state.libraryItems.length !== remoteItems.length) {
       saveLibraryItems();
     }
     renderLibrary();
@@ -2777,7 +2862,7 @@ async function loadLibraryItems() {
 }
 
 function saveLibraryItems() {
-  state.libraryItems = mergeLibraryItems(state.libraryItems);
+  state.libraryItems = sanitizeLibraryServerUrls(mergeLibraryItems(state.libraryItems));
   persistLibraryItemsLocally();
   state.librarySavePending = true;
   if (!navigator.onLine) return Promise.resolve(null);
@@ -2797,7 +2882,7 @@ async function flushLibraryItems() {
     try {
       const payload = await postLocalJson("/api/library", { items: snapshot });
       if (Array.isArray(payload.items)) {
-        state.libraryItems = mergeLibraryItems(state.libraryItems, payload.items);
+        state.libraryItems = sanitizeLibraryServerUrls(mergeLibraryItems(state.libraryItems, payload.items));
         persistLibraryItemsLocally();
       }
     } catch {
@@ -3802,7 +3887,7 @@ function enqueueCurrentSuwayomiProgress({ completed = false } = {}) {
 }
 
 function upsertSuwayomiProgressOutbox({ serverUrl, mangaId = null, chapterId, lastPageRead, completed = false }) {
-  const normalizedServerUrl = String(serverUrl || currentDeviceServerUrl()).trim().replace(/\/+$/, "");
+  const normalizedServerUrl = normalizeSuwayomiBaseUrl(serverUrl || currentDeviceServerUrl());
   const normalizedChapterId = Number(chapterId);
   if (!Number.isInteger(normalizedChapterId)) return false;
   const existing = state.suwayomiProgressOutbox.find((item) => (
@@ -3829,16 +3914,22 @@ function upsertSuwayomiProgressOutbox({ serverUrl, mangaId = null, chapterId, la
 function loadSuwayomiProgressOutbox() {
   try {
     const stored = JSON.parse(localStorage.getItem(progressOutboxStoreKey) || "[]");
+    let sanitized = false;
     state.suwayomiProgressOutbox = Array.isArray(stored)
-      ? stored.filter((item) => Number.isInteger(Number(item.chapterId))).map((item) => ({
-          chapterId: Number(item.chapterId),
-          ...(Number.isInteger(Number(item.mangaId)) && Number(item.mangaId) > 0 ? { mangaId: Number(item.mangaId) } : {}),
-          serverUrl: String(item.serverUrl || currentDeviceServerUrl()).trim().replace(/\/+$/, ""),
-          lastPageRead: Math.max(0, Number(item.lastPageRead) || 0),
-          completed: Boolean(item.completed),
-          updatedAt: Number(item.updatedAt) || Date.now(),
-        }))
+      ? stored.filter((item) => Number.isInteger(Number(item.chapterId))).map((item) => {
+          const serverUrl = sanitizePersistedSuwayomiUrl(item.serverUrl || currentDeviceServerUrl());
+          if (serverUrl !== item.serverUrl) sanitized = true;
+          return {
+            chapterId: Number(item.chapterId),
+            ...(Number.isInteger(Number(item.mangaId)) && Number(item.mangaId) > 0 ? { mangaId: Number(item.mangaId) } : {}),
+            serverUrl,
+            lastPageRead: Math.max(0, Number(item.lastPageRead) || 0),
+            completed: Boolean(item.completed),
+            updatedAt: Number(item.updatedAt) || Date.now(),
+          };
+        })
       : [];
+    if (sanitized) persistSuwayomiProgressOutbox();
   } catch {
     state.suwayomiProgressOutbox = [];
   }
@@ -3846,6 +3937,10 @@ function loadSuwayomiProgressOutbox() {
 
 function persistSuwayomiProgressOutbox() {
   try {
+    state.suwayomiProgressOutbox = state.suwayomiProgressOutbox.map((item) => ({
+      ...item,
+      serverUrl: sanitizePersistedSuwayomiUrl(item.serverUrl),
+    }));
     localStorage.setItem(progressOutboxStoreKey, JSON.stringify(state.suwayomiProgressOutbox));
   } catch {
     // The queue remains in memory if storage is unavailable.
@@ -4461,9 +4556,7 @@ function libraryItemKey(item) {
 }
 
 function currentDeviceServerUrl() {
-  return String(el.serverUrl?.value || state.baseUrl || "http://localhost:4567")
-    .trim()
-    .replace(/\/+$/, "");
+  return normalizeSuwayomiBaseUrl(state.baseUrl || defaultSuwayomiUrl);
 }
 
 function currentDeviceChapterKey(chapterId) {
@@ -10060,7 +10153,6 @@ function wireEvents() {
   el.loadDemo.addEventListener("click", loadDemo);
   el.loadComickChapters?.addEventListener("click", loadComickChapters);
   el.loadComickLatest?.addEventListener("click", loadComickLatest);
-  el.loadComickDefault?.addEventListener("click", loadComickDefault);
   el.loadComickNumber?.addEventListener("click", loadComickNumber);
   el.loadComickMore?.addEventListener("click", loadComickMore);
   el.prevPanel.addEventListener("click", () => movePanel(-1));

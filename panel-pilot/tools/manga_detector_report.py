@@ -13,7 +13,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 
-DEFAULT_APP = "https://panel-pilot-hetzner.tailb74d46.ts.net"
+DEFAULT_APP = "http://127.0.0.1:8013"
 DEFAULT_BASE = "http://localhost:4567"
 MANGADEX_EN_SOURCE = "2499283573021220255"
 

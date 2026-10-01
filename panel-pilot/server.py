@@ -1,13 +1,15 @@
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
-from urllib.request import Request, urlopen
+from urllib.parse import parse_qs, quote, unquote, urlencode, urljoin, urlparse
+from urllib.request import Request, build_opener, HTTPRedirectHandler
 from urllib.error import HTTPError
 import base64
 import hashlib
 import hmac
 import html
+import ipaddress
 import json
 import os
+import posixpath
 from pathlib import Path
 import re
 import secrets
@@ -34,6 +36,143 @@ REPORT_LOCK = threading.Lock()
 DETECTOR_CACHE_LOCK = threading.Lock()
 MANGABAKA_LOCK = threading.Lock()
 DOWNLOAD_BUFFER_MANAGER = None
+
+
+IMAGE_CDN_DOMAINS = (
+    "comicknew.pictures",
+    "comick.pictures",
+    "bp.blogspot.com",
+)
+
+
+def suwayomi_auth_credentials():
+    username = os.environ.get("SUWAYOMI_AUTH_USER", "").strip()
+    password = os.environ.get("SUWAYOMI_AUTH_PASSWORD", "")
+    if bool(username) != bool(password):
+        raise RuntimeError(
+            "SUWAYOMI_AUTH_USER and SUWAYOMI_AUTH_PASSWORD must either both be set or both be unset"
+        )
+    return username, password
+
+
+def validate_suwayomi_url(parsed_url):
+    if parsed_url.scheme not in ("http", "https"):
+        raise ValueError("Suwayomi URL must start with http:// or https://")
+    if parsed_url.username is not None or parsed_url.password is not None:
+        raise ValueError("Suwayomi URL must not contain embedded credentials")
+    if not parsed_url.hostname:
+        raise ValueError("Suwayomi URL must include a host")
+    try:
+        parsed_url.port
+    except ValueError as error:
+        raise ValueError("Suwayomi URL must include a valid port") from error
+
+
+def normalize_suwayomi_base_url(raw_base):
+    base = str(raw_base or "").strip().rstrip("/")
+    parsed = urlparse(base)
+    validate_suwayomi_url(parsed)
+    return base
+
+
+class SameOriginRedirectHandler(HTTPRedirectHandler):
+    """Allow ordinary redirects only when they stay on the same origin."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        target = urlparse(urljoin(req.full_url, newurl))
+        source = urlparse(req.full_url)
+        try:
+            source_origin = (source.scheme, source.hostname, source.port)
+            target_origin = (target.scheme, target.hostname, target.port)
+        except ValueError as error:
+            raise ValueError("Invalid redirect URL") from error
+        if (
+            target.username is not None
+            or target.password is not None
+            or target_origin != source_origin
+        ):
+            raise ValueError("Cross-origin redirects are not allowed")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def open_url(request, timeout=30):
+    return build_opener(SameOriginRedirectHandler).open(request, timeout=timeout)
+
+
+def host_matches_domain(host, domain):
+    normalized_host = str(host or "").rstrip(".").lower()
+    normalized_domain = str(domain or "").rstrip(".").lower()
+    return normalized_host == normalized_domain or normalized_host.endswith(f".{normalized_domain}")
+
+
+def safe_suwayomi_asset_path(raw_path):
+    path = unquote(str(raw_path or ""))
+    for _ in range(2):
+        decoded_path = unquote(path)
+        if decoded_path == path:
+            break
+        path = decoded_path
+    parsed = urlparse(path)
+    decoded_path = parsed.path
+    segments = decoded_path.split("/")
+    if (
+        parsed.scheme
+        or parsed.netloc
+        or parsed.fragment
+        or not decoded_path.startswith("/")
+        or decoded_path.startswith("//")
+        or "\\" in decoded_path
+        or any(segment in (".", "..") for segment in segments)
+        or not decoded_path.startswith("/api/v1/")
+    ):
+        raise ValueError("Suwayomi asset path must be a canonical /api/v1/ path")
+    canonical_path = posixpath.normpath(decoded_path)
+    if canonical_path != decoded_path or not canonical_path.startswith("/api/v1/"):
+        raise ValueError("Suwayomi asset path must be a canonical /api/v1/ path")
+    return decoded_path + (f"?{parsed.query}" if parsed.query else "")
+
+
+def sanitize_library_server_url(value):
+    """Return a credential-free HTTP(S) URL, or None for invalid values."""
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    parsed = urlparse(raw)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return None
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    if parsed.username is None and parsed.password is None:
+        return raw
+    hostname = parsed.hostname
+    host_part = f"[{hostname}]" if ":" in hostname and not hostname.startswith("[") else hostname
+    netloc = host_part if port is None else f"{host_part}:{port}"
+    return parsed._replace(netloc=netloc, fragment="").geturl().rstrip("/")
+
+
+def panel_auth_credentials():
+    username = os.environ.get("PANEL_PILOT_AUTH_USER", "").strip()
+    password = os.environ.get("PANEL_PILOT_AUTH_PASSWORD", "")
+    return username, password
+
+
+def validate_panel_auth_configuration():
+    username, password = panel_auth_credentials()
+    if bool(username) != bool(password):
+        raise RuntimeError(
+            "PANEL_PILOT_AUTH_USER and PANEL_PILOT_AUTH_PASSWORD must either both be set or both be unset"
+        )
+    return username, password
+
+
+def resolve_bind_address():
+    return os.environ.get("PANEL_PILOT_BIND_ADDRESS", "").strip() or "127.0.0.1"
+
+
 SESSION_COOKIE = "panel_pilot_session"
 SESSION_MAX_AGE = int(os.environ.get("PANEL_PILOT_SESSION_MAX_AGE", str(30 * 24 * 60 * 60)))
 APP_ROOT = Path(__file__).resolve().parent
@@ -128,7 +267,7 @@ def fetch_url(url, accept="*/*", referer="https://comick.live/"):
             "Referer": referer,
         },
     )
-    with urlopen(request, timeout=30) as response:
+    with open_url(request, timeout=30) as response:
         return response.status, response.headers, response.read()
 
 
@@ -153,14 +292,18 @@ def safe_comick_page_url(raw_url):
 
 def safe_image_url(raw_url):
     parsed = urlparse(raw_url)
-    host = parsed.netloc.lower()
+    host = (parsed.hostname or "").lower()
     if parsed.scheme != "https":
         raise ValueError("Only https image URLs are supported")
-    if not (
-        host.endswith("comicknew.pictures")
-        or host.endswith("comick.pictures")
-        or host.endswith("bp.blogspot.com")
-    ):
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("Image URLs must not contain embedded credentials")
+    try:
+        port = parsed.port
+    except ValueError as error:
+        raise ValueError("Image URLs must use a valid HTTPS port") from error
+    if port not in (None, 443):
+        raise ValueError("Image URLs must use the standard HTTPS port")
+    if not any(host_matches_domain(host, domain) for domain in IMAGE_CDN_DOMAINS):
         raise ValueError("Unsupported image CDN")
     return raw_url
 
@@ -240,7 +383,7 @@ def detect_manga_image(image_bytes, content_type="application/octet-stream"):
         headers={"Content-Type": content_type, "Accept": "application/json"},
         method="POST",
     )
-    with urlopen(request, timeout=30) as response:
+    with open_url(request, timeout=30) as response:
         payload = response.read()
         status = response.status
     if status == 200:
@@ -493,16 +636,15 @@ class DownloadBufferManager:
         return {**self.status(), "restored": restored}
 
     def graphql(self, query, variables=None, timeout=30):
-        base = os.environ.get("SUWAYOMI_INTERNAL_URL", "http://localhost:4567").strip().rstrip("/")
+        base = normalize_suwayomi_base_url(os.environ.get("SUWAYOMI_INTERNAL_URL", "http://localhost:4567"))
         body = json.dumps({"query": query, "variables": variables or {}}).encode("utf-8")
         headers = {"Accept": "application/json", "Content-Type": "application/json", "User-Agent": USER_AGENT}
-        username = os.environ.get("SUWAYOMI_AUTH_USER", "").strip()
-        password = os.environ.get("SUWAYOMI_AUTH_PASSWORD", "")
+        username, password = suwayomi_auth_credentials()
         if username and password:
             token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
             headers["Authorization"] = f"Basic {token}"
         request = Request(f"{base}/api/graphql", data=body, headers=headers, method="POST")
-        with urlopen(request, timeout=timeout) as response:
+        with open_url(request, timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
         if payload.get("errors"):
             raise RuntimeError(" / ".join(item.get("message", "Suwayomi error") for item in payload["errors"]))
@@ -572,20 +714,20 @@ class DownloadBufferManager:
         pages = data.get("fetchChapterPages", {}).get("pages") or []
         if not pages:
             return False
-        base = os.environ.get("SUWAYOMI_INTERNAL_URL", "http://localhost:4567").strip().rstrip("/")
-        username = os.environ.get("SUWAYOMI_AUTH_USER", "").strip()
-        password = os.environ.get("SUWAYOMI_AUTH_PASSWORD", "")
+        base = normalize_suwayomi_base_url(os.environ.get("SUWAYOMI_INTERNAL_URL", "http://localhost:4567"))
+        username, password = suwayomi_auth_credentials()
         headers = {"Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8", "User-Agent": USER_AGENT}
         if username and password:
             token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
             headers["Authorization"] = f"Basic {token}"
         warmed = 0
         for path in pages:
-            parsed = urlparse(str(path or ""))
-            if parsed.scheme or parsed.netloc or not str(path).startswith("/api/v1/"):
+            try:
+                safe_path = safe_suwayomi_asset_path(path)
+            except ValueError:
                 continue
-            request = Request(f"{base}{path}", headers=headers, method="GET")
-            with urlopen(request, timeout=30) as response:
+            request = Request(f"{base}{safe_path}", headers=headers, method="GET")
+            with open_url(request, timeout=30) as response:
                 image_bytes = response.read()
                 if not image_bytes or len(image_bytes) > 12000000:
                     continue
@@ -713,19 +855,33 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         return any(part.startswith(".") for part in normalized.split("/") if part)
 
     def auth_credentials(self):
-        username = os.environ.get("PANEL_PILOT_AUTH_USER", "").strip()
-        password = os.environ.get("PANEL_PILOT_AUTH_PASSWORD", "")
-        return username, password
+        return validate_panel_auth_configuration()
 
     def auth_enabled(self):
         return all(self.auth_credentials())
 
-    def session_secret(self):
+    def session_secrets(self):
         configured = os.environ.get("PANEL_PILOT_SESSION_SECRET", "")
-        if configured:
-            return configured.encode("utf-8")
         username, password = self.auth_credentials()
-        return hashlib.sha256(f"panel-pilot-session\0{username}\0{password}".encode("utf-8")).digest()
+        password_derived = hashlib.sha256(
+            f"panel-pilot-session\0{username}\0{password}".encode("utf-8")
+        ).digest()
+        if not configured:
+            return (password_derived,)
+
+        candidates = []
+        if re.fullmatch(r"[0-9a-fA-F]{64}", configured):
+            candidates.append(bytes.fromhex(configured))
+        # Releases before 0.111.0 treated a hex value as literal UTF-8. Keep
+        # accepting that signature while issuing new tokens with 32 raw bytes.
+        candidates.append(configured.encode("utf-8"))
+        # A private deployment may add PANEL_PILOT_SESSION_SECRET during this
+        # upgrade. Its existing password-derived sessions must survive once.
+        candidates.append(password_derived)
+        return tuple(dict.fromkeys(candidates))
+
+    def session_secret(self):
+        return self.session_secrets()[0]
 
     def make_session_token(self, username):
         payload = json.dumps(
@@ -746,9 +902,14 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             cookie.load(self.headers.get("Cookie", ""))
             token = cookie[SESSION_COOKIE].value
             encoded, encoded_signature = token.split(".", 1)
-            expected = hmac.new(self.session_secret(), encoded.encode("ascii"), hashlib.sha256).digest()
             supplied = base64.urlsafe_b64decode(encoded_signature + "=" * (-len(encoded_signature) % 4))
-            if not hmac.compare_digest(expected, supplied):
+            if not any(
+                hmac.compare_digest(
+                    hmac.new(secret, encoded.encode("ascii"), hashlib.sha256).digest(),
+                    supplied,
+                )
+                for secret in self.session_secrets()
+            ):
                 return False
             payload_bytes = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
             payload = json.loads(payload_bytes.decode("utf-8"))
@@ -913,16 +1074,13 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             raise ValueError("Manga detector URL must be a local Suwayomi asset")
         params = parse_qs(parsed.query)
         base = self.resolve_suwayomi_base(params.get("base", ["http://localhost:4567"])[0])
-        path = unquote(params.get("path", [""])[0])
-        parsed_path = urlparse(path)
-        if parsed_path.scheme or parsed_path.netloc or not path.startswith("/api/v1/") or path.startswith("//"):
-            raise ValueError("Manga detector asset path is invalid")
+        path = safe_suwayomi_asset_path(params.get("path", [""])[0])
         request = Request(
             f"{base}{path}",
             headers=self.suwayomi_headers(accept="image/avif,image/webp,image/apng,image/*,*/*;q=0.8"),
             method="GET",
         )
-        with urlopen(request, timeout=30) as response:
+        with open_url(request, timeout=30) as response:
             image_bytes = response.read()
             if not image_bytes or len(image_bytes) > 12000000:
                 raise ValueError("Manga detector asset is empty or too large")
@@ -1012,7 +1170,7 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             raise ValueError("Invalid MangaBaka API path")
         headers = {
             "Accept": "application/json",
-            "User-Agent": "PanelPilot/1.0 (+https://panels.aydins-workbench.com)",
+            "User-Agent": "Panels (+https://github.com/ahibbert/panels)",
         }
         active_token = token if token is not None else read_mangabaka_token()
         if active_token:
@@ -1023,7 +1181,7 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             headers["Content-Type"] = "application/json"
         request = Request(f"{MANGABAKA_API_BASE}{path}", data=body, headers=headers, method=method)
         try:
-            with urlopen(request, timeout=30) as response:
+            with open_url(request, timeout=30) as response:
                 content = response.read(6000000)
                 if len(content) >= 6000000:
                     raise ValueError("MangaBaka response was too large")
@@ -1281,13 +1439,36 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
                 items = payload.get("items", [])
             else:
                 items = payload
-            return self.clean_library_items(items)
+            cleaned = self.clean_library_items(items)
+            if cleaned != items or not isinstance(payload, dict):
+                try:
+                    self._replace_library_items_locked(cleaned)
+                except OSError:
+                    # Keep serving the sanitized in-memory view if migration cannot
+                    # write immediately; the next successful write retries it.
+                    print(
+                        "Warning: could not persist the sanitized library migration; it will be retried.",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+            return cleaned
+
+    def _replace_library_items_locked(self, items):
+        directory = os.path.dirname(LIBRARY_PATH) or "."
+        os.makedirs(directory, exist_ok=True)
+        fd, temp_path = tempfile.mkstemp(prefix=".library-", suffix=".json", dir=directory)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump({"items": items}, handle, ensure_ascii=True, indent=2)
+                handle.write("\n")
+            os.replace(temp_path, LIBRARY_PATH)
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
 
     def write_library_items(self, items):
         cleaned = self.clean_library_items(items)
-        directory = os.path.dirname(LIBRARY_PATH)
         with LIBRARY_LOCK:
-            os.makedirs(directory, exist_ok=True)
             try:
                 with open(LIBRARY_PATH, "r", encoding="utf-8") as handle:
                     existing_payload = json.load(handle)
@@ -1297,15 +1478,7 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             except (FileNotFoundError, json.JSONDecodeError, OSError):
                 existing = []
             cleaned = self.merge_library_items(cleaned, existing)
-            fd, temp_path = tempfile.mkstemp(prefix=".library-", suffix=".json", dir=directory)
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                    json.dump({"items": cleaned}, handle, ensure_ascii=True, indent=2)
-                    handle.write("\n")
-                os.replace(temp_path, LIBRARY_PATH)
-            finally:
-                if os.path.exists(temp_path):
-                    os.unlink(temp_path)
+            self._replace_library_items_locked(cleaned)
         return cleaned
 
     def merge_library_items(self, incoming, existing):
@@ -1339,7 +1512,7 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             return []
         cleaned = []
         seen = set()
-        text_fields = ("mangaTitle", "sourceId", "sourceLabel", "chapterTitle", "panelMode", "readingDirection", "progressLabel", "updatedAt", "libraryStatus", "mangabakaTitle", "mangabakaMatchSource", "mangabakaAccountKey", "serverUrl")
+        text_fields = ("mangaTitle", "sourceId", "sourceLabel", "chapterTitle", "panelMode", "readingDirection", "progressLabel", "updatedAt", "libraryStatus", "mangabakaTitle", "mangabakaMatchSource", "mangabakaAccountKey")
         number_fields = ("mangaId", "chapterId", "pageIndex", "panelIndex", "mangabakaId")
         bool_fields = ("pinned", "hidden", "isNsfw", "statusExplicit", "suwayomiLibrary", "started")
         for item in items:
@@ -1357,6 +1530,9 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
                 value = item.get(field)
                 if isinstance(value, (str, int, float)):
                     output[field] = str(value)[:300]
+            server_url = sanitize_library_server_url(item.get("serverUrl"))
+            if server_url:
+                output["serverUrl"] = server_url[:300]
             thumbnail_url = item.get("thumbnailUrl")
             if isinstance(thumbnail_url, str):
                 output["thumbnailUrl"] = thumbnail_url[:2000]
@@ -1372,22 +1548,38 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         return cleaned
 
     def resolve_suwayomi_base(self, raw_base):
-        base = raw_base.strip().rstrip("/")
+        base = normalize_suwayomi_base_url(raw_base)
         parsed_base = urlparse(base)
-        internal_base = os.environ.get("SUWAYOMI_INTERNAL_URL", "").strip().rstrip("/")
+        internal_base = normalize_suwayomi_base_url(os.environ["SUWAYOMI_INTERNAL_URL"]) if os.environ.get("SUWAYOMI_INTERNAL_URL", "").strip() else ""
         using_internal_base = False
-        if internal_base and parsed_base.hostname in ("localhost", "127.0.0.1"):
+        if internal_base and parsed_base.hostname in ("localhost", "127.0.0.1", "::1"):
             base = internal_base
             parsed_base = urlparse(base)
             using_internal_base = True
-        if parsed_base.scheme not in ("http", "https"):
-            raise ValueError("Suwayomi URL must start with http:// or https://")
-        allowed_hosts = ("localhost", "127.0.0.1", "0.0.0.0")
-        host = parsed_base.hostname or ""
-        private_lan = host.startswith("192.168.") or host.startswith("10.") or host.startswith("172.")
-        if not using_internal_base and host not in allowed_hosts and not private_lan:
+        if not using_internal_base and not self.suwayomi_host_is_local(parsed_base.hostname):
             raise ValueError("Suwayomi proxy only allows localhost or private LAN URLs")
         return base
+
+    def validate_suwayomi_url(self, parsed_url):
+        validate_suwayomi_url(parsed_url)
+
+    def suwayomi_host_is_local(self, host):
+        normalized_host = (host or "").lower()
+        if normalized_host == "localhost":
+            return True
+        try:
+            address = ipaddress.ip_address(normalized_host)
+        except ValueError:
+            return False
+        private_networks = (
+            ipaddress.ip_network("10.0.0.0/8"),
+            ipaddress.ip_network("172.16.0.0/12"),
+            ipaddress.ip_network("192.168.0.0/16"),
+            ipaddress.ip_network("fc00::/7"),
+        )
+        return address.is_loopback or address.is_unspecified or any(
+            address in network for network in private_networks
+        )
 
     def suwayomi_headers(self, accept="application/json", content_type=None):
         headers = {
@@ -1396,8 +1588,7 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         }
         if content_type:
             headers["Content-Type"] = content_type
-        suwayomi_user = os.environ.get("SUWAYOMI_AUTH_USER", "").strip()
-        suwayomi_password = os.environ.get("SUWAYOMI_AUTH_PASSWORD", "")
+        suwayomi_user, suwayomi_password = suwayomi_auth_credentials()
         if suwayomi_user and suwayomi_password:
             token = base64.b64encode(f"{suwayomi_user}:{suwayomi_password}".encode("utf-8")).decode("ascii")
             headers["Authorization"] = f"Basic {token}"
@@ -1414,7 +1605,7 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             headers=self.suwayomi_headers(content_type="application/json"),
             method="POST",
         )
-        with urlopen(request, timeout=30) as response:
+        with open_url(request, timeout=30) as response:
             payload = response.read()
             self.send_response(response.status)
             self.send_header("Content-Type", response.headers.get("Content-Type") or "application/json")
@@ -1427,19 +1618,14 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
     def handle_suwayomi_asset(self, parsed):
         params = parse_qs(parsed.query)
         base = self.resolve_suwayomi_base(params.get("base", ["http://localhost:4567"])[0])
-        path = params.get("path", [""])[0]
-        parsed_path = urlparse(path)
-        if parsed_path.scheme or parsed_path.netloc or not path.startswith("/") or path.startswith("//"):
-            raise ValueError("Suwayomi asset path must be a relative absolute path")
-        if not path.startswith("/api/v1/"):
-            raise ValueError("Suwayomi asset path must start with /api/v1/")
+        path = safe_suwayomi_asset_path(params.get("path", [""])[0])
 
         request = Request(
             f"{base}{path}",
             headers=self.suwayomi_headers(accept="image/avif,image/webp,image/apng,image/*,*/*;q=0.8"),
             method="GET",
         )
-        with urlopen(request, timeout=30) as response:
+        with open_url(request, timeout=30) as response:
             payload = response.read()
             self.send_response(response.status)
             self.send_header("Content-Type", response.headers.get("Content-Type") or "application/octet-stream")
@@ -1548,8 +1734,8 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
     def handle_image_proxy(self, parsed):
         params = parse_qs(parsed.query)
         raw_url = safe_image_url(unquote(params.get("url", [""])[0]))
-        image_host = urlparse(raw_url).netloc.lower()
-        referer = "https://readcomiconline.li/" if image_host.endswith("bp.blogspot.com") else "https://comick.live/"
+        image_host = urlparse(raw_url).hostname or ""
+        referer = "https://readcomiconline.li/" if host_matches_domain(image_host, "bp.blogspot.com") else "https://comick.live/"
         _, headers, body = fetch_url(
             raw_url,
             accept="image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
@@ -1582,12 +1768,16 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
 def main():
     global DOWNLOAD_BUFFER_MANAGER
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8012
+    bind_address = resolve_bind_address()
+    validate_panel_auth_configuration()
+    suwayomi_auth_credentials()
+    normalize_suwayomi_base_url(os.environ.get("SUWAYOMI_INTERNAL_URL", "http://localhost:4567"))
     static_root = resolve_static_root()
     DOWNLOAD_BUFFER_MANAGER = DownloadBufferManager()
     DOWNLOAD_BUFFER_MANAGER.start()
     handler = lambda *args, **kwargs: PanelPilotHandler(*args, directory=static_root, **kwargs)
-    server = ThreadingHTTPServer(("0.0.0.0", port), handler)
-    print(f"Panels server running on http://0.0.0.0:{port} from {static_root}", flush=True)
+    server = ThreadingHTTPServer((bind_address, port), handler)
+    print(f"Panels server running on http://{bind_address}:{port} from {static_root}", flush=True)
     server.serve_forever()
 
 

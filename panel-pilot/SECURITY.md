@@ -41,7 +41,11 @@ Operators should:
 
 The reverse proxy must preserve `X-Forwarded-Proto: https` so the session
 cookie receives its `Secure` attribute. Do not put a second Basic Auth prompt
-in front of Panels.
+in front of Panels. Conversely, do not expose the Panels port directly to
+untrusted clients: Panels trusts this forwarded header because the supported
+Compose deployment binds the port to loopback. A VPN, IP allow-list, or reverse
+proxy rate limit is sensible additional protection for an internet-reachable
+personal instance.
 
 ## Client data
 
@@ -50,6 +54,8 @@ and downloaded chapters can be stored unencrypted in the browser profile.
 Signing out prevents server access but does not promise to erase all local PWA
 storage. Use a trusted device profile and remove device-local data from
 **Settings → Storage** before giving the device or profile to someone else.
+See [Privacy and data flows](docs/PRIVACY.md) for the complete storage and
+service boundary.
 
 ## External services and content
 
@@ -58,3 +64,8 @@ MangaBaka, Comick, supported image CDNs, and the optional detector. Source
 extensions and manga content have their own licenses and terms; none are
 bundled with Panels. The optional model has separate attribution and data-set
 terms in [`ml/MODEL-NOTICE.md`](ml/MODEL-NOTICE.md).
+
+The current container runs its Python process as the image's default root user.
+Keep the container unprivileged (no host PID/network mode, privileged flag, or
+Docker socket), mount only `data/panels`, and treat a non-root runtime as a
+hardening item for a later release.

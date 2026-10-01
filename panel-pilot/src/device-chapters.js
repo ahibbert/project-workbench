@@ -44,10 +44,30 @@ function normalizeServerUrl(serverUrl) {
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new TypeError("serverUrl must use HTTP or HTTPS.");
   }
+  if (parsed.username || parsed.password) {
+    throw new TypeError("serverUrl must not include a username or password.");
+  }
   parsed.hash = "";
   if (parsed.pathname !== "/") parsed.pathname = parsed.pathname.replace(/\/+$/, "");
   else parsed.pathname = "";
   return parsed.href.replace(/\/$/, "");
+}
+
+function sanitizeStoredServerUrl(serverUrl) {
+  const value = String(serverUrl || "").trim();
+  if (!value) throw new TypeError("A serverUrl is required.");
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new TypeError("serverUrl must be an absolute URL.");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new TypeError("serverUrl must use HTTP or HTTPS.");
+  }
+  parsed.username = "";
+  parsed.password = "";
+  return normalizeServerUrl(parsed.href);
 }
 
 function normalizeIdentifier(value, label) {
@@ -681,8 +701,345 @@ async function removeOrphanedCachePaths(cache) {
   }
 }
 
+function hasCredentialBearingServerUrl(value) {
+  if (Array.isArray(value)) return value.some((entry) => hasCredentialBearingServerUrl(entry));
+  if (!value || typeof value !== "object") return false;
+  return Object.entries(value).some(([key, entry]) => {
+    if (key === "serverUrl") {
+      try {
+        const parsed = new URL(String(entry || ""));
+        return (parsed.protocol === "http:" || parsed.protocol === "https:")
+          && Boolean(parsed.username || parsed.password);
+      } catch {
+        return false;
+      }
+    }
+    return hasCredentialBearingServerUrl(entry);
+  });
+}
+
+function serverUrlFromDeviceChapterKey(key) {
+  try {
+    const parts = JSON.parse(String(key || ""));
+    return Array.isArray(parts) && parts.length >= 2 ? String(parts[0] || "") : "";
+  } catch {
+    return "";
+  }
+}
+
+function isCredentialBearingServerUrl(value) {
+  try {
+    const parsed = new URL(String(value || ""));
+    return (parsed.protocol === "http:" || parsed.protocol === "https:")
+      && Boolean(parsed.username || parsed.password);
+  } catch {
+    return false;
+  }
+}
+
+function collectDeviceCacheKeys(value, keys = new Set()) {
+  if (Array.isArray(value)) {
+    value.forEach((entry) => collectDeviceCacheKeys(entry, keys));
+    return keys;
+  }
+  if (!value || typeof value !== "object") return keys;
+  Object.entries(value).forEach(([key, entry]) => {
+    if (key === "cacheUrl" && typeof entry === "string") {
+      const cacheKey = deviceChapterKeyFromCachePath(deviceCachePath(entry));
+      if (cacheKey) keys.add(cacheKey);
+    } else {
+      collectDeviceCacheKeys(entry, keys);
+    }
+  });
+  return keys;
+}
+
+function collectDeviceCachePaths(value, paths = new Set()) {
+  if (Array.isArray(value)) {
+    value.forEach((entry) => collectDeviceCachePaths(entry, paths));
+    return paths;
+  }
+  if (!value || typeof value !== "object") return paths;
+  Object.entries(value).forEach(([key, entry]) => {
+    if (key === "cacheUrl" && typeof entry === "string") {
+      const cachePath = deviceCachePath(entry);
+      if (cachePath) paths.add(cachePath);
+    } else {
+      collectDeviceCachePaths(entry, paths);
+    }
+  });
+  return paths;
+}
+
+function metadataNeedsCredentialMigration(record) {
+  if (hasCredentialBearingServerUrl(record)) return true;
+  if (isCredentialBearingServerUrl(serverUrlFromDeviceChapterKey(record?.key))) return true;
+  return Array.from(collectDeviceCacheKeys(record)).some((key) => (
+    isCredentialBearingServerUrl(serverUrlFromDeviceChapterKey(key))
+  ));
+}
+
+function sanitizeMetadataServerUrls(value) {
+  if (Array.isArray(value)) return value.map((entry) => sanitizeMetadataServerUrls(entry));
+  if (!value || typeof value !== "object") return value;
+  const copy = {};
+  Object.entries(value).forEach(([key, entry]) => {
+    if (key === "serverUrl") {
+      try {
+        copy[key] = sanitizeStoredServerUrl(entry);
+      } catch {
+        copy[key] = "";
+      }
+    } else {
+      copy[key] = sanitizeMetadataServerUrls(entry);
+    }
+  });
+  return copy;
+}
+
+function rewriteDeviceMetadataReferences(value, oldKeys, newKey, cachePathReplacements) {
+  if (Array.isArray(value)) {
+    value.forEach((entry) => rewriteDeviceMetadataReferences(entry, oldKeys, newKey, cachePathReplacements));
+    return value;
+  }
+  if (!value || typeof value !== "object") return value;
+  Object.entries(value).forEach(([key, entry]) => {
+    if (key === "key" && oldKeys.has(entry)) value[key] = newKey;
+    else if (key === "cacheUrl" && typeof entry === "string") {
+      const cachePath = deviceCachePath(entry);
+      if (cachePathReplacements.has(cachePath)) value[key] = cachePathReplacements.get(cachePath);
+    } else {
+      rewriteDeviceMetadataReferences(entry, oldKeys, newKey, cachePathReplacements);
+    }
+  });
+  return value;
+}
+
+async function stageDeviceCachePaths(cache, cachePaths, newKey, operationId) {
+  const replacements = new Map();
+  let index = 0;
+  for (const oldPath of cachePaths) {
+    const replacementPath = `${operationCachePrefix(newKey, operationId)}${index}`;
+    index += 1;
+    replacements.set(oldPath, replacementPath);
+    const response = await cache.match(cacheRequest(oldPath));
+    if (response) await cache.put(cacheRequest(replacementPath), response.clone());
+  }
+  return replacements;
+}
+
+async function deleteDeviceCacheKey(cache, key) {
+  try { await deleteChapterCache(cache, key); }
+  catch { /* A later maintenance pass can retry orphan cleanup. */ }
+}
+
+function deviceRecordQuality(record) {
+  const total = Math.max(0, Number(record?.totalPages) || 0);
+  const downloaded = Math.max(0, Number(record?.downloadedPages) || 0);
+  const cachedPages = Array.isArray(record?.pages) ? record.pages.length : 0;
+  const complete = record?.status === "ready" && total > 0 && downloaded >= total && cachedPages >= total;
+  const updatedAt = Date.parse(record?.updatedAt || "") || 0;
+  return [complete ? 1 : 0, Math.min(downloaded, cachedPages), updatedAt];
+}
+
+function compareDeviceRecordQuality(left, right) {
+  const leftQuality = deviceRecordQuality(left);
+  const rightQuality = deviceRecordQuality(right);
+  for (let index = 0; index < leftQuality.length; index += 1) {
+    if (leftQuality[index] !== rightQuality[index]) return leftQuality[index] - rightQuality[index];
+  }
+  return 0;
+}
+
+async function acquireCredentialMigrationLease(record, operationId) {
+  const snapshot = JSON.stringify(record);
+  return updateRecordAtomically(record.key, (current) => {
+    if (
+      !current
+      || JSON.stringify(current) !== snapshot
+      || leaseIsActive(current.lease)
+      || activeDownloads.has(record.key)
+      || activeOperations.has(record.key)
+    ) return { result: null };
+    const lease = newLease("credential-migration", operationId);
+    const leasedRecord = { ...current, lease };
+    return { record: leasedRecord, result: { record: leasedRecord, lease } };
+  });
+}
+
+async function releaseCredentialMigrationLease(key, lease) {
+  if (!lease) return;
+  await updateRecordAtomically(key, (current) => {
+    if (!leaseMatches(current, lease)) return { result: false };
+    const released = { ...current };
+    delete released.lease;
+    return { record: released, result: true };
+  }).catch(() => false);
+}
+
+async function commitDeviceMetadataMigrations(migrations) {
+  const applied = [];
+  if (!migrations.length) return applied;
+  const database = await openDatabase();
+  for (const migration of migrations) {
+    const wasApplied = await new Promise((resolve, reject) => {
+      const transaction = database.transaction(DEVICE_CHAPTER_STORE, "readwrite");
+      const store = transaction.objectStore(DEVICE_CHAPTER_STORE);
+      const oldRequest = store.get(migration.oldKey);
+      const targetRequest = migration.newKey && migration.newKey !== migration.oldKey
+        ? store.get(migration.newKey)
+        : null;
+      let current;
+      let target;
+      let readsRemaining = targetRequest ? 2 : 1;
+      let commit = false;
+      const maybeApply = () => {
+        readsRemaining -= 1;
+        if (readsRemaining) return;
+        if (!current || JSON.stringify(current) !== migration.snapshot || !leaseMatches(current, migration.oldLease)) return;
+        if (migration.targetLease) {
+          if (!target || JSON.stringify(target) !== migration.targetSnapshot || !leaseMatches(target, migration.targetLease)) return;
+        } else if (migration.keepExistingTarget) {
+          if (!target || compareDeviceRecordQuality(target, current) < 0) return;
+        } else if (target && migration.record) return;
+        store.delete(migration.oldKey);
+        if (migration.record) store.put(migration.record);
+        commit = true;
+      };
+      oldRequest.addEventListener("success", () => { current = oldRequest.result || null; maybeApply(); }, { once: true });
+      oldRequest.addEventListener("error", () => transaction.abort(), { once: true });
+      if (targetRequest) {
+        targetRequest.addEventListener("success", () => { target = targetRequest.result || null; maybeApply(); }, { once: true });
+        targetRequest.addEventListener("error", () => transaction.abort(), { once: true });
+      }
+      transaction.addEventListener("complete", () => resolve(commit), { once: true });
+      transaction.addEventListener("abort", () => reject(transaction.error || new Error("Device metadata migration was aborted.")), { once: true });
+      transaction.addEventListener("error", () => reject(transaction.error || new Error("Device metadata migration failed.")), { once: true });
+    });
+    if (wasApplied) applied.push(migration);
+  }
+  return applied;
+}
+
+async function migrateCredentialBearingDeviceMetadata(cache) {
+  const records = await getAllRecords();
+  if (!records.some((record) => metadataNeedsCredentialMigration(record))) return;
+
+  const recordsByKey = new Map(records.map((record) => [record.key, record]));
+  const reservedNewKeys = new Set();
+  const migrations = [];
+  for (const record of records) {
+    if (!metadataNeedsCredentialMigration(record)) continue;
+    if (leaseIsActive(record.lease) || activeDownloads.has(record.key) || activeOperations.has(record.key)) continue;
+    const operationId = createOperationId("credential-migration");
+    const acquired = await acquireCredentialMigrationLease(record, operationId);
+    if (!acquired) continue;
+    activeOperations.set(record.key, operationId);
+    const leasedRecord = acquired.record;
+    let targetLease = null;
+    let targetKey = "";
+    let sanitizedServerUrl;
+    try {
+      sanitizedServerUrl = sanitizeStoredServerUrl(
+        leasedRecord.serverUrl || serverUrlFromDeviceChapterKey(leasedRecord.key),
+      );
+    } catch {
+      // Keep the only offline copy intact. Normal operations reject this URL,
+      // and a later maintenance pass can retry if the record is repaired.
+      await releaseCredentialMigrationLease(record.key, acquired.lease);
+      activeOperations.delete(record.key);
+      continue;
+    }
+
+    const newKey = deviceChapterKey(sanitizedServerUrl, leasedRecord.chapterId);
+    const target = recordsByKey.get(newKey);
+    if ((target && target.key !== record.key) || reservedNewKeys.has(newKey)) {
+      if (!target || reservedNewKeys.has(newKey)) {
+        await releaseCredentialMigrationLease(record.key, acquired.lease);
+        activeOperations.delete(record.key);
+        continue;
+      }
+      if (compareDeviceRecordQuality(leasedRecord, target) <= 0) {
+        migrations.push({
+          oldKey: record.key,
+          newKey,
+          record: null,
+          keepExistingTarget: true,
+          oldCacheKeys: Array.from(new Set([record.key, ...collectDeviceCacheKeys(leasedRecord)])),
+          snapshot: JSON.stringify(leasedRecord),
+          oldLease: acquired.lease,
+          operationId,
+        });
+        continue;
+      }
+      const targetOperationId = createOperationId("credential-migration-target");
+      const targetAcquired = await acquireCredentialMigrationLease(target, targetOperationId);
+      if (!targetAcquired) {
+        await releaseCredentialMigrationLease(record.key, acquired.lease);
+        activeOperations.delete(record.key);
+        continue;
+      }
+      targetLease = targetAcquired;
+      targetKey = target.key;
+      activeOperations.set(target.key, targetOperationId);
+    }
+
+    const migrated = sanitizeMetadataServerUrls(leasedRecord);
+    delete migrated.lease;
+    const oldCacheKeys = new Set([record.key, ...collectDeviceCacheKeys(leasedRecord)]);
+    migrated.key = newKey;
+    migrated.serverUrl = sanitizedServerUrl;
+    try {
+      const cachePathReplacements = await stageDeviceCachePaths(
+        cache,
+        collectDeviceCachePaths(leasedRecord),
+        newKey,
+        operationId,
+      );
+      rewriteDeviceMetadataReferences(migrated, oldCacheKeys, newKey, cachePathReplacements);
+      reservedNewKeys.add(newKey);
+      migrations.push({
+        oldKey: record.key,
+        newKey,
+        record: migrated,
+        oldCacheKeys: Array.from(oldCacheKeys),
+        snapshot: JSON.stringify(leasedRecord),
+        oldLease: acquired.lease,
+        targetLease: targetLease?.lease || null,
+        targetSnapshot: targetLease ? JSON.stringify(targetLease.record) : "",
+        operationId,
+        targetKey,
+      });
+    } catch {
+      // Preserve the only offline package when a cache copy fails. Any partial
+      // target copy is orphaned and removed by the normal reconciliation pass.
+      await deleteOperationCache(cache, newKey, operationId).catch(() => {});
+      await releaseCredentialMigrationLease(record.key, acquired.lease);
+      if (targetLease) await releaseCredentialMigrationLease(targetKey, targetLease.lease);
+      activeOperations.delete(record.key);
+      if (targetKey) activeOperations.delete(targetKey);
+    }
+  }
+  const applied = await commitDeviceMetadataMigrations(migrations);
+  const appliedOperations = new Set(applied.map((migration) => migration.operationId));
+  for (const migration of migrations) {
+    activeOperations.delete(migration.oldKey);
+    if (migration.targetKey) activeOperations.delete(migration.targetKey);
+    if (appliedOperations.has(migration.operationId)) continue;
+    await deleteOperationCache(cache, migration.newKey, migration.operationId).catch(() => {});
+    await releaseCredentialMigrationLease(migration.oldKey, migration.oldLease);
+    if (migration.targetLease) await releaseCredentialMigrationLease(migration.targetKey, migration.targetLease);
+  }
+  for (const migration of applied) {
+    for (const oldCacheKey of migration.oldCacheKeys) {
+      if (oldCacheKey !== migration.newKey) await deleteDeviceCacheKey(cache, oldCacheKey);
+    }
+  }
+}
+
 async function runMaintenance() {
   const cache = await caches.open(DEVICE_CHAPTER_CACHE);
+  await migrateCredentialBearingDeviceMetadata(cache);
   for (const record of await getAllRecords()) {
     if (record?.status === "removing") await resumeInterruptedRemoval(record, cache);
     else if (record) await recoverInterruptedRecord(record, cache);

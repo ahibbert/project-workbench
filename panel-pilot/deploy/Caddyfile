@@ -1,4 +1,0 @@
-panels.aydins-workbench.com {
-	encode zstd gzip
-	reverse_proxy panel-pilot:8013
-}

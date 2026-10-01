@@ -20,7 +20,7 @@ docker compose up -d
 For network choices, HTTPS, verification, backups, and attaching to Suwayomi,
 follow [the deployment guide](docs/DEPLOYMENT.md). Maintainers should use the
 [release and rollback runbook](docs/RELEASING.md). Do not expose Panels before
-reading the [security policy](SECURITY.md).
+reading the [security policy](SECURITY.md) and [privacy and data-flow notes](docs/PRIVACY.md).
 
 ## Run locally
 
@@ -39,16 +39,24 @@ Then open:
 http://localhost:8013
 ```
 
-From a phone on the same Wi-Fi, open the computer's LAN address and the same
-port, for example:
+Local execution binds to `127.0.0.1` by default. To test from a trusted phone
+on the same Wi-Fi, set `PANEL_PILOT_BIND_ADDRESS=0.0.0.0` together with
+`PANEL_PILOT_AUTH_USER`, `PANEL_PILOT_AUTH_PASSWORD`, and a random
+`PANEL_PILOT_SESSION_SECRET` before starting the server. Keep it behind your
+machine's firewall, then open the computer's LAN address and the same port,
+for example:
 
 ```text
 http://192.168.0.9:8013
 ```
 
-The app loads Frieren chapter 1 from Comick on startup, so the panel reader can
-be tested against real pages without a running Suwayomi server. The custom
-server also exposes a small same-origin Comick test proxy for that flow.
+LAN HTTP is useful for basic reader testing, but browsers do not treat it as a
+secure context. Test installation, service workers, and offline chapters
+through HTTPS (or on `localhost`).
+
+Panels does not load third-party reading content on startup. For development,
+the Test Lab can use a Comick URL entered manually through a same-origin
+adapter. Use only sources and content that you are authorized to access.
 
 For frontend development, run the Python backend with the explicit source-mode
 opt-in, then start Vite in a second terminal. Vite proxies `/api`, `/login`, and
@@ -84,16 +92,23 @@ once. **Check for updates** performs an on-demand check; a failed check does not
 prevent online reading.
 
 After one successful online load, the installed app can reopen its application
-shell and locally saved library while offline. The global connection banner
-shows when the device is offline, reconnecting, restored, or online while the
-configured Suwayomi server is unavailable. API responses, sign-in and sign-out,
-Test Lab, and chapter media are never served from this shell fallback.
+shell and locally saved library while offline. Suwayomi chapter rows provide a
+per-chapter control to save a complete chapter to the current device. Saved
+chapters remain readable offline and can be inspected or removed under
+**Settings → Device storage**. These device copies are separate from the
+server-side Suwayomi download buffer and do not follow the user to another
+device.
+
+The global connection banner shows when the device is offline, reconnecting,
+restored, or online while the configured Suwayomi server is unavailable. API
+responses, sign-in and sign-out, Test Lab, and chapter media that were not
+explicitly saved to the device are never served from the application-shell
+fallback.
 
 The offline shell is intended for a trusted browser profile: locally stored
-library metadata and settings are not encrypted and can be displayed without a
-fresh server session check. Server data and actions still require online
-authentication. Device-local chapter reading is introduced separately and is
-not part of the current offline shell.
+library metadata, settings, and downloaded chapters are not encrypted and can
+be displayed without a fresh server session check. Server data and actions
+still require online authentication.
 
 Panel view fits the active panel crop into the reader by both width and height.
 Use the `Padding` slider to choose how much context is shown around each panel.
@@ -111,18 +126,18 @@ Open the test harness at:
 http://localhost:8013/panel-test.html
 ```
 
-The Test Lab uses the same detector path as the reader. It can load a
-Suwayomi library chapter by manga/chapter ID or a Comick chapter, runs detection
-page by page, draws overlay boxes, flags risky overlapping crops, and lets you
-enter expected panel counts. Expected counts are stored in localStorage and can
-be exported as JSON with the detection report.
+The Test Lab uses the same detector path as the reader. It can load a Suwayomi
+library chapter by manga/chapter ID or a manually supplied Comick URL, runs
+detection page by page, draws overlay boxes, flags risky overlapping crops, and
+lets you enter expected panel counts. Expected counts are stored in
+localStorage and can be exported as JSON with the detection report.
 
 Useful query parameters:
 
 ```text
 panel-test.html?pages=3&autorun=1
 panel-test.html?chapter=1&pages=10&autoload=1
-panel-test.html?source=suwayomi&mangaId=1916&chapterId=4016&autorun=1
+panel-test.html?source=suwayomi&mangaId=<manga-id>&chapterId=<chapter-id>&autorun=1
 ```
 
 ## Suwayomi flow
@@ -157,6 +172,9 @@ downloads one chapter at a time, independently backs off failed chapters, and
 moves repeatedly failing work aside so one source cannot stall the queue; it
 keeps working after the PWA closes or the server restarts. Progress updates use
 a durable browser outbox and model results are cached for repeat visits.
+Titles in **Plan to read** also queue their earliest 10 chapters at background
+priority; active reading always takes precedence. These are Suwayomi server
+downloads, not copies stored on every Panels device.
 To share that progress with Tachimanga, enable **Enhanced Tracking → Suwayomi**
 in Tachimanga. Tachimanga can then use MangaBaka as a regular tracker; connect
 MangaBaka in Tachimanga's Tracking settings. Panels' Settings page has a
@@ -181,11 +199,13 @@ reverse proxy; do not add a second Basic Auth gate in front of Panels.
 
 ## Manga panel model
 
-The production compose stack includes a private CPU-only ONNX service for manga
-panel detection. It is used only in manga mode; comic and webtoon behavior is
-unchanged. The service downloads a checksum-pinned 10 MB model during its image
-build. If the service is unavailable, Panels automatically uses the local
-browser detector, so reading still works.
+The supplied Compose stack can optionally build a private CPU-only ONNX service
+for manga panel detection. It is used only in manga mode; comic and webtoon
+behavior is unchanged. The service downloads a checksum-pinned 10 MB model
+during its image build. The default deployment does not enable this profile;
+Panels uses the local browser detector unless the operator opts in. If an
+enabled service becomes unavailable, reading falls back to that browser
+detector.
 
 The model and its Manga109-s training-data attribution are documented in
 [`ml/MODEL-NOTICE.md`](ml/MODEL-NOTICE.md). Because the weights are AGPL-3.0,
@@ -200,8 +220,9 @@ service.
   the image will still display but detection may fall back to full-page mode.
   The clean fix is serving this PWA from the same origin as Suwayomi or adding a
   small same-origin proxy.
-- The Comick test path is for local development only. It currently supports
-  `comick.live` chapter lists and proxied image loading from Comick CDN URLs.
+- The opt-in Comick test path is for local development only. It accepts a
+  manually supplied `comick.live` URL and proxies image loading from supported
+  Comick CDN URLs.
 - Manual panel correction is not implemented yet.
 - The optional trained detector is currently manga-only. Comic and webtoon
   models will remain separate rather than sharing manga weights and thresholds.

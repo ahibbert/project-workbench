@@ -17,11 +17,11 @@ a network.
 
 ## Configure
 
-Clone the source and enter the `panel-pilot` directory:
+Clone the standalone source repository and enter it:
 
 ```sh
-git clone https://github.com/ahibbert/project-workbench.git
-cd project-workbench/panel-pilot
+git clone https://github.com/ahibbert/panels.git
+cd panels
 ```
 
 Create the local configuration:
@@ -31,8 +31,14 @@ cp .env.example .env
 openssl rand -hex 32
 ```
 
-Put the generated value in `PANEL_PILOT_SESSION_SECRET`, then replace every
-placeholder password in `.env`. Keep `.env` private; it is ignored by Git.
+Put the generated value in `PANEL_PILOT_SESSION_SECRET`, then set a long,
+unique `PANEL_PILOT_AUTH_PASSWORD` in `.env`. Both are intentionally blank in
+the example, and Compose refuses to start until they are set. Keep `.env`
+private; it is ignored by Git. Leave both `SUWAYOMI_AUTH_*` values empty unless
+the Suwayomi server uses Basic Auth; when it does, set both values.
+The recommended 64-character hexadecimal session secret is decoded as 32
+random bytes; older literal-hex and password-derived sessions are accepted
+during migration so an ordinary upgrade does not sign users out.
 
 The important Suwayomi setting is `SUWAYOMI_INTERNAL_URL`. It is resolved by
 the Panels container, not by the phone:
@@ -93,9 +99,19 @@ Caddy automatically forwards the original scheme, allowing Panels to mark its
 session cookie `Secure`. If the reverse proxy itself runs in Docker, attach it
 to the same network and proxy to `panels:8013` rather than host loopback.
 
+Validate the example before the first start, and reload Caddy after subsequent
+configuration changes:
+
+```sh
+PANELS_DOMAIN=panels.example.com PANELS_PORT=8013 caddy validate --config deploy/Caddyfile.example
+PANELS_DOMAIN=panels.example.com PANELS_PORT=8013 caddy reload --config deploy/Caddyfile.example
+```
+
 Do not add a second authentication prompt at the reverse proxy: it interferes
 with the app's login, service-worker update, and API flows. Use Panels' own
-authentication and a long, unique password.
+authentication and a long, unique password. Restrict direct access to port
+8013: the application trusts `X-Forwarded-Proto` from the reverse proxy when
+deciding whether its session cookie is secure.
 
 ## Persistent and device-local data
 
@@ -111,9 +127,22 @@ browser settings, pending browser outboxes, and the offline shell live in each
 browser profile and are not contained in the server backup or synchronized to
 another device.
 
+The project does not bundle manga, Suwayomi extensions, or MangaBaka data.
+Operators are responsible for the licenses and terms of the sources they add.
+
 ## Upgrade
 
 Follow the tested build, backup, rollout, and rollback sequence in
 [`RELEASING.md`](RELEASING.md). After a server upgrade, an installed PWA keeps
 the current worker until the reader chooses **Update ready → Apply update**;
 this preserves the active reading position and queued progress first.
+
+## Optional detector distribution
+
+Enabling the `manga-detector` profile builds an image that downloads and embeds
+third-party AGPL-3.0 model weights. Review and retain
+[`ml/MODEL-NOTICE.md`](../ml/MODEL-NOTICE.md) with any distribution of that
+image, preserve the upstream attribution, and make the corresponding source
+for the detector image and your modifications available as required by the
+applicable license. The Manga109-s dataset itself is not distributed by this
+project and must not be added to the image or release artifacts.

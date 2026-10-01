@@ -9,13 +9,32 @@ revision and verifies its SHA-256 checksum. It runs with ONNX Runtime on CPU;
 the existing browser detector is retained as an automatic availability
 fallback. See `MODEL-NOTICE.md` for attribution and licensing.
 
+Compose builds this optional image from the repository root so the image can
+include the project license and model notice. For a direct build, use the same
+context:
+
+```sh
+docker build -f ml/Dockerfile -t panels-manga-detector .
+```
+
+Do not run `docker build ml`; that narrower context does not contain the
+required license file.
+
 ## Regression corpus
 
 Build a manifest from the live Suwayomi library, then download a spread of
 pages from three chapters per active title:
 
+> **Private test data:** `test-manifest.json` can contain library titles,
+> internal Suwayomi identifiers, chapter metadata, and source URLs.
+> `test-corpus/` and `benchmark-results/` can contain copyrighted manga pages,
+> crops, overlays, and reading-history-derived metadata. These paths are
+> excluded from Git and Docker build contexts. Never commit, publish, attach,
+> or redistribute them; generate them only on a trusted machine and remove
+> them when the evaluation is complete.
+
 ```sh
-python tools/build_suwayomi_manga_test_manifest.py --output test-manifest.json
+python tools/build_suwayomi_manga_test_manifest.py --out test-manifest.json
 python tools/download_suwayomi_manga_test_corpus.py \
   --manifest test-manifest.json \
   --out test-corpus \
@@ -33,12 +52,12 @@ python ml/benchmark_onnx_detector.py \
   --out benchmark-results
 ```
 
-The September 2026 acceptance corpus contains 122 pages from 15 available
-titles. The model averaged 255 ms/page on the local CPU, produced no reading
-order or overlapping-box warnings, and flagged two large single-panel crops for
-review. Chainsaw Man is included specifically for its non-standard layouts.
-Zero-detection covers, title cards, and splash pages deliberately become a
-single full-page view.
+The September 2026 private acceptance corpus contains 122 pages from 15
+available titles. The model averaged 255 ms/page on the local CPU, produced no
+reading-order or overlapping-box warnings, and flagged two large single-panel
+crops for review. The corpus includes a non-standard-layout sample without
+publishing its pages or identifying library metadata. Zero-detection covers,
+title cards, and splash pages deliberately become a single full-page view.
 
 ## Service contract
 
@@ -46,7 +65,7 @@ single full-page view.
 - `POST /v1/manga/panels` with raw image bytes and an `image/*` content type
 
 The response contains normalized panel boxes and confidence scores. Keep port
-8091 on the private Docker network. Panel Pilot uses the service only in manga
+8091 on the private Docker network. Panels uses the service only in manga
 mode and automatically returns to the browser detector when the service is not
 available.
 
@@ -57,3 +76,5 @@ for future experiments. Install `requirements-training.txt`, request the
 dataset under its own terms, and never commit or redistribute its images or
 annotations. A locally trained model should not replace the deployed model
 until it beats the Suwayomi regression corpus on missed and duplicate panels.
+Keep dataset inputs and converted training outputs outside this repository so
+they cannot enter Git history or a Docker build context accidentally.

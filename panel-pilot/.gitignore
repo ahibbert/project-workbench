@@ -3,3 +3,13 @@
 !.env.example
 data/
 backups/
+dist/
+node_modules/
+playwright-report/
+test-results/
+test-output/
+test-manifest.json
+test-corpus/
+benchmark-results/
+*.pyc
+__pycache__/

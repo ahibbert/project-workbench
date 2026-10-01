@@ -14,8 +14,10 @@ npm version --no-git-tag-version 0.x.y
 npm ci
 npm test
 python tools/test_server_static.py
+python tools/test_server_security.py
 python tools/test_server_state.py
 python tools/test_manga_detector.py
+python tools/test_download_buffer.py
 ```
 
 Review the version-only changes to both `package.json` and `package-lock.json`.
@@ -143,3 +145,50 @@ docker compose up -d --no-build panels
 
 Re-run the public verification checklist after rollback. Keep the failed data
 directory until its state has been inspected or recovered.
+
+## 6. Publish the source release
+
+Complete this checklist before making the release public. It is intentionally
+separate from deployment: a healthy private instance does not prove that the
+source package is safe or understandable for another operator.
+
+- [ ] Decide the permanent repository URL and default branch. Confirm the
+  repository, issue, and homepage links in `package.json` and this documentation
+  resolve after publication.
+- [ ] Merge the reviewed release commit to the public default branch with a
+  clean worktree. Do not publish from an unreviewed feature branch.
+- [ ] Confirm `.env`, `data/`, backups, logs, detector caches, test output,
+  browser profiles, Python bytecode, and private deployment files are neither
+  tracked nor present anywhere in the commits being published.
+- [ ] Run a secret scanner over the complete history to be published, not only
+  the current checkout. Rotate any credential that ever entered Git history
+  before publication; deleting the current file is insufficient.
+- [ ] Verify that `LICENSE`, `THIRD_PARTY_NOTICES.md`, `SECURITY.md`,
+  `.env.example`, `compose.yaml`, and `deploy/Caddyfile.example` are present and
+  contain no instance-specific domains, IP addresses, usernames, or paths.
+- [ ] Review `ml/MODEL-NOTICE.md` and the upstream model/dataset terms. Do not
+  attach model weights or Manga109-s material to the source release. If a
+  detector container is distributed, satisfy the additional source and notice
+  obligations described in the deployment guide.
+- [ ] Run all tests in section 1 from a fresh clone, then follow
+  `docs/DEPLOYMENT.md` on a clean host using only the published files. Verify
+  login, HTTPS installation, Suwayomi connectivity, a chapter read, a
+  device-local chapter, and explicit PWA update activation.
+- [ ] Run `npm audit` and review the Docker build's OS and Python dependency
+  scan. Record accepted findings and versions; do not imply that a zero-count
+  npm result scans the Python or container layers.
+- [ ] Enable GitHub private vulnerability reporting, add an issue template or
+  clearly documented support path, and verify the security contact described
+  in `SECURITY.md` is usable without exposing a private address.
+- [ ] Create signed or annotated tag `v0.x.y` at the verified commit. Publish
+  release notes containing the commit, image digest if an image is distributed,
+  upgrade/rollback notes, known limitations, and the detector's opt-in status.
+- [ ] Recheck the release archive itself before publishing it. GitHub-generated
+  source archives should contain the source and notices, not local build output
+  or operator data.
+
+For the first public release, keep the previous private image and backup until
+the public build has also passed a real iPhone/iPad install, update, offline
+chapter, and cross-device progress test. Publication is complete only when a
+new operator can reproduce the deployment without access to the maintainer's
+private Compose files or environment.

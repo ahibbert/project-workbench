@@ -1,11 +1,4 @@
 const expectationStoreKey = "panel-pilot-panel-expectations-v1";
-const defaultPreferredGroup = "Kirei Cake";
-const expectedFixtures = {
-  "https://comick.live/comic/00-sousou-no-frieren/gx1Lk-chapter-1-en": [
-    6, 1, 3, 4, 4, 4, 4, 8, 2, 6, 5, 5, 6, 5, 3, 6, 5, 5,
-    4, 6, 6, 4, 3, 1, 5, 5, 4, 5, 3, 7, 6, 5, 4, 6, 3,
-  ],
-};
 
 const testEl = {
   version: document.querySelector("#test-version"),
@@ -203,11 +196,7 @@ async function loadSuwayomiTestChapter() {
 
 function chooseChapter(chapters) {
   if (!chapters.length) return null;
-  return (
-    chapters.find((chapter) => chapter.group?.includes(defaultPreferredGroup)) ||
-    chapters.find((chapter) => chapter.title) ||
-    chapters[0]
-  );
+  return chapters.find((chapter) => chapter.title) || chapters[0];
 }
 
 function renderPendingRows() {
@@ -482,12 +471,7 @@ function expectationKey(page) {
 }
 
 function getExpectedCount(page) {
-  const value = testState.expectations[expectationKey(page)] ?? fixtureExpectedCount(page);
-  return normalizedExpected(value);
-}
-
-function fixtureExpectedCount(page) {
-  return expectedFixtures[testState.chapterUrl]?.[page.index] ?? null;
+  return normalizedExpected(testState.expectations[expectationKey(page)]);
 }
 
 function saveExpectedCount(page, value) {

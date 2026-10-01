@@ -1,19 +1,18 @@
 {
   "name": "panels",
-  "version": "0.110.0",
+  "version": "0.111.0",
   "private": true,
   "type": "module",
   "description": "A mobile-first Suwayomi manga reader with guided panel navigation.",
   "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ahibbert/project-workbench.git",
-    "directory": "panel-pilot"
+    "url": "git+https://github.com/ahibbert/panels.git"
   },
   "bugs": {
-    "url": "https://github.com/ahibbert/project-workbench/issues"
+    "url": "https://github.com/ahibbert/panels/issues"
   },
-  "homepage": "https://github.com/ahibbert/project-workbench/tree/main/panel-pilot#readme",
+  "homepage": "https://github.com/ahibbert/panels#readme",
   "engines": {
     "node": ">=22.12.0"
   },

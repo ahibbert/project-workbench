@@ -28,7 +28,7 @@ def arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--app", default="https://panels.aydins-workbench.com")
+    parser.add_argument("--app", default="http://127.0.0.1:8013")
     parser.add_argument("--base", default="http://localhost:4567")
     parser.add_argument("--username", default=os.environ.get("PANEL_PILOT_AUTH_USER", ""))
     parser.add_argument("--password", default=os.environ.get("PANEL_PILOT_AUTH_PASSWORD", ""))

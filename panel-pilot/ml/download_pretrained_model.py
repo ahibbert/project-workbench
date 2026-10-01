@@ -13,7 +13,7 @@ SHA256 = "e66667bc6d5f00013ff27efc15d21e521825369d44dfd5d7f6e43cda2ca512b7"
 
 def main():
     destination = Path(sys.argv[1] if len(sys.argv) > 1 else "manga-panel-detector.onnx")
-    request = Request(URL, headers={"User-Agent": "Panel-Pilot/1"})
+    request = Request(URL, headers={"User-Agent": "Panels model downloader"})
     with urlopen(request, timeout=120) as response:
         payload = response.read()
     digest = hashlib.sha256(payload).hexdigest()

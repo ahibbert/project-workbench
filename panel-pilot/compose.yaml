@@ -7,6 +7,7 @@ services:
         PANEL_PILOT_BUILD_ID: ${PANELS_BUILD_ID:-local}
     restart: unless-stopped
     environment:
+      PANEL_PILOT_BIND_ADDRESS: 0.0.0.0
       PANEL_PILOT_AUTH_USER: ${PANEL_PILOT_AUTH_USER:?set PANEL_PILOT_AUTH_USER in .env}
       PANEL_PILOT_AUTH_PASSWORD: ${PANEL_PILOT_AUTH_PASSWORD:?set PANEL_PILOT_AUTH_PASSWORD in .env}
       PANEL_PILOT_SESSION_SECRET: ${PANEL_PILOT_SESSION_SECRET:?set PANEL_PILOT_SESSION_SECRET in .env}
@@ -32,7 +33,8 @@ services:
     profiles:
       - manga-detector
     build:
-      context: ./ml
+      context: .
+      dockerfile: ml/Dockerfile
     restart: unless-stopped
     environment:
       MANGA_SCORE_THRESHOLD: ${MANGA_SCORE_THRESHOLD:-0.25}
