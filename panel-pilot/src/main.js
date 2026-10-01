@@ -27,6 +27,7 @@ const pageImageRetryDelaysMs = [0, 350];
 const chapterFetchRetryDelaysMs = [0, 400];
 const readerLoadingGraceMs = 180;
 const nextChapterPreparedPageCount = 3;
+const webtoonLiveImageCap = 8;
 const downloadAheadChapterCount = 10;
 const progressOutboxStoreKey = "panel-pilot-progress-outbox";
 const mangabakaOutboxStoreKey = "panel-pilot-mangabaka-outbox";
@@ -208,6 +209,7 @@ const el = {
   downloadStatusIssue: document.querySelector("#download-status-issue"),
   downloadStatusRetry: document.querySelector("#download-status-retry"),
   readerBack: document.querySelector("#reader-back"),
+  readerView: document.querySelector("#reader-view"),
   stageImage: document.querySelector("#stage-image"),
   stageImageWrap: document.querySelector("#stage-image-wrap"),
   readerLoading: document.querySelector("#reader-loading"),
@@ -235,6 +237,8 @@ const el = {
   panelStrip: document.querySelector("#panel-strip"),
   prevPanel: document.querySelector("#prev-panel"),
   nextPanel: document.querySelector("#next-panel"),
+  keepScreenAwake: document.querySelector("#keep-screen-awake"),
+  wakeLockStatus: document.querySelector("#wake-lock-status"),
   panelPadding: document.querySelector("#panel-padding"),
   panelPaddingValue: document.querySelector("#panel-padding-value"),
   toggleFit: document.querySelector("#toggle-fit"),
@@ -362,6 +366,8 @@ const el = {
   comickCount: document.querySelector("#comick-count"),
 };
 
+const readerIsolationPrevious = new Map();
+
 const state = {
   baseUrl: "http://localhost:4567",
   sources: [],
@@ -405,10 +411,24 @@ const state = {
   mangaModelAvailable: null,
   navigationPending: false,
   navigationRequestId: 0,
+  navigationController: null,
   navigationCooldownUntil: 0,
   panelMoveQueue: [],
   panelMoveQueueRunning: false,
   cameraFitFrame: 0,
+  viewportFitTimer: 0,
+  keepScreenAwake: true,
+  wakeLockSentinel: null,
+  wakeLockRequest: null,
+  wakeLockEpoch: 0,
+  wakeLockBlocked: false,
+  readerVisibleController: null,
+  readerVisibilityEpoch: 0,
+  backgroundWorkController: null,
+  backgroundPreparationPromise: null,
+  readerResumePromise: null,
+  readerLifecyclePaused: false,
+  renderValidationPromise: null,
   progressPersistTimer: 0,
   progressPersistIdleCallback: 0,
   pagePreparationDurations: [],
@@ -419,6 +439,7 @@ const state = {
     queuedPanelMoves: 0,
     maxPanelMoveQueue: 0,
     lastPreparationMs: 0,
+    detectorRuns: 0,
   },
   readerFocus: false,
   readerChromeVisible: true,
@@ -474,6 +495,7 @@ const state = {
   setupReturnToBrowse: false,
   cameraPageChanged: false,
   readerModalReturnFocus: null,
+  readerModalReturnFocusSelector: "",
   initialRoute: null,
 };
 
@@ -499,6 +521,7 @@ function loadSettings() {
     if (["smooth", "quick", "instant"].includes(saved.readerMotion)) state.readerMotion = saved.readerMotion;
     if (libraryFilterValues.includes(saved.libraryFilter)) state.libraryFilter = saved.libraryFilter;
     if (Number.isFinite(saved.panelPadding)) state.panelPadding = clamp(saved.panelPadding, 0, 25);
+    if (typeof saved.keepScreenAwake === "boolean") state.keepScreenAwake = saved.keepScreenAwake;
   } catch {
     // Ignore malformed local storage.
   }
@@ -514,6 +537,7 @@ function loadSettings() {
   updateCollapsiblePanel(el.browseBody, el.toggleBrowsePanel, state.browseOpen);
   updateSuwayomiLink();
   if (el.panelPadding) el.panelPadding.value = String(state.panelPadding);
+  if (el.keepScreenAwake) el.keepScreenAwake.checked = state.keepScreenAwake;
   updatePaddingControl();
   updatePanelModeControls();
   applyReaderMotion();
@@ -531,6 +555,7 @@ function saveSettings() {
       readerMotion: state.readerMotion,
       libraryFilter: state.libraryFilter,
       panelPadding: state.panelPadding,
+      keepScreenAwake: state.keepScreenAwake,
       suwayomiSetupOpen: state.suwayomiSetupOpen,
       showNsfwSources: state.showNsfwSources,
       showHiddenLibrary: state.showHiddenLibrary,
@@ -644,12 +669,17 @@ function setActiveView(view, options = {}) {
 
   if (view === "reader") {
     setReaderFocus(isReaderFocusAvailable());
+    void resumeReaderLifecycle();
   } else {
     setReaderFocus(false);
+    pauseReaderBackgroundWork();
+    trimReaderMemory({ aggressive: true });
+    void releaseReaderWakeLock();
   }
   requestAnimationFrame(() => {
     if (view !== "reader") window.scrollTo({ top: state.viewScrollPositions[view] || 0 });
     scheduleCameraFit();
+    if (view !== "reader") restoreReaderModalFocus();
   });
   saveSettings();
   if (options.history !== false) {
@@ -660,6 +690,7 @@ function setActiveView(view, options = {}) {
 function leaveReaderView() {
   abortActiveReaderLoad();
   cancelReaderNavigation();
+  closeReaderOverlaysForExit();
   if (!state.historyApplying && window.history.state?.panelPilot && window.history.state.view === "reader") {
     window.history.back();
     return;
@@ -868,6 +899,98 @@ function showOfflineNetworkStatus() {
   );
 }
 
+function readerIsVisible() {
+  return !state.readerLifecyclePaused && document.visibilityState !== "hidden";
+}
+
+function wakeLockShouldBeActive() {
+  return state.keepScreenAwake && readerIsVisible() && state.activeView === "reader" && state.pages.length > 0;
+}
+
+function renderWakeLockState(message = "") {
+  if (el.keepScreenAwake) el.keepScreenAwake.checked = state.keepScreenAwake;
+  if (!el.wakeLockStatus) return;
+  if (message) {
+    el.wakeLockStatus.textContent = message;
+  } else if (!state.keepScreenAwake) {
+    el.wakeLockStatus.textContent = "Screen wake lock is off.";
+  } else if (!("wakeLock" in navigator)) {
+    el.wakeLockStatus.textContent = "Screen wake lock is unavailable in this browser.";
+  } else if (state.wakeLockSentinel) {
+    el.wakeLockStatus.textContent = "Screen will stay awake while reading.";
+  } else if (state.wakeLockBlocked) {
+    el.wakeLockStatus.textContent = "Screen wake lock was released by the device. It will retry when reading resumes.";
+  } else {
+    el.wakeLockStatus.textContent = "Screen wake lock is ready while reading.";
+  }
+}
+
+async function releaseReaderWakeLock() {
+  const sentinel = state.wakeLockSentinel;
+  state.wakeLockEpoch += 1;
+  state.wakeLockSentinel = null;
+  state.wakeLockRequest = null;
+  if (sentinel && !sentinel.released) {
+    try {
+      await sentinel.release();
+    } catch {
+      // The platform may already have released it during page suspension.
+    }
+  }
+  renderWakeLockState();
+}
+
+async function syncReaderWakeLock({ userInitiated = false } = {}) {
+  if (!wakeLockShouldBeActive()) {
+    await releaseReaderWakeLock();
+    return null;
+  }
+  if (userInitiated) state.wakeLockBlocked = false;
+  if (state.wakeLockSentinel && !state.wakeLockSentinel.released) return state.wakeLockSentinel;
+  if (state.wakeLockRequest) return state.wakeLockRequest;
+  if (!navigator.wakeLock?.request || state.wakeLockBlocked) {
+    renderWakeLockState();
+    return null;
+  }
+
+  const epoch = state.wakeLockEpoch + 1;
+  state.wakeLockEpoch = epoch;
+  const request = navigator.wakeLock.request("screen")
+    .then((sentinel) => {
+      if (epoch !== state.wakeLockEpoch || !wakeLockShouldBeActive()) {
+        void sentinel.release().catch(() => null);
+        return null;
+      }
+      state.wakeLockSentinel = sentinel;
+      sentinel.addEventListener("release", () => {
+        if (state.wakeLockSentinel !== sentinel) return;
+        state.wakeLockSentinel = null;
+        if (wakeLockShouldBeActive()) state.wakeLockBlocked = true;
+        renderWakeLockState();
+      }, { once: true });
+      renderWakeLockState();
+      return sentinel;
+    })
+    .catch((error) => {
+      if (epoch === state.wakeLockEpoch) state.wakeLockBlocked = true;
+      renderWakeLockState(`Screen wake lock could not start: ${friendlySourceErrorMessage(error)}`);
+      return null;
+    })
+    .finally(() => {
+      if (state.wakeLockRequest === request) state.wakeLockRequest = null;
+    });
+  state.wakeLockRequest = request;
+  return request;
+}
+
+function setKeepScreenAwake(enabled) {
+  state.keepScreenAwake = Boolean(enabled);
+  state.wakeLockBlocked = false;
+  saveSettings();
+  renderWakeLockState();
+  void syncReaderWakeLock({ userInitiated: true });
+}
+
 function showReconnectingNetworkStatus() {
   setNetworkStatus(
     "reconnecting",
@@ -1050,9 +1173,24 @@ function mangaBakaTitle(series) {
   return english?.title || mangaBakaTitles(series)[0] || series?.title || "Untitled manga";
 }
 
+function mangaBakaImageUrl(candidate) {
+  if (typeof candidate === "string") return candidate.trim();
+  if (!candidate || typeof candidate !== "object") return "";
+  for (const key of ["x1", "x2", "x3", "url", "src"]) {
+    const url = mangaBakaImageUrl(candidate[key]);
+    if (url) return url;
+  }
+  return "";
+}
+
 function mangaBakaCover(series) {
-  const cover = series?.cover_image || series?.cover || {};
-  return cover.x250 || cover.x350 || cover.x150 || cover.raw || "";
+  for (const cover of [series?.cover_image, series?.cover]) {
+    for (const candidate of [cover?.x250, cover?.x350, cover?.x150, cover?.raw, cover]) {
+      const url = mangaBakaImageUrl(candidate);
+      if (url) return url;
+    }
+  }
+  return mangaBakaImageUrl(series?.cover_url) || mangaBakaImageUrl(series?.thumbnail_url);
 }
 
 function mangaBakaReason(series) {
@@ -1508,11 +1646,34 @@ function normalizeSuwayomiPageUrl(url, baseUrlOverride = "") {
 
 function setReaderLoading(active, text = "Loading chapter...", progress = 12) {
   if (!el.readerLoading) return;
+  const wasActive = el.readerLoading.classList.contains("active");
+  if (active && !wasActive) {
+    rememberReaderModalFocus();
+    hideReaderModalsExcept();
+  }
+  const normalizedProgress = Math.round(clamp(progress, 0, 100));
   el.readerLoading.classList.toggle("active", active);
   el.readerLoading.setAttribute("aria-hidden", active ? "false" : "true");
+  el.stage?.setAttribute("aria-busy", active || state.navigationPending ? "true" : "false");
   if (el.readerLoadingText) el.readerLoadingText.textContent = text;
   if (el.readerLoadingBar) {
-    el.readerLoadingBar.style.setProperty("--reader-loading-progress", `${clamp(progress, 0, 100)}%`);
+    el.readerLoadingBar.style.setProperty("--reader-loading-progress", `${normalizedProgress}%`);
+    const track = el.readerLoadingBar.closest(".reader-loading-bar-track") || el.readerLoadingBar.parentElement;
+    track?.setAttribute("role", "progressbar");
+    track?.setAttribute("aria-valuemin", "0");
+    track?.setAttribute("aria-valuemax", "100");
+    track?.setAttribute("aria-valuenow", String(normalizedProgress));
+    track?.setAttribute("aria-valuetext", active ? `${text} ${normalizedProgress}%` : "Reader loading complete");
+  }
+  syncReaderInteractionIsolation();
+  if (active && !wasActive) {
+    requestAnimationFrame(() => {
+      if (activeReaderOverlay() !== el.readerLoading) return;
+      const target = el.readerLoadingCancel?.hidden ? el.readerLoading : el.readerLoadingCancel;
+      target?.focus({ preventScroll: true });
+    });
+  } else if (!active && wasActive && !activeReaderOverlay()) {
+    restoreReaderModalFocus();
   }
 }
 
@@ -1566,22 +1727,119 @@ function activeReaderModal() {
   return null;
 }
 
+function readerModalElements() {
+  return [el.readerError, el.readerComplete, el.readerTapHint].filter(Boolean);
+}
+
+function hideReaderModalsExcept(modal = null) {
+  readerModalElements().forEach((item) => {
+    if (item !== modal) item.hidden = true;
+  });
+  if (modal !== el.readerError) state.readerErrorRetryAction = null;
+}
+
+function activeReaderOverlay() {
+  if (el.readerLoading?.classList.contains("active")) return el.readerLoading;
+  return activeReaderModal();
+}
+
+function syncReaderInteractionIsolation() {
+  const surface = activeReaderOverlay();
+  if (!surface) {
+    readerIsolationPrevious.forEach((wasInert, item) => {
+      item.inert = wasInert;
+    });
+    readerIsolationPrevious.clear();
+    return;
+  }
+
+  const appShell = el.readerView?.parentElement;
+  const readerChildren = [...(el.readerView?.children || [])];
+  const externalSurfaces = [
+    ...(appShell ? [...appShell.children].filter((item) => item !== el.readerView) : []),
+    ...[...document.body.children].filter((item) => item !== appShell && item.tagName !== "SCRIPT"),
+  ];
+  [...readerChildren, ...externalSurfaces].forEach((item) => {
+    if (!readerIsolationPrevious.has(item)) readerIsolationPrevious.set(item, item.inert);
+    item.inert = readerChildren.includes(item) ? item !== surface : true;
+  });
+}
+
+function closeReaderOverlaysForExit() {
+  if (el.readerLoading) {
+    el.readerLoading.classList.remove("active");
+    el.readerLoading.setAttribute("aria-hidden", "true");
+  }
+  hideReaderModalsExcept();
+  state.readerLoadingCancelAction = null;
+  el.stage?.setAttribute("aria-busy", "false");
+  syncReaderInteractionIsolation();
+}
+
+function openReaderModal(modal) {
+  if (!modal) return;
+  rememberReaderModalFocus();
+  if (el.readerLoading?.classList.contains("active")) {
+    el.readerLoading.classList.remove("active");
+    el.readerLoading.setAttribute("aria-hidden", "true");
+    el.stage?.setAttribute("aria-busy", state.navigationPending ? "true" : "false");
+  }
+  hideReaderModalsExcept(modal);
+  modal.hidden = false;
+  syncReaderInteractionIsolation();
+}
+
 function rememberReaderModalFocus() {
-  if (!state.readerModalReturnFocus) state.readerModalReturnFocus = document.activeElement;
+  if (state.readerModalReturnFocus) return;
+  state.readerModalReturnFocus = document.activeElement;
+  const target = state.readerModalReturnFocus;
+  const chapterAction = target?.dataset?.chapterAction;
+  const chapterId = target?.closest?.("[data-chapter-id]")?.dataset?.chapterId;
+  if (chapterAction && chapterId) {
+    state.readerModalReturnFocusSelector = `[data-chapter-id="${CSS.escape(chapterId)}"] [data-chapter-action="${CSS.escape(chapterAction)}"]`;
+  } else if (target?.id) {
+    state.readerModalReturnFocusSelector = `#${CSS.escape(target.id)}`;
+  } else {
+    state.readerModalReturnFocusSelector = "";
+  }
 }
 
 function restoreReaderModalFocus() {
-  const target = state.readerModalReturnFocus;
-  state.readerModalReturnFocus = null;
-  if (target?.isConnected) target.focus({ preventScroll: true });
-  else el.stage?.focus({ preventScroll: true });
+  if (activeReaderOverlay()) return;
+  let target = state.readerModalReturnFocus;
+  if ((!target?.isConnected || !target.getClientRects?.().length) && state.readerModalReturnFocusSelector) {
+    target = document.querySelector(state.readerModalReturnFocusSelector) || target;
+  }
+  const targetIsVisible = Boolean(
+    target?.isConnected &&
+    !target.closest?.("[hidden], [inert]") &&
+    target.getClientRects?.().length
+  );
+  if (targetIsVisible) {
+    state.readerModalReturnFocus = null;
+    state.readerModalReturnFocusSelector = "";
+    target.focus({ preventScroll: true });
+    return;
+  }
+  // A cancelled chapter load can reveal its initiating view asynchronously via
+  // history navigation. Keep the original target until setActiveView makes it
+  // visible, while ensuring the current reader never loses keyboard focus.
+  if (state.activeView === "reader") el.stage?.focus({ preventScroll: true });
+  else if (!state.readerModalReturnFocusSelector) {
+    state.readerModalReturnFocus = null;
+    state.readerModalReturnFocusSelector = "";
+  }
 }
 
 function trapReaderModalFocus(event, modal) {
   if (event.key !== "Tab" || !modal) return false;
   const focusable = [...modal.querySelectorAll("button:not([disabled]):not([hidden]), a[href], input:not([disabled]), [tabindex]:not([tabindex='-1'])")]
     .filter((item) => item.getClientRects().length);
-  if (!focusable.length) return false;
+  if (!focusable.length) {
+    event.preventDefault();
+    modal.focus?.({ preventScroll: true });
+    return true;
+  }
   const first = focusable[0];
   const last = focusable[focusable.length - 1];
   if (event.shiftKey && document.activeElement === first) {
@@ -3160,18 +3418,18 @@ async function syncLibraryAndProgress() {
 function hideReaderError({ restoreFocus = true } = {}) {
   if (el.readerError) el.readerError.hidden = true;
   state.readerErrorRetryAction = null;
+  syncReaderInteractionIsolation();
   if (restoreFocus) restoreReaderModalFocus();
 }
 
 function hideReaderComplete({ restoreFocus = true } = {}) {
   if (el.readerComplete) el.readerComplete.hidden = true;
+  syncReaderInteractionIsolation();
   if (restoreFocus) restoreReaderModalFocus();
 }
 
 function showReaderError(title, message, retryAction = null) {
   if (!el.readerError) return;
-  hideReaderComplete({ restoreFocus: false });
-  rememberReaderModalFocus();
   el.readerErrorTitle.textContent = title;
   el.readerErrorMessage.textContent = message;
   state.readerErrorRetryAction = typeof retryAction === "function" ? retryAction : null;
@@ -3179,8 +3437,9 @@ function showReaderError(title, message, retryAction = null) {
     const destination = state.previousView === "browse" ? "Browse" : state.previousView === "settings" ? "Settings" : "Library";
     el.readerErrorBack.textContent = `Back to ${destination}`;
   }
-  el.readerError.hidden = false;
+  openReaderModal(el.readerError);
   setReaderChromeVisible(true);
+  requestAnimationFrame(() => el.readerErrorRetry?.focus({ preventScroll: true }));
 }
 
 async function retryReaderError() {
@@ -3203,14 +3462,12 @@ async function retryReaderError() {
 
 function showReaderComplete(message = "There isn’t another chapter ready from this release group.") {
   if (!el.readerComplete) return;
-  hideReaderError({ restoreFocus: false });
-  rememberReaderModalFocus();
   el.readerCompleteMessage.textContent = message;
   const isSuwayomi = state.activeChapter?.type === "suwayomi";
   const hasNextChapter = isSuwayomi && Boolean(nextSuwayomiChapterAfter(state.activeChapter.chapterId));
   el.readerCompleteNext.hidden = !hasNextChapter;
   if (el.readerCompleteRefresh) el.readerCompleteRefresh.hidden = !isSuwayomi || hasNextChapter;
-  el.readerComplete.hidden = false;
+  openReaderModal(el.readerComplete);
   setReaderChromeVisible(true);
   el.readerCompleteChapters?.focus({ preventScroll: true });
 }
@@ -3222,14 +3479,14 @@ function showReaderTapHintOnce() {
   } catch {
     return;
   }
-  rememberReaderModalFocus();
-  el.readerTapHint.hidden = false;
+  openReaderModal(el.readerTapHint);
   setReaderChromeVisible(true);
   el.readerTapHintClose?.focus({ preventScroll: true });
 }
 
 function dismissReaderTapHint() {
   if (el.readerTapHint) el.readerTapHint.hidden = true;
+  syncReaderInteractionIsolation();
   restoreReaderModalFocus();
   try {
     localStorage.setItem(tapHintStoreKey, "1");
@@ -3703,9 +3960,81 @@ async function ensureDownloadAhead(chapterId) {
   }
 }
 
-function clearNextChapterPrefetch() {
+function releaseDecodedImage(image) {
+  if (!image) return;
+  image.onload = null;
+  image.onerror = null;
+  try {
+    image.src = "";
+  } catch {
+    // Some test doubles and already-detached images expose a readonly source.
+  }
+}
+
+function releaseReaderPageImages(pages, { preservePage = null } = {}) {
+  (pages || []).forEach((page) => {
+    if (!page || page === preservePage) return;
+    if (page.image) releaseDecodedImage(page.image);
+    page.image = null;
+    if (Array.isArray(page.sourceImages)) {
+      page.sourceImages.forEach((item) => releaseDecodedImage(item?.image));
+      page.sourceImages = [];
+    }
+    page.renderRecoveryController?.abort(readerAbortError("Chapter image was released."));
+    page.renderRecoveryController = null;
+    page.renderRecoveryPromise = null;
+  });
+}
+
+function readerDecodedImageCap() {
+  const memory = Number(navigator.deviceMemory || 4);
+  const connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+  if (connection?.saveData || memory <= 2) return 2;
+  if (memory <= 4) return 3;
+  return 5;
+}
+
+function trimReaderMemory({ aggressive = false } = {}) {
+  const cap = aggressive ? 1 : readerDecodedImageCap();
+  const keep = new Set([state.pageIndex]);
+  for (let distance = 1; keep.size < cap; distance += 1) {
+    const next = state.pageIndex + distance;
+    const previous = state.pageIndex - distance;
+    if (next < state.pages.length) keep.add(next);
+    if (keep.size < cap && previous >= 0) keep.add(previous);
+    if (next >= state.pages.length && previous < 0) break;
+  }
+  state.pages.forEach((page, index) => {
+    if (page?.stripImages) {
+      trimWebtoonSourceImages(page, { aggressive });
+      return;
+    }
+    if (keep.has(index)) return;
+    if (page?.image) releaseDecodedImage(page.image);
+    if (page) page.image = null;
+  });
+  return {
+    cap,
+    retained: state.pages.reduce((count, page) => count + (page?.image ? 1 : 0), 0),
+    metadataPages: state.pages.filter((page) => page?.detected).length,
+  };
+}
+
+function releasePrefetchedChapter(record) {
+  if (!record) return;
+  record.controller?.abort(readerAbortError("Chapter prefetch was cancelled."));
+  const prepared = record.preparedValue;
+  if (prepared?.preparedPages) releaseReaderPageImages(prepared.preparedPages);
+  else if (record.preparedPages) releaseReaderPageImages(record.preparedPages);
+  if (prepared?.firstImage && !prepared.preparedPages?.some((page) => page.image === prepared.firstImage)) {
+    releaseDecodedImage(prepared.firstImage);
+  }
+}
+
+function clearNextChapterPrefetch({ release = true } = {}) {
   window.clearTimeout(state.nextChapterPrefetchTimer);
   state.nextChapterPrefetchTimer = null;
+  if (release) releasePrefetchedChapter(state.nextChapterPrefetch);
   state.nextChapterPrefetch = null;
 }
 
@@ -3739,6 +4068,9 @@ function scheduleNextChapterPrefetch(generation = state.prepareGeneration, delay
     urlsReady: false,
     firstImageReady: false,
     firstPanelReady: false,
+    controller: new AbortController(),
+    preparedValue: null,
+    preparedPages: null,
   };
   state.nextChapterPrefetch = record;
   state.nextChapterPrefetchTimer = window.setTimeout(() => {
@@ -3755,6 +4087,7 @@ function startNextChapterPrefetch(record) {
   record.promise = prefetchSuwayomiChapter(record)
     .then((prepared) => {
       record.status = prepared ? "ready" : "stale";
+      record.preparedValue = prepared;
       return prepared;
     })
     .catch((error) => {
@@ -3766,7 +4099,8 @@ function startNextChapterPrefetch(record) {
 }
 
 async function prefetchSuwayomiChapter(record) {
-  const data = await fetchChapterPagePayload(record.chapterId, { baseUrl: record.serverUrl });
+  const signal = record.controller?.signal;
+  const data = await fetchChapterPagePayload(record.chapterId, { baseUrl: record.serverUrl, signal });
   if (state.nextChapterPrefetch !== record || record.generation !== state.prepareGeneration) return null;
   const chapterPayload = data.fetchChapterPages?.chapter;
   const sourcePages = await resolveChapterPages(data.fetchChapterPages, { quiet: true });
@@ -3774,9 +4108,18 @@ async function prefetchSuwayomiChapter(record) {
   const pageUrls = sourcePages.map((pageUrl) => normalizeSuwayomiPageUrl(pageUrl, record.serverUrl));
   record.urlsReady = true;
   const entries = makeChapterPageEntries(pageUrls);
-  const firstImage = await loadImage(pageUrls[0]);
+  record.preparedPages = entries;
+  const firstImage = await loadImage(pageUrls[0], { signal });
   record.firstImageReady = true;
-  if (state.nextChapterPrefetch !== record || record.generation !== state.prepareGeneration) return null;
+  const isCurrent = () => (
+    state.nextChapterPrefetch === record &&
+    record.generation === state.prepareGeneration &&
+    !signal?.aborted
+  );
+  if (!isCurrent()) {
+    releaseDecodedImage(firstImage);
+    return null;
+  }
   const mode = detectPanelModeFromImage(firstImage, activeChapterSourceLabel()) || state.panelMode;
 
   if (mode !== "webtoon") {
@@ -3785,6 +4128,8 @@ async function prefetchSuwayomiChapter(record) {
       direction: state.readingDirection,
       quiet: true,
       image: firstImage,
+      signal,
+      isCurrent,
     });
     record.firstPanelReady = true;
     const rest = entries.slice(1, nextChapterPreparedPageCount);
@@ -3793,6 +4138,8 @@ async function prefetchSuwayomiChapter(record) {
         mode,
         direction: state.readingDirection,
         quiet: true,
+        signal,
+        isCurrent,
       }).catch(() => null);
       page.preparePromise = preparation;
       page.preparePromiseMode = mode;
@@ -4958,6 +5305,7 @@ function renderChapters() {
     if (!replacement && focusedAction === "pause") replacement = row?.querySelector('[data-device-action="download"]');
     replacement?.focus({ preventScroll: true });
   }
+  if (state.readerModalReturnFocusSelector) requestAnimationFrame(restoreReaderModalFocus);
 }
 
 async function loadChapterPages(options = {}) {
@@ -4976,6 +5324,7 @@ async function loadChapterPages(options = {}) {
   state.readerLoadController = loadController;
   const loadIsCurrent = () => loadRequestId === state.readerLoadRequestId && !loadController.signal.aborted;
 
+  rememberReaderModalFocus();
   setActiveView("reader");
   hideReaderError();
   setReaderChromeVisible(true);
@@ -5013,7 +5362,7 @@ async function loadChapterPages(options = {}) {
     await loadChapter(
       pages.map((pageUrl) => normalizeSuwayomiPageUrl(pageUrl, serverUrl)),
       el.chapterTitle.textContent || listedChapter?.name || chapter?.name || `Chapter ${chapterId}`,
-      { requestIsCurrent: loadIsCurrent }
+      { requestIsCurrent: loadIsCurrent, signal: loadController.signal }
     );
     if (!loadIsCurrent()) return;
     rememberReadingProgress();
@@ -5072,7 +5421,8 @@ async function loadChapter(pageUrls, title, options = {}) {
   state.prepareGeneration = generation;
   const loadIsCurrent = () => generation === state.prepareGeneration && requestIsCurrent();
   cancelReaderNavigation();
-  clearNextChapterPrefetch();
+  clearNextChapterPrefetch({ release: !Array.isArray(options.preparedPages) });
+  pauseReaderBackgroundWork();
   hideReaderError();
   hideReaderComplete();
   setActiveView("reader");
@@ -5095,7 +5445,7 @@ async function loadChapter(pageUrls, title, options = {}) {
       : 0;
     const initialImage = preparedPages?.[initialPageIndex]?.image ||
       (initialPageIndex === 0 ? options.firstImage : null) ||
-      await loadImage(pageUrls[initialPageIndex]);
+      await loadImage(pageUrls[initialPageIndex], { signal: options.signal });
     if (!loadIsCurrent()) return;
     autoSelectPanelMode(initialImage);
     if (
@@ -5113,23 +5463,26 @@ async function loadChapter(pageUrls, title, options = {}) {
         page.url === pageUrls[index] &&
         (!page.detected || (page.panelMode === state.panelMode && page.readingDirection === state.readingDirection))
       ));
+    const previousPages = state.pages;
     state.pages = state.panelMode === "webtoon"
       ? []
       : reusablePreparedPages
         ? preparedPages
         : makeChapterPageEntries(pageUrls);
+    if (previousPages !== state.pages) releaseReaderPageImages(previousPages);
 
     if (state.panelMode === "webtoon") {
       state.pages = [
         await prepareContinuousWebtoonChapter(pageUrls, generation, {
           initialCount: 2,
           initialImages: initialPageIndex === 0 ? [{ url: pageUrls[0], image: initialImage }] : [],
+          signal: options.signal,
         }),
       ];
       if (!loadIsCurrent()) return;
     } else {
       setReaderLoading(true, `Preparing page ${initialPageIndex + 1} of ${state.pages.length}...`, 44);
-      await preparePage(initialPageIndex, { generation, image: initialImage, isCurrent: requestIsCurrent });
+      await preparePage(initialPageIndex, { generation, image: initialImage, isCurrent: requestIsCurrent, signal: options.signal });
       if (!loadIsCurrent()) return;
     }
     await applyPendingResume(generation, requestIsCurrent);
@@ -5140,10 +5493,11 @@ async function loadChapter(pageUrls, title, options = {}) {
     renderPanelStrip();
     updateStats();
     if (state.panelMode === "webtoon") {
-      prepareWebtoonChapterInBackground(generation);
+      startReaderBackgroundPreparation(generation);
     } else {
-      prepareChapterInBackground(generation);
+      startReaderBackgroundPreparation(generation);
     }
+    void syncReaderWakeLock();
     if (isReaderFocusAvailable()) {
       setReaderFocus(true);
       setReaderChromeVisible(false);
@@ -5251,13 +5605,27 @@ async function preparePage(index, options = {}) {
   const generation = typeof options === "object" ? options.generation : state.prepareGeneration;
   const foreground = typeof options === "object" && Boolean(options.foreground);
   const preloadedImage = typeof options === "object" ? options.image : null;
+  const signal = typeof options === "object" ? options.signal || null : null;
   const requestIsCurrent = typeof options === "object" && typeof options.isCurrent === "function"
     ? options.isCurrent
     : () => true;
   const preparationIsCurrent = () => generation === state.prepareGeneration && requestIsCurrent();
   if (!preparationIsCurrent()) return null;
   const page = state.pages[index];
-  if (!page || (page.detected && page.panelMode === state.panelMode && page.readingDirection === state.readingDirection && !force)) return page;
+  const metadataReady = page?.detected && page.panelMode === state.panelMode && page.readingDirection === state.readingDirection;
+  if (!page) return null;
+  if (metadataReady && page.image && !force) return page;
+  if (metadataReady && !page.image && !force) {
+    const image = preloadedImage || await loadImage(page.url, { signal });
+    if (!preparationIsCurrent()) {
+      releaseDecodedImage(image);
+      return null;
+    }
+    page.image = image;
+    page.renderUrl = image.currentSrc || image.src || page.url;
+    page.loadAttempts = image.panelPilotLoadAttempts || page.loadAttempts || 1;
+    return page;
+  }
   if (foreground && !page.preparePromise) {
     page.backgroundAttempts = 0;
     page.backgroundRetryAt = 0;
@@ -5275,6 +5643,7 @@ async function preparePage(index, options = {}) {
     direction: state.readingDirection,
     quiet,
     image: preloadedImage,
+    signal,
     isCurrent: preparationIsCurrent,
   }).then((preparedPage) => preparationIsCurrent() ? preparedPage : null);
   page.preparePromise = preparation;
@@ -5301,8 +5670,11 @@ async function preparePageEntry(page, index, totalPages, options = {}) {
   const baseProgress = index === 0 ? 46 : 18;
   if (!isCurrent()) return null;
   if (!quiet) setReaderLoading(true, `Loading image for ${pageLabel}...`, baseProgress);
-  const image = options.image || page.image || await loadImage(page.url);
-  if (!isCurrent()) return null;
+  const image = options.image || page.image || await loadImage(page.url, { signal: options.signal });
+  if (!isCurrent()) {
+    releaseDecodedImage(image);
+    return null;
+  }
   const naturalWidth = image.naturalWidth;
   const naturalHeight = image.naturalHeight;
   const modeLabel = mode === "webtoon" ? "Detecting webtoon panels" : mode === "comic" ? "Detecting comic regions" : "Detecting panels";
@@ -5313,7 +5685,11 @@ async function preparePageEntry(page, index, totalPages, options = {}) {
       : mode === "comic"
         ? await detectComicPanels(image, direction).catch(() => [fullPagePanel(naturalWidth, naturalHeight)])
         : await detectPanels(image, direction, page.url).catch(() => [fullPagePanel(naturalWidth, naturalHeight)]);
-  if (!isCurrent()) return null;
+  state.performanceStats.detectorRuns += 1;
+  if (!isCurrent()) {
+    releaseDecodedImage(image);
+    return null;
+  }
   if (!quiet) setReaderLoading(true, `Finishing ${pageLabel}...`, 88);
   page.loadAttempts = image.panelPilotLoadAttempts || 1;
   page.image = image;
@@ -5331,7 +5707,106 @@ async function preparePageEntry(page, index, totalPages, options = {}) {
   return page;
 }
 
-async function prepareChapterInBackground(generation = state.prepareGeneration) {
+function pauseReaderBackgroundWork() {
+  window.clearTimeout(state.backgroundPreparationTimer);
+  state.backgroundPreparationTimer = 0;
+  state.backgroundPreparationId += 1;
+  state.backgroundWorkController?.abort(readerAbortError("Reader background work paused."));
+  state.backgroundWorkController = null;
+  state.backgroundPreparing = false;
+}
+
+function resetReaderVisibilityController() {
+  if (state.readerVisibleController && !state.readerVisibleController.signal.aborted) return state.readerVisibleController;
+  state.readerVisibleController = new AbortController();
+  state.readerVisibilityEpoch += 1;
+  return state.readerVisibleController;
+}
+
+function ensureActiveReaderModalFocus() {
+  const modal = activeReaderOverlay();
+  if (!modal || modal.contains(document.activeElement)) return;
+  const target = modal.querySelector("button:not([disabled]):not([hidden]), a[href], input:not([disabled]), [tabindex]:not([tabindex='-1'])");
+  (target || modal).focus?.({ preventScroll: true });
+}
+
+function pauseReaderLifecycle({ pageHiding = false } = {}) {
+  state.readerLifecyclePaused = true;
+  state.readerVisibilityEpoch += 1;
+  if (state.readerVisibleController && !state.readerVisibleController.signal.aborted) {
+    state.readerVisibleController.abort(visibilityInterruptedError());
+  }
+  state.readerVisibleController = null;
+  pauseReaderBackgroundWork();
+  clearNextChapterPrefetch();
+  trimReaderMemory({ aggressive: true });
+  flushScheduledReadingProgress();
+  persistSuwayomiProgressOutbox();
+  persistMangaBakaOutbox();
+  void releaseReaderWakeLock();
+  if (pageHiding) state.readerResumePromise = null;
+}
+
+function resumeReaderLifecycle() {
+  if (!readerIsVisible()) return Promise.resolve(false);
+  resetReaderVisibilityController();
+  const visibilityEpoch = state.readerVisibilityEpoch;
+  state.wakeLockBlocked = false;
+  scheduleViewportFit();
+  ensureActiveReaderModalFocus();
+  void syncReaderWakeLock();
+  if (state.readerResumePromise) return state.readerResumePromise;
+  const previous = state.backgroundPreparationPromise;
+  const resume = Promise.resolve(previous)
+    .catch(() => null)
+    .then(async () => {
+      if (visibilityEpoch !== state.readerVisibilityEpoch || !readerIsVisible() || state.activeView !== "reader" || !state.pages.length) return false;
+      await validateCurrentReaderRender();
+      if (visibilityEpoch !== state.readerVisibilityEpoch || !readerIsVisible() || state.activeView !== "reader") return false;
+      startReaderBackgroundPreparation(state.prepareGeneration);
+      return true;
+    })
+    .finally(() => {
+      if (state.readerResumePromise === resume) state.readerResumePromise = null;
+    });
+  state.readerResumePromise = resume;
+  return resume;
+}
+
+function handleReaderVisibilityChange() {
+  if (document.visibilityState === "hidden") {
+    pauseReaderLifecycle();
+    return;
+  }
+  state.readerLifecyclePaused = false;
+  void resumeReaderLifecycle();
+}
+
+function startReaderBackgroundPreparation(generation = state.prepareGeneration) {
+  if (!readerIsVisible() || state.activeView !== "reader" || generation !== state.prepareGeneration || !state.pages.length) {
+    return null;
+  }
+  if (state.backgroundPreparing && state.backgroundPreparationPromise) return state.backgroundPreparationPromise;
+  const controller = new AbortController();
+  state.backgroundWorkController = controller;
+  const task = state.panelMode === "webtoon"
+    ? prepareWebtoonChapterInBackground(generation, controller.signal)
+    : prepareChapterInBackground(generation, controller.signal);
+  state.backgroundPreparationPromise = Promise.resolve(task)
+    .catch((error) => {
+      if (!isAbortLike(error) && error?.name !== "ReaderVisibilityInterrupted") console.warn("Reader background preparation failed", error);
+      return null;
+    })
+    .finally(() => {
+      if (state.backgroundPreparationPromise === task || state.backgroundWorkController === controller) {
+        if (state.backgroundWorkController === controller) state.backgroundWorkController = null;
+        state.backgroundPreparationPromise = null;
+      }
+    });
+  return state.backgroundPreparationPromise;
+}
+
+async function prepareChapterInBackground(generation = state.prepareGeneration, signal = null) {
   window.clearTimeout(state.backgroundPreparationTimer);
   state.backgroundPreparationTimer = 0;
   const preparationId = state.backgroundPreparationId + 1;
@@ -5339,7 +5814,7 @@ async function prepareChapterInBackground(generation = state.prepareGeneration) 
   state.backgroundPreparing = true;
   try {
     let nextChapterScheduled = false;
-    while (generation === state.prepareGeneration && preparationId === state.backgroundPreparationId) {
+    while (generation === state.prepareGeneration && preparationId === state.backgroundPreparationId && !signal?.aborted) {
       if (document.visibilityState === "hidden") return;
       const currentIndex = state.pageIndex;
       const lookahead = adaptiveLookaheadPageCount();
@@ -5348,7 +5823,7 @@ async function prepareChapterInBackground(generation = state.prepareGeneration) 
         .filter(({ page, index }) => (
           index > currentIndex &&
           index <= currentIndex + lookahead &&
-          !isPreparedReaderPage(page) &&
+          !isAnalyzedReaderPage(page) &&
           !page.backgroundFailed &&
           Number(page.backgroundRetryAt || 0) <= Date.now()
         ))
@@ -5356,13 +5831,13 @@ async function prepareChapterInBackground(generation = state.prepareGeneration) 
       if (!indexes.length) {
         const nextRetryAt = state.pages
           .slice(currentIndex + 1, currentIndex + lookahead + 1)
-          .filter((page) => !isPreparedReaderPage(page) && !page.backgroundFailed && Number(page.backgroundRetryAt || 0) > Date.now())
+          .filter((page) => !isAnalyzedReaderPage(page) && !page.backgroundFailed && Number(page.backgroundRetryAt || 0) > Date.now())
           .reduce((earliest, page) => Math.min(earliest, Number(page.backgroundRetryAt)), Infinity);
         if (Number.isFinite(nextRetryAt)) {
           state.backgroundPreparationTimer = window.setTimeout(() => {
             state.backgroundPreparationTimer = 0;
             if (generation === state.prepareGeneration && document.visibilityState !== "hidden") {
-              void prepareChapterInBackground(generation);
+              void startReaderBackgroundPreparation(generation);
             }
           }, Math.max(50, nextRetryAt - Date.now()));
         }
@@ -5372,11 +5847,12 @@ async function prepareChapterInBackground(generation = state.prepareGeneration) 
       await Promise.all(batch.map(async (index) => {
         const page = state.pages[index];
         try {
-          await preparePage(index, { quiet: true, generation });
+          await preparePage(index, { quiet: true, generation, signal });
           page.backgroundAttempts = 0;
           page.backgroundRetryAt = 0;
           page.backgroundFailed = false;
-        } catch {
+        } catch (error) {
+          if (signal?.aborted || isAbortLike(error) || error?.name === "ReaderVisibilityInterrupted") return;
           page.backgroundAttempts = Number(page.backgroundAttempts || 0) + 1;
           page.backgroundFailed = page.backgroundAttempts >= 2;
           page.backgroundRetryAt = Date.now() + (page.backgroundFailed ? 0 : 2000);
@@ -5384,7 +5860,8 @@ async function prepareChapterInBackground(generation = state.prepareGeneration) 
       }));
       if (generation !== state.prepareGeneration || preparationId !== state.backgroundPreparationId) return;
       renderPanelStrip();
-      if (!nextChapterScheduled && state.pages.slice(currentIndex + 1, currentIndex + 3).every(isPreparedReaderPage)) {
+      trimReaderMemory();
+      if (!nextChapterScheduled && state.pages.slice(currentIndex + 1, currentIndex + 3).every(isAnalyzedReaderPage)) {
         nextChapterScheduled = true;
         scheduleNextChapterPrefetch(generation, 250);
       }
@@ -5416,7 +5893,7 @@ function adaptivePreparationConcurrency() {
   return 2;
 }
 
-async function prepareWebtoonChapterInBackground(generation = state.prepareGeneration) {
+async function prepareWebtoonChapterInBackground(generation = state.prepareGeneration, signal = null) {
   if (state.backgroundPreparing) return;
   const page = state.pages[0];
   if (!page?.sourceImages) return;
@@ -5432,11 +5909,12 @@ async function prepareWebtoonChapterInBackground(generation = state.prepareGener
   scheduleNextChapterPrefetch(generation, 500);
   try {
     for (let index = Number(page.webtoonNextSourceIndex ?? page.sourceImages.length); index < state.chapterPageUrls.length; index += 1) {
-      if (generation !== state.prepareGeneration) return;
+      if (generation !== state.prepareGeneration || signal?.aborted || document.visibilityState === "hidden") return;
       let image = null;
       try {
-        image = await loadImage(state.chapterPageUrls[index]);
+        image = await loadImage(state.chapterPageUrls[index], { signal, retry: false });
       } catch (error) {
+        if (signal?.aborted || isAbortLike(error) || error?.name === "ReaderVisibilityInterrupted") return;
         page.webtoonBackgroundAttempts[index] = Number(page.webtoonBackgroundAttempts[index] || 0) + 1;
         if (page.webtoonBackgroundAttempts[index] >= 2) {
           page.webtoonFailedIndex = index;
@@ -5446,7 +5924,7 @@ async function prepareWebtoonChapterInBackground(generation = state.prepareGener
         state.backgroundPreparationTimer = window.setTimeout(() => {
           state.backgroundPreparationTimer = 0;
           if (generation === state.prepareGeneration && document.visibilityState !== "hidden") {
-            void prepareWebtoonChapterInBackground(generation);
+            void startReaderBackgroundPreparation(generation);
           }
         }, 2000);
         return;
@@ -5461,6 +5939,7 @@ async function prepareWebtoonChapterInBackground(generation = state.prepareGener
       page.webtoonFailedIndex = null;
       page.webtoonFailureMessage = "";
       Object.assign(page, buildContinuousWebtoonPage(state.chapterPageUrls, page.sourceImages));
+      trimWebtoonSourceImages(page);
       if (currentCenterY) state.panelIndex = nearestPanelIndexByY(page, currentCenterY);
       renderStripPage(page, { refit: false, contentExtended: true });
       renderPanelStrip();
@@ -5493,11 +5972,98 @@ function yieldToBrowser() {
 
 async function loadImage(src, options = {}) {
   const delays = options.retry === false ? [0] : pageImageRetryDelaysMs;
-  return withRetry(async (attempt) => {
-    const image = await loadImageAttempt(retryImageUrl(src, attempt), src, options.timeoutMs || 5000);
-    image.panelPilotLoadAttempts = attempt + 1;
-    return image;
-  }, delays);
+  const lifecycleAware = options.lifecycle !== false;
+  let lastError = null;
+  for (let attempt = 0; attempt < delays.length; attempt += 1) {
+    if (attempt > 0 && delays[attempt] > 0) await abortableDelay(delays[attempt], options.signal);
+    // A suspended iOS page can stop image events and timers. Wait for a visible
+    // lifecycle before each attempt, then repeat the same attempt if suspension
+    // interrupted it rather than counting that as a network failure.
+    while (true) {
+      if (lifecycleAware) await waitForReaderVisibility(options.signal);
+      const lifecycleSignal = lifecycleAware ? state.readerVisibleController?.signal : null;
+      try {
+        const image = await loadImageAttempt(
+          retryImageUrl(src, attempt),
+          src,
+          options.timeoutMs || 10000,
+          { signal: options.signal, lifecycleSignal }
+        );
+        image.panelPilotLoadAttempts = attempt + 1;
+        return image;
+      } catch (error) {
+        if (error?.name === "ReaderVisibilityInterrupted") {
+          await waitForReaderVisibility(options.signal);
+          continue;
+        }
+        if (isAbortLike(error)) throw error;
+        lastError = error;
+        break;
+      }
+    }
+  }
+  throw lastError || new Error(`Could not load image: ${src}`);
+}
+
+function isAbortLike(error) {
+  return error?.name === "AbortError" || error?.name === "ReaderLoadCancelled";
+}
+
+function readerAbortError(message = "Reader load was cancelled.") {
+  try {
+    return new DOMException(message, "AbortError");
+  } catch {
+    const error = new Error(message);
+    error.name = "AbortError";
+    return error;
+  }
+}
+
+function visibilityInterruptedError() {
+  const error = new Error("Reader image loading paused while the page was hidden.");
+  error.name = "ReaderVisibilityInterrupted";
+  return error;
+}
+
+function abortableDelay(delayMs, signal = null) {
+  if (signal?.aborted) return Promise.reject(signal.reason || readerAbortError());
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(finish, delayMs);
+    function finish() {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }
+    function abort() {
+      window.clearTimeout(timeout);
+      signal?.removeEventListener("abort", abort);
+      reject(signal.reason || readerAbortError());
+    }
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+}
+
+function waitForReaderVisibility(signal = null) {
+  if (signal?.aborted) return Promise.reject(signal.reason || readerAbortError());
+  if (document.visibilityState !== "hidden") return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      document.removeEventListener("visibilitychange", check);
+      window.removeEventListener("pageshow", check);
+      signal?.removeEventListener("abort", abort);
+    };
+    const check = () => {
+      if (document.visibilityState === "hidden") return;
+      cleanup();
+      resolve();
+    };
+    const abort = () => {
+      cleanup();
+      reject(signal.reason || readerAbortError());
+    };
+    document.addEventListener("visibilitychange", check);
+    window.addEventListener("pageshow", check);
+    signal?.addEventListener("abort", abort, { once: true });
+  });
 }
 
 function retryImageUrl(src, attempt) {
@@ -5512,16 +6078,61 @@ function retryImageUrl(src, attempt) {
   }
 }
 
-function loadImageAttempt(src, originalSrc, timeoutMs = 5000) {
+function loadImageAttempt(src, originalSrc, timeoutMs = 10000, { signal = null, lifecycleSignal = null } = {}) {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason || readerAbortError());
+      return;
+    }
+    if (lifecycleSignal?.aborted) {
+      reject(visibilityInterruptedError());
+      return;
+    }
     const needsCors = /^https?:/i.test(src) && !src.startsWith(location.origin);
     const candidates = needsCors ? ["anonymous", ""] : [""];
     let candidateIndex = 0;
+    let activeImage = null;
+    let timeout = 0;
+    let settled = false;
+
+    const cleanup = () => {
+      window.clearTimeout(timeout);
+      signal?.removeEventListener("abort", onAbort);
+      lifecycleSignal?.removeEventListener("abort", onLifecycleAbort);
+      if (activeImage) {
+        activeImage.onload = null;
+        activeImage.onerror = null;
+      }
+    };
+    const settle = (callback) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      callback();
+    };
+    const stopImage = () => {
+      if (!activeImage) return;
+      activeImage.onload = null;
+      activeImage.onerror = null;
+      activeImage.src = "";
+    };
+    const onAbort = () => {
+      stopImage();
+      settle(() => reject(signal?.reason || readerAbortError()));
+    };
+    const onLifecycleAbort = () => {
+      stopImage();
+      settle(() => reject(visibilityInterruptedError()));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    lifecycleSignal?.addEventListener("abort", onLifecycleAbort, { once: true });
 
     const tryCandidate = () => {
+      if (settled) return;
       const image = new Image();
+      activeImage = image;
       if (candidates[candidateIndex]) image.crossOrigin = candidates[candidateIndex];
-      const timeout = window.setTimeout(() => {
+      timeout = window.setTimeout(() => {
         image.onload = null;
         image.onerror = null;
         image.src = "";
@@ -5533,18 +6144,31 @@ function loadImageAttempt(src, originalSrc, timeoutMs = 5000) {
         image.onerror = null;
         callback();
       };
-      image.onload = () => finish(() => resolve(image));
+      image.onload = () => finish(async () => {
+        try {
+          if (typeof image.decode === "function") await image.decode();
+        } catch {
+          // Safari can reject decode() even after a usable onload. Natural
+          // dimensions are the authoritative fallback in that case.
+        }
+        if (!image.naturalWidth || !image.naturalHeight) {
+          tryNext(new Error(`Image decoded without dimensions: ${originalSrc}`));
+          return;
+        }
+        settle(() => resolve(image));
+      });
       image.onerror = () => finish(() => tryNext(new Error(`Could not load image: ${originalSrc}`)));
       image.src = src;
     };
 
     const tryNext = (error) => {
+      if (settled) return;
       candidateIndex += 1;
       if (candidateIndex < candidates.length) {
         tryCandidate();
         return;
       }
-      reject(error);
+      settle(() => reject(error));
     };
 
     tryCandidate();
@@ -5615,7 +6239,7 @@ function makeWebtoonPanels(image) {
 async function prepareContinuousWebtoonChapter(
   pageUrls,
   generation,
-  { initialCount = pageUrls.length, initialImages = [] } = {}
+  { initialCount = pageUrls.length, initialImages = [], signal = null } = {}
 ) {
   const images = initialImages.slice();
   const count = Math.min(pageUrls.length, Math.max(1, initialCount));
@@ -5623,22 +6247,28 @@ async function prepareContinuousWebtoonChapter(
     if (generation !== state.prepareGeneration) throw new Error("Chapter load was replaced.");
     const progress = 18 + Math.round((index / Math.max(1, count)) * 48);
     setReaderLoading(true, `Loading webtoon page ${index + 1} of ${pageUrls.length}...`, progress);
-    const image = await loadImage(pageUrls[index]);
+    const image = await loadImage(pageUrls[index], { signal });
     images.push({ url: pageUrls[index], image });
     await yieldToBrowser();
   }
 
   if (generation !== state.prepareGeneration) throw new Error("Chapter load was replaced.");
   setReaderLoading(true, "Detecting continuous webtoon panels...", 72);
-  return buildContinuousWebtoonPage(pageUrls, images);
+  const page = buildContinuousWebtoonPage(pageUrls, images);
+  trimWebtoonSourceImages(page);
+  return page;
 }
 
 function buildContinuousWebtoonPage(pageUrls, images) {
-  const stripWidth = Math.max(...images.map((item) => item.image.naturalWidth || item.image.width || 1));
+  images.forEach((item) => {
+    item.naturalWidth ||= item.image?.naturalWidth || item.image?.width || 1;
+    item.naturalHeight ||= item.image?.naturalHeight || item.image?.height || 1;
+  });
+  const stripWidth = Math.max(...images.map((item) => item.naturalWidth || 1));
   let stripY = 0;
   const stripImages = images.map((item, index) => {
-    const width = item.image.naturalWidth || item.image.width || stripWidth;
-    const height = item.image.naturalHeight || item.image.height || 1;
+    const width = item.naturalWidth || stripWidth;
+    const height = item.naturalHeight || 1;
     const scaledHeight = height * (stripWidth / width);
     const segment = {
       url: item.url,
@@ -5653,7 +6283,7 @@ function buildContinuousWebtoonPage(pageUrls, images) {
     return segment;
   });
 
-  const analysis = analyzeWebtoonRows(images.map((item) => item.image));
+  const analysis = analyzeWebtoonSourceRows(images);
   const panels = makeWebtoonPanelsFromRows(analysis.quietRows, analysis.activeRows, analysis.height, stripWidth, stripY);
 
   return {
@@ -5674,6 +6304,42 @@ function buildContinuousWebtoonPage(pageUrls, images) {
     webtoonFailedIndex: null,
     webtoonFailureMessage: "",
   };
+}
+
+function analyzeWebtoonSourceRows(items) {
+  const analysisWidth = 240;
+  const chunks = items.map((item) => {
+    if (item.analysisRows) return item.analysisRows;
+    if (!item.image) throw new Error("A released webtoon source is missing its row analysis.");
+    const width = item.naturalWidth || item.image.naturalWidth || item.image.width || 1;
+    const height = item.naturalHeight || item.image.naturalHeight || item.image.height || 1;
+    item.analysisRows = analyzeWebtoonImageRows(
+      item.image,
+      analysisWidth,
+      Math.max(1, Math.round((height / width) * analysisWidth))
+    );
+    return item.analysisRows;
+  });
+  const totalHeight = chunks.reduce((sum, chunk) => sum + chunk.height, 0);
+  const quietRows = new Uint8Array(totalHeight);
+  const activeRows = new Uint8Array(totalHeight);
+  let offset = 0;
+  chunks.forEach((chunk) => {
+    quietRows.set(chunk.quietRows, offset);
+    activeRows.set(chunk.activeRows, offset);
+    offset += chunk.height;
+  });
+  return { quietRows, activeRows, height: totalHeight };
+}
+
+function trimWebtoonSourceImages(page, { aggressive = false } = {}) {
+  if (!Array.isArray(page?.sourceImages)) return;
+  const cap = aggressive ? 1 : readerDecodedImageCap();
+  const resident = page.sourceImages.filter((item) => item?.image);
+  resident.slice(0, Math.max(0, resident.length - cap)).forEach((item) => {
+    releaseDecodedImage(item.image);
+    item.image = null;
+  });
 }
 
 function analyzeWebtoonRows(images) {
@@ -7413,6 +8079,7 @@ function renderCurrentPage() {
     el.stageStrip.hidden = true;
     el.stageStrip.replaceChildren();
     el.stageStrip.dataset.signature = "";
+    el.stageStrip.dataset.windowSignature = "";
   }
   const pageKey = `${state.pageIndex}:${page.url || page.renderUrl || "page"}`;
   const pageChanged = el.stageImage.dataset.pageKey !== pageKey;
@@ -7428,8 +8095,16 @@ function renderCurrentPage() {
 
 async function recoverRenderedPageImage(page, pageIndex) {
   if (!page || page.renderRecoveryPromise) return page?.renderRecoveryPromise;
-  const recovery = loadImage(page.url)
+  const generation = state.prepareGeneration;
+  const controller = new AbortController();
+  page.renderRecoveryController?.abort(readerAbortError("Image recovery was replaced."));
+  page.renderRecoveryController = controller;
+  const recovery = loadImage(page.url, { signal: controller.signal })
     .then((image) => {
+      if (generation !== state.prepareGeneration || state.pages[pageIndex] !== page) {
+        releaseDecodedImage(image);
+        return null;
+      }
       page.image = image;
       page.renderUrl = image.currentSrc || image.src || page.url;
       page.loadAttempts = image.panelPilotLoadAttempts || page.loadAttempts;
@@ -7439,6 +8114,7 @@ async function recoverRenderedPageImage(page, pageIndex) {
       return image;
     })
     .catch((error) => {
+      if (isAbortLike(error) || error?.name === "ReaderVisibilityInterrupted") return null;
       if (state.pages[pageIndex] === page && state.pageIndex === pageIndex) {
         showReaderError(
           "Could not load this page",
@@ -7450,6 +8126,7 @@ async function recoverRenderedPageImage(page, pageIndex) {
     })
     .finally(() => {
       if (page.renderRecoveryPromise === recovery) page.renderRecoveryPromise = null;
+      if (page.renderRecoveryController === controller) page.renderRecoveryController = null;
     });
   page.renderRecoveryPromise = recovery;
   return recovery;
@@ -7467,26 +8144,45 @@ function ensureStageStrip() {
 function renderStripPage(page, { refit = true, contentExtended = false } = {}) {
   const strip = ensureStageStrip();
   const signature = page.stripImages.map((item) => `${item.url}:${Math.round(item.height)}`).join("|");
+  const current = currentPanel();
+  const currentY = current ? (current.y + current.h / 2) * page.naturalHeight : 0;
+  const activeSegment = Math.max(0, page.stripImages.findIndex((item) => currentY >= item.y && currentY <= item.y + item.height));
+  const liveCount = Math.min(webtoonLiveImageCap, page.stripImages.length);
+  const liveStart = clamp(activeSegment - Math.floor(liveCount / 2), 0, Math.max(0, page.stripImages.length - liveCount));
+  const liveEnd = liveStart + liveCount;
+  const windowSignature = `${liveStart}:${liveEnd}`;
+  // Keep the first source visible to assistive/testing consumers while the
+  // continuous strip remains the actual rendered surface.
+  if (page.url && el.stageImage.getAttribute("src") !== page.url) el.stageImage.src = page.url;
   el.stageImage.hidden = true;
   strip.hidden = false;
 
-  if (strip.dataset.signature !== signature) {
-    const existing = [...strip.querySelectorAll("img")];
-    const isAppendOnly = contentExtended && existing.length < page.stripImages.length && existing.every((image, index) => image.dataset.url === page.stripImages[index]?.url);
-    if (!isAppendOnly) {
-      state.cameraPageChanged = true;
-      strip.replaceChildren();
-      state.performanceStats.panelStripRebuilds += 1;
-    }
-    page.stripImages.slice(isAppendOnly ? existing.length : 0).forEach((item) => {
-      const image = document.createElement("img");
-      image.src = item.url;
-      image.dataset.url = item.url;
-      image.alt = "";
-      image.draggable = false;
-      strip.append(image);
+  if (strip.dataset.signature !== signature || strip.dataset.windowSignature !== windowSignature) {
+    state.cameraPageChanged = !contentExtended;
+    const fragment = document.createDocumentFragment();
+    page.stripImages.forEach((item, index) => {
+      if (index >= liveStart && index < liveEnd) {
+        const image = document.createElement("img");
+        image.src = item.url;
+        image.dataset.url = item.url;
+        image.dataset.segmentIndex = String(index);
+        image.alt = "";
+        image.draggable = false;
+        image.onerror = () => { void recoverStripImageNode(page, image, item); };
+        fragment.append(image);
+        return;
+      }
+      const placeholder = document.createElement("div");
+      placeholder.dataset.segmentPlaceholder = String(index);
+      placeholder.setAttribute("aria-hidden", "true");
+      placeholder.style.width = "100%";
+      placeholder.style.height = `${item.height}px`;
+      fragment.append(placeholder);
     });
+    strip.replaceChildren(fragment);
+    state.performanceStats.panelStripRebuilds += 1;
     strip.dataset.signature = signature;
+    strip.dataset.windowSignature = windowSignature;
   }
 
   if (refit) {
@@ -7507,6 +8203,15 @@ function scheduleCameraFit() {
     state.cameraFitFrame = 0;
     fitStage();
   });
+}
+
+function scheduleViewportFit() {
+  scheduleCameraFit();
+  window.clearTimeout(state.viewportFitTimer);
+  state.viewportFitTimer = window.setTimeout(() => {
+    state.viewportFitTimer = 0;
+    if (readerIsVisible() && state.activeView === "reader") scheduleCameraFit();
+  }, 140);
 }
 
 function fitStage() {
@@ -7553,6 +8258,88 @@ function fitStage() {
     window.setTimeout(() => targetElement.classList.remove("camera-jump"), 0);
     window.setTimeout(() => targetElement.classList.remove("page-fade"), Math.max(140, motionDuration));
   }
+}
+
+async function recoverStripImageNode(page, node, segment) {
+  if (!node?.isConnected || node.dataset.recovering === "true") return null;
+  const generation = state.prepareGeneration;
+  const completedAttempts = Number(node.dataset.recoveryAttempts || 0);
+  const retryFromDialog = () => {
+    node.dataset.recoveryAttempts = "0";
+    node.dataset.recoveryExhausted = "false";
+    return recoverStripImageNode(page, node, segment);
+  };
+  if (completedAttempts >= 2) {
+    if (node.dataset.recoveryExhausted !== "true" && state.pages[state.pageIndex] === page) {
+      node.dataset.recoveryExhausted = "true";
+      showReaderError(
+        `Could not load webtoon segment ${Number(node.dataset.segmentIndex || 0) + 1}`,
+        "The image remained unavailable after two recovery attempts.",
+        retryFromDialog
+      );
+    }
+    return null;
+  }
+  const attempts = completedAttempts + 1;
+  node.dataset.recoveryAttempts = String(attempts);
+  node.dataset.recovering = "true";
+  try {
+    const image = await loadImage(segment.url, { retry: attempts < 2 });
+    if (
+      generation !== state.prepareGeneration ||
+      state.pages[state.pageIndex] !== page ||
+      !node.isConnected ||
+      node.dataset.url !== segment.url
+    ) {
+      releaseDecodedImage(image);
+      return null;
+    }
+    node.src = image.currentSrc || image.src || segment.url;
+    releaseDecodedImage(image);
+    node.dataset.recovering = "false";
+    return node;
+  } catch (error) {
+    node.dataset.recovering = "false";
+    if (isAbortLike(error) || error?.name === "ReaderVisibilityInterrupted") return null;
+    if (attempts < 2 && readerIsVisible()) return recoverStripImageNode(page, node, segment);
+    if (state.pages[state.pageIndex] === page && node.isConnected) {
+      node.dataset.recoveryExhausted = "true";
+      showReaderError(
+        `Could not load webtoon segment ${Number(node.dataset.segmentIndex || 0) + 1}`,
+        friendlySourceErrorMessage(error),
+        retryFromDialog
+      );
+    }
+    return null;
+  }
+}
+
+function validateCurrentReaderRender() {
+  if (state.renderValidationPromise) return state.renderValidationPromise;
+  const page = state.pages[state.pageIndex];
+  if (!page || state.activeView !== "reader") return Promise.resolve(false);
+  const generation = state.prepareGeneration;
+  const validation = (async () => {
+    if (page.stripImages) {
+      renderStripPage(page, { refit: false });
+      const strip = ensureStageStrip();
+      const images = [...strip.querySelectorAll("img[data-segment-index]")];
+      await Promise.all(images.map((image) => {
+        if (image.complete && image.naturalWidth > 0) return null;
+        const segment = page.stripImages[Number(image.dataset.segmentIndex)];
+        return segment ? recoverStripImageNode(page, image, segment) : null;
+      }));
+      return generation === state.prepareGeneration;
+    }
+    const expectedKey = `${state.pageIndex}:${page.url || page.renderUrl || "page"}`;
+    if (el.stageImage.dataset.pageKey === expectedKey && el.stageImage.complete && el.stageImage.naturalWidth > 0) return true;
+    await recoverRenderedPageImage(page, state.pageIndex);
+    return generation === state.prepareGeneration;
+  })().finally(() => {
+    if (state.renderValidationPromise === validation) state.renderValidationPromise = null;
+  });
+  state.renderValidationPromise = validation;
+  return validation;
 }
 
 function expandPanelRect(panel, padding) {
@@ -7608,7 +8395,8 @@ async function setPanelMode(mode) {
 
   const generation = state.prepareGeneration + 1;
   state.prepareGeneration = generation;
-  state.backgroundPreparing = false;
+  pauseReaderBackgroundWork();
+  const previousPages = state.pages;
 
   const loadingLabel =
     mode === "webtoon"
@@ -7620,17 +8408,18 @@ async function setPanelMode(mode) {
   try {
     if (mode === "webtoon") {
       state.pages = [await prepareContinuousWebtoonChapter(state.chapterPageUrls, generation, { initialCount: 2 })];
-      prepareWebtoonChapterInBackground(generation);
+      startReaderBackgroundPreparation(generation);
     } else {
       state.pages = makeChapterPageEntries(state.chapterPageUrls);
       await preparePage(0, { force: true, generation });
-      prepareChapterInBackground(generation);
+      startReaderBackgroundPreparation(generation);
     }
     state.pageIndex = 0;
     state.panelIndex = 0;
     state.fullPage = false;
     renderCurrentPage();
     updateAfterNavigation();
+    if (previousPages !== state.pages) releaseReaderPageImages(previousPages);
   } finally {
     setReaderLoading(false);
   }
@@ -7715,6 +8504,8 @@ function setReaderNavigationPending(pending) {
 
 function cancelReaderNavigation() {
   state.navigationRequestId += 1;
+  state.navigationController?.abort(readerAbortError("Reader navigation was cancelled."));
+  state.navigationController = null;
   state.navigationCooldownUntil = 0;
   state.panelMoveQueue = [];
   setReaderNavigationPending(false);
@@ -7786,7 +8577,7 @@ async function moveToAdjacentPage(delta) {
             webtoonPage.webtoonFailedIndex = null;
             webtoonPage.webtoonFailureMessage = "";
             hideReaderError();
-            void prepareWebtoonChapterInBackground(state.prepareGeneration);
+            void startReaderBackgroundPreparation(state.prepareGeneration);
           }
         );
         return false;
@@ -7837,6 +8628,9 @@ async function moveToAdjacentPage(delta) {
   const requestId = state.navigationRequestId + 1;
   state.navigationRequestId = requestId;
   const generation = state.prepareGeneration;
+  const navigationController = new AbortController();
+  state.navigationController?.abort(readerAbortError("Reader navigation was replaced."));
+  state.navigationController = navigationController;
   setReaderNavigationPending(true);
   const pageWasReady = isPreparedReaderPage(state.pages[nextPage]);
   let cancelWait = null;
@@ -7860,7 +8654,7 @@ async function moveToAdjacentPage(delta) {
 
   try {
     const preparedPage = await Promise.race([
-      preparePage(nextPage, { generation, foreground: true }),
+      preparePage(nextPage, { generation, foreground: true, signal: navigationController.signal }),
       cancelled,
     ]);
     if (!preparedPage) return false;
@@ -7873,9 +8667,11 @@ async function moveToAdjacentPage(delta) {
     state.fullPage = false;
     renderCurrentPage();
     updateAfterNavigation();
-    void prepareChapterInBackground(generation);
+    trimReaderMemory();
+    void startReaderBackgroundPreparation(generation);
     return true;
   } catch (error) {
+    if (isAbortLike(error) || error?.name === "ReaderVisibilityInterrupted") return false;
     setConnection(state.connected, `Could not prepare page: ${error.message}`, "bad");
     showReaderError(
       "Could not prepare this page",
@@ -7885,6 +8681,7 @@ async function moveToAdjacentPage(delta) {
   } finally {
     if (loadingTimer) window.clearTimeout(loadingTimer);
     if (state.readerLoadingCancelAction === cancelAction) state.readerLoadingCancelAction = null;
+    if (state.navigationController === navigationController) state.navigationController = null;
     if (requestId === state.navigationRequestId) {
       setReaderNavigationPending(false);
       setReaderLoading(false);
@@ -7899,6 +8696,14 @@ function isPreparedReaderPage(page) {
     page.panelMode === state.panelMode &&
     page.readingDirection === state.readingDirection &&
     page.image
+  );
+}
+
+function isAnalyzedReaderPage(page) {
+  return Boolean(
+    page?.detected &&
+    page.panelMode === state.panelMode &&
+    page.readingDirection === state.readingDirection
   );
 }
 
@@ -8011,6 +8816,8 @@ async function loadNextSuwayomiChapter() {
 
 function updateAfterNavigation() {
   el.toggleFit.textContent = state.fullPage ? "Panel view" : "Page overview";
+  const page = state.pages[state.pageIndex];
+  if (page?.stripImages) renderStripPage(page, { refit: false });
   scheduleCameraFit();
   renderPanelStrip();
   updateStats();
@@ -8027,6 +8834,16 @@ function updateStats() {
   const detectedPages = state.pages.filter((item) => item.detected).length;
   const detectedPanels = state.pages.reduce((sum, item) => sum + item.panels.length, 0);
   el.panelCount.textContent = `${detectedPanels} ${unit.toLowerCase()}s on ${detectedPages} pages`;
+  if (el.nextPanel) {
+    el.nextPanel.setAttribute("aria-label", totalPanels
+      ? `Next panel. Current panel ${state.panelIndex + 1} of ${totalPanels}`
+      : "Next panel");
+  }
+  if (el.prevPanel) {
+    el.prevPanel.setAttribute("aria-label", totalPanels
+      ? `Previous panel. Current panel ${state.panelIndex + 1} of ${totalPanels}`
+      : "Previous panel");
+  }
 }
 
 function renderPanelStrip() {
@@ -8118,7 +8935,8 @@ async function redetectChapterPanels() {
 
   const generation = state.prepareGeneration + 1;
   state.prepareGeneration = generation;
-  state.backgroundPreparing = false;
+  pauseReaderBackgroundWork();
+  const previousPages = state.pages;
   state.pageIndex = 0;
   state.panelIndex = 0;
   state.fullPage = false;
@@ -8128,14 +8946,15 @@ async function redetectChapterPanels() {
       state.pages = [await prepareContinuousWebtoonChapter(state.chapterPageUrls, generation, { initialCount: 2 })];
       renderCurrentPage();
       updateAfterNavigation();
-      prepareWebtoonChapterInBackground(generation);
+      startReaderBackgroundPreparation(generation);
     } else {
       state.pages = makeChapterPageEntries(state.chapterPageUrls);
       await preparePage(0, { force: true, generation });
       renderCurrentPage();
       updateAfterNavigation();
-      prepareChapterInBackground(generation);
+      startReaderBackgroundPreparation(generation);
     }
+    if (previousPages !== state.pages) releaseReaderPageImages(previousPages);
     setConnection(state.connected, "Redetected panels for this chapter.", "good");
   } finally {
     setReaderLoading(false);
@@ -8197,9 +9016,10 @@ async function makePanelReportSnapshot(page) {
   context.fillRect(0, 0, canvas.width, canvas.height);
 
   if (page.stripImages?.length) {
-    page.stripImages.forEach((segment, index) => {
-      const source = page.sourceImages?.[index]?.image;
-      if (!source) return;
+    for (let index = 0; index < page.stripImages.length; index += 1) {
+      const segment = page.stripImages[index];
+      const residentSource = page.sourceImages?.[index]?.image || null;
+      const source = residentSource || await loadImage(segment.url);
       context.drawImage(
         source,
         0,
@@ -8207,10 +9027,13 @@ async function makePanelReportSnapshot(page) {
         Math.round(segment.width * scale),
         Math.round(segment.height * scale)
       );
-    });
+      if (!residentSource) releaseDecodedImage(source);
+    }
   } else {
-    const image = page.image || await loadImage(page.url);
+    const residentImage = page.image || null;
+    const image = residentImage || await loadImage(page.url);
     context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    if (!residentImage) releaseDecodedImage(image);
   }
 
   drawPanelReportOverlay(context, page, scale);
@@ -8923,6 +9746,7 @@ function wireEvents() {
   el.loadComickMore?.addEventListener("click", loadComickMore);
   el.prevPanel.addEventListener("click", () => movePanel(-1));
   el.nextPanel.addEventListener("click", () => movePanel(1));
+  el.keepScreenAwake?.addEventListener("change", (event) => setKeepScreenAwake(event.target.checked));
   el.panelPadding.addEventListener("input", (event) => setPanelPadding(event.target.value));
   el.toggleFit.addEventListener("click", toggleFullPage);
   el.hideReaderControls?.addEventListener("click", hideReaderControls);
@@ -8959,18 +9783,17 @@ function wireEvents() {
       renderPanelStrip();
       updateStats();
     }
-    scheduleCameraFit();
+    scheduleViewportFit();
   });
+  window.visualViewport?.addEventListener("resize", scheduleViewportFit);
+  window.visualViewport?.addEventListener("scroll", scheduleViewportFit);
+  window.addEventListener("orientationchange", scheduleViewportFit);
   window.addEventListener("popstate", applyNavigationHistory);
   window.addEventListener("online", () => { void reconnectPanelPilot(); });
   window.addEventListener("offline", handleBrowserOffline);
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) {
-      flushScheduledReadingProgress();
-      persistSuwayomiProgressOutbox();
-      persistMangaBakaOutbox();
-      return;
-    }
+    handleReaderVisibilityChange();
+    if (document.hidden) return;
     if (state.activeView === "settings") void refreshDeviceStorage();
     if (!navigator.onLine) {
       handleBrowserOffline();
@@ -8983,22 +9806,13 @@ function wireEvents() {
     } else {
       void recoverSuwayomiConnection();
     }
-    if (state.activeView === "reader" && state.pages.length) {
-      if (
-        state.panelMode === "webtoon" &&
-        !state.pages[0]?.complete &&
-        !Number.isInteger(state.pages[0]?.webtoonFailedIndex)
-      ) {
-        void prepareWebtoonChapterInBackground(state.prepareGeneration);
-      } else if (state.panelMode !== "webtoon") {
-        void prepareChapterInBackground(state.prepareGeneration);
-      }
-    }
   });
   window.addEventListener("pagehide", () => {
-    flushScheduledReadingProgress();
-    persistSuwayomiProgressOutbox();
-    persistMangaBakaOutbox();
+    pauseReaderLifecycle({ pageHiding: true });
+  });
+  window.addEventListener("pageshow", () => {
+    state.readerLifecyclePaused = false;
+    void resumeReaderLifecycle();
   });
 
   el.stage.addEventListener("click", handleStageTap);
@@ -9010,12 +9824,19 @@ function wireEvents() {
     });
   });
 
+  document.addEventListener("focusin", (event) => {
+    const modal = activeReaderOverlay();
+    if (!modal || modal.contains(event.target) || !readerIsVisible()) return;
+    ensureActiveReaderModalFocus();
+  });
+
   document.addEventListener("keydown", (event) => {
-    const readerModal = activeReaderModal();
+    const readerModal = activeReaderOverlay();
     if (readerModal) {
       if (event.key === "Escape") {
         event.preventDefault();
-        if (readerModal === el.readerTapHint) dismissReaderTapHint();
+        if (readerModal === el.readerLoading) cancelReaderLoading();
+        else if (readerModal === el.readerTapHint) dismissReaderTapHint();
         else if (readerModal === el.readerComplete) hideReaderComplete();
         else leaveReaderView();
         return;
@@ -9062,6 +9883,35 @@ function wireEvents() {
   void registerPanelPilotServiceWorker();
 }
 
+function getReaderLifecycleDiagnostics() {
+  const residentNormalImages = state.pages.reduce((count, page) => count + (page?.image ? 1 : 0), 0);
+  const residentWebtoonImages = state.pages.reduce(
+    (count, page) => count + (Array.isArray(page?.sourceImages) ? page.sourceImages.filter((item) => item?.image).length : 0),
+    0
+  );
+  return {
+    visibilityState: document.visibilityState,
+    visibilityEpoch: state.readerVisibilityEpoch,
+    activeView: state.activeView,
+    backgroundPreparing: state.backgroundPreparing,
+    backgroundPaused: !state.backgroundWorkController || state.backgroundWorkController.signal.aborted,
+    prefetchStatus: state.nextChapterPrefetch?.status || "idle",
+    wakeLockSupported: Boolean(navigator.wakeLock?.request),
+    keepScreenAwake: state.keepScreenAwake,
+    wakeLockActive: Boolean(state.wakeLockSentinel && !state.wakeLockSentinel.released),
+    wakeLockBlocked: state.wakeLockBlocked,
+    residentDecodedImages: residentNormalImages + residentWebtoonImages,
+    residentNormalImages,
+    residentWebtoonImages,
+    decodedImageCap: readerDecodedImageCap(),
+    liveWebtoonImageNodes: el.stageStrip?.querySelectorAll("img[data-segment-index]").length || 0,
+    liveWebtoonImageCap: webtoonLiveImageCap,
+    metadataPages: state.pages.filter((page) => page?.detected).length,
+    detectorRuns: state.performanceStats.detectorRuns,
+    webtoonFailedIndex: state.pages[0]?.webtoonFailedIndex ?? null,
+  };
+}
+
 window.PanelPilot = {
   detectorVersion,
   consolidateMangaPanels,
@@ -9072,6 +9922,11 @@ window.PanelPilot = {
   retainUnacknowledgedMangaBakaEntries,
   sanitizeMangaBakaOutbox,
   sortPanels,
+  getReaderLifecycleDiagnostics,
+  handleReaderVisibilityChange,
+  pauseReaderLifecycle,
+  resumeReaderLifecycle,
+  trimReaderMemory,
   getPerformanceStats: () => ({
     ...state.performanceStats,
     averagePreparationMs: Math.round(averagePreparationMs()),
@@ -9105,6 +9960,8 @@ if (el.stage) {
   renderVersionNote();
   initializeInstallExperience();
   loadSettings();
+  resetReaderVisibilityController();
+  renderWakeLockState();
   const deviceChapterInitialization = initializeDeviceChapterState();
   void deviceChapterInitialization.then(() => refreshDeviceStorage()).catch(() => null);
   state.initialRoute = routeFromLocation();

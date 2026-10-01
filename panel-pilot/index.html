@@ -47,10 +47,10 @@
           </div>
         </div>
 
-        <div class="reader-loading" id="reader-loading" aria-live="polite" aria-hidden="true">
+        <div class="reader-loading" id="reader-loading" role="dialog" aria-modal="true" aria-live="polite" aria-labelledby="reader-loading-text" aria-hidden="true" tabindex="-1">
           <div class="reader-loading-card">
             <span id="reader-loading-text">Loading chapter...</span>
-            <div class="reader-loading-track">
+            <div class="reader-loading-track" id="reader-loading-progress" role="progressbar" aria-labelledby="reader-loading-text" aria-valuemin="0" aria-valuemax="100" aria-valuenow="12">
               <div class="reader-loading-bar" id="reader-loading-bar"></div>
             </div>
             <button class="reader-loading-cancel" id="reader-loading-cancel" type="button">Cancel</button>
@@ -95,12 +95,11 @@
         </div>
 
         <div class="reader-controls" aria-label="Reader controls">
-          <button class="text-button" id="toggle-fit" type="button">Page overview</button>
           <button class="text-button reader-step-back" id="prev-panel" type="button" title="Previous panel" aria-label="Previous panel">
             <span aria-hidden="true">←</span> Back one
           </button>
-          <button class="reader-next-accessible" id="next-panel" type="button" title="Next panel" aria-label="Next panel" tabindex="-1">
-            <span aria-hidden="true">&gt;</span>
+          <button class="reader-next-accessible" id="next-panel" type="button" title="Next panel" aria-label="Next panel">
+            Next <span aria-hidden="true">→</span>
           </button>
           <details class="reader-options">
             <summary aria-label="More reader controls" title="More reader controls">
@@ -113,6 +112,14 @@
                 <span>Panel context <strong id="panel-padding-value">8%</strong></span>
                 <input id="panel-padding" type="range" min="0" max="25" step="1" value="8">
               </label>
+              <div class="reader-wake-lock">
+                <label for="keep-screen-awake">
+                  <input id="keep-screen-awake" type="checkbox" aria-describedby="wake-lock-status" checked>
+                  <span>Keep screen awake</span>
+                </label>
+                <small id="wake-lock-status" role="status" aria-live="polite" aria-atomic="true">Checking screen wake support…</small>
+              </div>
+              <button class="text-button" id="toggle-fit" type="button">Page overview</button>
               <button class="text-button" id="redetect" type="button">Detect panels again</button>
               <button class="text-button" id="report-bad-panels" type="button">Report bad panels</button>
             </div>

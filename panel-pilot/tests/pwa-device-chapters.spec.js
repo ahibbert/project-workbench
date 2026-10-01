@@ -477,6 +477,35 @@ async function advanceReaderUntilChapter(page, chapterTitle) {
   await expect(page.locator("#chapter-title")).toContainText(chapterTitle, { timeout: 5_000 });
 }
 
+async function devicePackageIntegrity(page, chapterId) {
+  return page.evaluate(async (requestedChapterId) => {
+    const database = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("panels-device-library", 1);
+      request.addEventListener("success", () => resolve(request.result), { once: true });
+      request.addEventListener("error", () => reject(request.error), { once: true });
+    });
+    const records = await new Promise((resolve, reject) => {
+      const transaction = database.transaction("chapters", "readonly");
+      const request = transaction.objectStore("chapters").getAll();
+      request.addEventListener("success", () => resolve(request.result), { once: true });
+      request.addEventListener("error", () => reject(request.error), { once: true });
+    });
+    database.close();
+    const record = records.find((entry) => Number(entry.chapterId) === Number(requestedChapterId));
+    if (!record) return null;
+    const cache = await caches.open("panels-device-chapters-v1");
+    const cachedPaths = (await cache.keys())
+      .map((request) => new URL(request.url).pathname)
+      .filter((path) => path.startsWith(`/__panels_device_chapters/v1/${encodeURIComponent(record.key)}/`));
+    return {
+      status: record.status,
+      totalPages: record.totalPages,
+      downloadedPages: record.downloadedPages,
+      cachedPages: cachedPaths.length,
+    };
+  }, chapterId);
+}
+
 async function installQuotaFailureShim(page) {
   await page.evaluate(() => {
     window.__failDeviceChapterStorage = true;
@@ -699,6 +728,94 @@ test("a downloaded chapter survives reload, opens offline, and advances", async 
     await expect(page.locator("#reader-view")).toHaveClass(/\bactive\b/);
     await expect(page.locator("#chapter-title")).toContainText("Device chapter one");
     await advanceReaderToNextPage(page);
+  } finally {
+    await context.setOffline(false);
+    await fixture.close();
+  }
+});
+
+test("a ready device chapter survives suspension without network fallback or position loss", async ({ page, context }) => {
+  const fixture = await startDeviceChapterFixture();
+  try {
+    await prepareApp(page, context, fixture, { controlled: true });
+    await openChapterList(page);
+    await downloadChapter(page, 1101);
+    await expectDeviceReady(page, 1101);
+
+    await context.setOffline(true);
+    await chapterAction(page, 1101, "open").click();
+    await expect(page.locator("#reader-view")).toHaveClass(/\bactive\b/);
+    await expect(page.locator("#chapter-title")).toContainText("Device chapter one");
+    await advanceReaderToNextPage(page);
+
+    const positionBefore = {
+      page: await page.locator("#page-stat").textContent(),
+      panel: await page.locator("#panel-stat").textContent(),
+    };
+    const integrityBefore = await devicePackageIntegrity(page, 1101);
+    expect(integrityBefore).toEqual({
+      status: "ready",
+      totalPages: 3,
+      downloadedPages: 3,
+      cachedPages: 3,
+    });
+    const requestCountsBefore = {
+      chapter: fixture.chapterPayloadRequestCount(1101),
+      images: [1, 2, 3].map((pageNumber) => fixture.imageRequestCount(1101, pageNumber)),
+      synthetic: fixture.syntheticRequestCount(),
+    };
+    const networkFallbacks = [];
+    page.on("request", (request) => {
+      const pathname = new URL(request.url()).pathname;
+      if (pathname === "/api/suwayomi/graphql" || pathname.startsWith("/api/image/device-chapters/")) {
+        networkFallbacks.push(`${request.method()} ${pathname}`);
+      }
+    });
+
+    await page.evaluate(async () => {
+      let visibility = "visible";
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        get: () => visibility,
+      });
+      Object.defineProperty(document, "hidden", {
+        configurable: true,
+        get: () => visibility === "hidden",
+      });
+      visibility = "hidden";
+      document.dispatchEvent(new Event("visibilitychange"));
+      window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+      visibility = "visible";
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+
+    await expect(page.locator("#reader-loading")).toHaveAttribute("aria-hidden", "true");
+    await expect(page.locator("#reader-error")).toBeHidden();
+    await expect(page.locator("#page-stat")).toHaveText(positionBefore.page || "");
+    await expect(page.locator("#panel-stat")).toHaveText(positionBefore.panel || "");
+    await expect.poll(() => page.evaluate(() => {
+      const diagnostics = window.PanelPilot.getReaderLifecycleDiagnostics();
+      const image = document.querySelector("#stage-image");
+      return {
+        activeView: diagnostics.activeView,
+        visibilityState: diagnostics.visibilityState,
+        currentImageReady: Boolean(image?.complete && image.naturalWidth > 0),
+      };
+    })).toEqual({
+      activeView: "reader",
+      visibilityState: "visible",
+      currentImageReady: true,
+    });
+    await page.waitForTimeout(300);
+
+    expect(await devicePackageIntegrity(page, 1101)).toEqual(integrityBefore);
+    expect(fixture.chapterPayloadRequestCount(1101)).toBe(requestCountsBefore.chapter);
+    expect([1, 2, 3].map((pageNumber) => fixture.imageRequestCount(1101, pageNumber)))
+      .toEqual(requestCountsBefore.images);
+    expect(fixture.syntheticRequestCount()).toBe(requestCountsBefore.synthetic);
+    expect(networkFallbacks).toEqual([]);
   } finally {
     await context.setOffline(false);
     await fixture.close();
