@@ -1,0 +1,24 @@
+{
+  "name": "panel-pilot",
+  "version": "0.106.0",
+  "private": true,
+  "type": "module",
+  "description": "A mobile-first Suwayomi manga reader with guided panel navigation.",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "packageManager": "npm@10.9.4",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "test:reproducible": "node tests/verify-reproducible-build.mjs",
+    "test": "npm run test:reproducible && node --test tests/build-contract.test.mjs && playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "vite": "8.3.1",
+    "vite-plugin-pwa": "1.3.0",
+    "workbox-precaching": "7.4.1"
+  }
+}

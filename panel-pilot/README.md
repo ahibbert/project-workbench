@@ -5,9 +5,12 @@ guided reading.
 
 ## Run locally
 
-Use the project server when testing real Comick chapters:
+Panel Pilot requires Node 22.12 or newer. Install the pinned frontend dependencies,
+build the PWA, and then start the project server:
 
 ```sh
+npm ci
+npm run build
 python server.py 8013
 ```
 
@@ -27,6 +30,51 @@ http://192.168.0.9:8013
 The app loads Frieren chapter 1 from Comick on startup, so the panel reader can
 be tested against real pages without a running Suwayomi server. The custom
 server also exposes a small same-origin Comick test proxy for that flow.
+
+For frontend development, run the Python backend with the explicit source-mode
+opt-in, then start Vite in a second terminal. Vite proxies `/api`, `/login`, and
+`/logout` to port 8013:
+
+```powershell
+$env:PANEL_PILOT_ALLOW_SOURCE_STATIC = "1"
+py -3.12 server.py 8013
+npm run dev
+```
+
+Production always serves the generated `dist` directory. Override it with
+`PANEL_PILOT_STATIC_ROOT` only when the built files live elsewhere.
+
+Run the reproducible-build, artifact-contract, and Chromium smoke suites with:
+
+```sh
+npm test
+```
+
+## Install and update
+
+Open **Settings → App** to manage the PWA on the current device. Browsers that
+support a programmatic install prompt show an **Install Panel Pilot** button.
+On iPhone and iPad, open Panel Pilot in Safari, choose **Share → Add to Home
+Screen**, and then tap **Add**.
+
+Panel Pilot checks for application updates without interrupting the reader. A
+waiting update appears both in Settings and in the global **Update ready**
+control. Applying it is always explicit: Panel Pilot first persists the current
+reading position and sync outboxes, activates the waiting worker, and reloads
+once. **Check for updates** performs an on-demand check; a failed check does not
+prevent online reading.
+
+After one successful online load, the installed app can reopen its application
+shell and locally saved library while offline. The global connection banner
+shows when the device is offline, reconnecting, restored, or online while the
+configured Suwayomi server is unavailable. API responses, sign-in and sign-out,
+Test Lab, and chapter media are never served from this shell fallback.
+
+The offline shell is intended for a trusted browser profile: locally stored
+library metadata and settings are not encrypted and can be displayed without a
+fresh server session check. Server data and actions still require online
+authentication. Device-local chapter reading is introduced separately and is
+not part of the current offline shell.
 
 Panel view fits the active panel crop into the reader by both width and height.
 Use the `Padding` slider to choose how much context is shown around each panel.

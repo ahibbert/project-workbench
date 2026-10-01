@@ -8,6 +8,7 @@ import hmac
 import html
 import json
 import os
+from pathlib import Path
 import re
 import secrets
 import sys
@@ -35,6 +36,49 @@ MANGABAKA_LOCK = threading.Lock()
 DOWNLOAD_BUFFER_MANAGER = None
 SESSION_COOKIE = "panel_pilot_session"
 SESSION_MAX_AGE = int(os.environ.get("PANEL_PILOT_SESSION_MAX_AGE", str(30 * 24 * 60 * 60)))
+APP_ROOT = Path(__file__).resolve().parent
+PROTECTED_STATIC_PATHS = {
+    "/.dockerignore",
+    "/docker-compose.yml",
+    "/dockerfile",
+    "/package-lock.json",
+    "/package.json",
+    "/server.py",
+    "/vite.config.js",
+}
+PROTECTED_STATIC_PREFIXES = ("/.git/", "/__pycache__/", "/data/", "/tests/", "/tools/")
+
+
+def resolve_static_root():
+    configured = os.environ.get("PANEL_PILOT_STATIC_ROOT", "").strip()
+    if configured:
+        candidate = Path(configured).expanduser()
+        if not candidate.is_absolute():
+            candidate = APP_ROOT / candidate
+        source = "PANEL_PILOT_STATIC_ROOT"
+    else:
+        built_root = APP_ROOT / "dist"
+        if built_root.is_dir():
+            candidate = built_root
+            source = "the local dist directory"
+        elif os.environ.get("PANEL_PILOT_ALLOW_SOURCE_STATIC", "").strip() == "1":
+            candidate = APP_ROOT
+            source = "the explicitly enabled development source fallback"
+        else:
+            raise RuntimeError(
+                "Panel Pilot's production frontend build is missing. Run `npm ci` and "
+                "`npm run build`, set PANEL_PILOT_STATIC_ROOT to a built frontend, or "
+                "set PANEL_PILOT_ALLOW_SOURCE_STATIC=1 for development only."
+            )
+
+    root = candidate.resolve()
+    missing = [name for name in ("index.html", "login.html") if not (root / name).is_file()]
+    if missing:
+        raise RuntimeError(
+            f"Invalid Panel Pilot static root from {source}: {root}. "
+            f"Missing required build output: {', '.join(missing)}."
+        )
+    return root
 
 
 def read_mangabaka_token():
@@ -629,6 +673,31 @@ class DownloadBufferManager:
 
 
 class PanelPilotHandler(SimpleHTTPRequestHandler):
+    def __init__(self, *args, directory=None, **kwargs):
+        static_root = Path(directory).resolve() if directory else resolve_static_root()
+        super().__init__(*args, directory=str(static_root), **kwargs)
+
+    def translate_path(self, path):
+        static_root = Path(self.directory).resolve()
+        translated = Path(super().translate_path(path)).resolve()
+        try:
+            translated.relative_to(static_root)
+        except ValueError:
+            return str(static_root / ".panel-pilot-not-found")
+        return str(translated)
+
+    def list_directory(self, path):
+        self.send_error(404, "Not found")
+        return None
+
+    def protected_static_request(self, path):
+        normalized = "/" + unquote(path).lstrip("/").lower()
+        if normalized in PROTECTED_STATIC_PATHS:
+            return True
+        if any(normalized.startswith(prefix) for prefix in PROTECTED_STATIC_PREFIXES):
+            return True
+        return any(part.startswith(".") for part in normalized.split("/") if part)
+
     def auth_credentials(self):
         username = os.environ.get("PANEL_PILOT_AUTH_USER", "").strip()
         password = os.environ.get("PANEL_PILOT_AUTH_PASSWORD", "")
@@ -726,7 +795,7 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             self.redirect(self.safe_next_path(parse_qs(parsed.query).get("next", ["/"])[0]))
             return
 
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "login.html")
+        path = os.path.join(self.directory, "login.html")
         with open(path, "rb") as handle:
             body = handle.read()
         self.send_response(200)
@@ -876,6 +945,9 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
+        if self.protected_static_request(parsed.path):
+            self.send_error(404, "Not found")
+            return
         if parsed.path == "/login":
             self.serve_login(parsed)
             return
@@ -1493,10 +1565,12 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
 def main():
     global DOWNLOAD_BUFFER_MANAGER
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8012
+    static_root = resolve_static_root()
     DOWNLOAD_BUFFER_MANAGER = DownloadBufferManager()
     DOWNLOAD_BUFFER_MANAGER.start()
-    server = ThreadingHTTPServer(("0.0.0.0", port), PanelPilotHandler)
-    print(f"Panel Pilot server running on http://0.0.0.0:{port}", flush=True)
+    handler = lambda *args, **kwargs: PanelPilotHandler(*args, directory=static_root, **kwargs)
+    server = ThreadingHTTPServer(("0.0.0.0", port), handler)
+    print(f"Panel Pilot server running on http://0.0.0.0:{port} from {static_root}", flush=True)
     server.serve_forever()
 
 

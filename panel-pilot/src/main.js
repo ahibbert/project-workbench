@@ -5,8 +5,9 @@ const sourceIndexStoreKey = "panel-pilot-source-index";
 const sourceIndexTtlMs = 24 * 60 * 60 * 1000;
 const sourceIndexPageLimit = 6;
 const sourceIndexRequestTimeoutMs = 12000;
-const appVersion = "v104";
-const appBuildTime = "2026-10-01";
+const packageAppVersion = typeof __APP_VERSION__ === "string" ? __APP_VERSION__ : "";
+const appVersion = packageAppVersion ? `v${packageAppVersion}` : "source";
+const buildId = typeof __BUILD_ID__ === "string" ? __BUILD_ID__ : "source";
 const detectorVersion = "detector v18-ml-manga";
 const pageImageRetryDelaysMs = [0, 350];
 const chapterFetchRetryDelaysMs = [0, 400];
@@ -305,6 +306,17 @@ const el = {
   offlineNote: document.querySelector("#offline-note"),
   appToast: document.querySelector("#app-toast"),
   appUpdate: document.querySelector("#app-update"),
+  appInstallState: document.querySelector("#app-install-state"),
+  appInstallNote: document.querySelector("#app-install-note"),
+  installApp: document.querySelector("#install-app"),
+  iosInstallSteps: document.querySelector("#ios-install-steps"),
+  appUpdateNote: document.querySelector("#app-update-note"),
+  checkAppUpdate: document.querySelector("#check-app-update"),
+  applyAppUpdate: document.querySelector("#apply-app-update"),
+  networkStatusBanner: document.querySelector("#network-status-banner"),
+  networkStatusTitle: document.querySelector("#network-status-title"),
+  networkStatusNote: document.querySelector("#network-status-note"),
+  retryNetwork: document.querySelector("#retry-network"),
   rtlOrder: document.querySelector("#rtl-order"),
   ltrOrder: document.querySelector("#ltr-order"),
   comickUrl: document.querySelector("#comick-url"),
@@ -414,6 +426,10 @@ const state = {
   readerModalReturnFocus: null,
   initialRoute: null,
 };
+
+let networkReconnectPromise = null;
+let suwayomiRecoveryPromise = null;
+let networkStatusHideTimer = 0;
 
 function loadSettings() {
   try {
@@ -767,6 +783,103 @@ function setConnection(connected, message, tone = "") {
   } else {
     setSyncStatus("Ready", "Suwayomi is connected and ready to sync.", "good");
   }
+}
+
+function hideNetworkStatus() {
+  window.clearTimeout(networkStatusHideTimer);
+  networkStatusHideTimer = 0;
+  if (el.networkStatusBanner) el.networkStatusBanner.hidden = true;
+  document.body.classList.remove("has-network-status");
+}
+
+function setNetworkStatus(status, title, note, { retry = false, hideAfterMs = 0 } = {}) {
+  if (!el.networkStatusBanner) return;
+  window.clearTimeout(networkStatusHideTimer);
+  networkStatusHideTimer = 0;
+  el.networkStatusBanner.dataset.state = status;
+  el.networkStatusTitle.textContent = title;
+  el.networkStatusNote.textContent = note;
+  el.retryNetwork.hidden = !retry;
+  el.retryNetwork.disabled = status === "reconnecting";
+  el.networkStatusBanner.hidden = false;
+  document.body.classList.add("has-network-status");
+  if (hideAfterMs > 0) {
+    networkStatusHideTimer = window.setTimeout(hideNetworkStatus, hideAfterMs);
+  }
+}
+
+function showOfflineNetworkStatus() {
+  setNetworkStatus(
+    "offline",
+    "You’re offline",
+    "The app shell and local library are available. Browsing, sync, and new chapter loads will resume after reconnection.",
+    { retry: true }
+  );
+}
+
+function showReconnectingNetworkStatus() {
+  setNetworkStatus(
+    "reconnecting",
+    "Back online",
+    "Reconnecting to Suwayomi and sending queued progress…"
+  );
+}
+
+function showRestoredNetworkStatus() {
+  setNetworkStatus(
+    "restored",
+    "Connection restored",
+    "Panel Pilot is connected and queued progress can sync again.",
+    { hideAfterMs: 3500 }
+  );
+}
+
+function showServerUnavailableStatus() {
+  setNetworkStatus(
+    "server-unavailable",
+    "Network available · Suwayomi unavailable",
+    "The app is online, but the configured Suwayomi server did not respond.",
+    { retry: true }
+  );
+}
+
+function handleBrowserOffline() {
+  showOfflineNetworkStatus();
+  setConnection(false, "Device offline. Suwayomi will reconnect when the network returns.", "bad");
+}
+
+async function reconnectPanelPilot() {
+  if (!navigator.onLine) {
+    handleBrowserOffline();
+    return false;
+  }
+  if (networkReconnectPromise) return networkReconnectPromise;
+
+  showReconnectingNetworkStatus();
+  networkReconnectPromise = (async () => {
+    const appRecovery = Promise.allSettled([
+      loadLibraryItems(),
+      state.librarySavePending ? flushLibraryItems() : Promise.resolve(),
+      refreshMangaBakaStatus(),
+      loadMangaBakaRecommendations(),
+      flushMangaBakaOutbox(),
+    ]);
+    const connected = await recoverSuwayomiConnection();
+    await appRecovery;
+    if (!navigator.onLine) {
+      handleBrowserOffline();
+      return false;
+    }
+    if (!connected) {
+      showServerUnavailableStatus();
+      return false;
+    }
+    showRestoredNetworkStatus();
+    return true;
+  })().finally(() => {
+    networkReconnectPromise = null;
+  });
+  return networkReconnectPromise;
 }
 
 function updateBrowseAvailability() {
@@ -1604,11 +1717,19 @@ function setBusy(button, busy, labelWhenBusy = "Working") {
 }
 
 async function testConnection() {
+  if (!navigator.onLine) {
+    showOfflineNetworkStatus();
+    setConnection(false, "Device offline. Suwayomi will reconnect when the network returns.", "bad");
+    return false;
+  }
   setBusy(el.testConnection, true, "Testing");
   try {
     const data = await graphQL(queries.health);
     if (!data.__schema?.queryType?.name) throw new Error("Suwayomi did not return a valid response.");
     setConnection(true, "Suwayomi connected.", "good");
+    if (!networkReconnectPromise && el.networkStatusBanner && !el.networkStatusBanner.hidden) {
+      showRestoredNetworkStatus();
+    }
     if (!state.suwayomiSyncing) {
       setSyncStatus(
         state.suwayomiProgressOutbox.length ? "Queued" : "Ready",
@@ -1622,6 +1743,7 @@ async function testConnection() {
   } catch (error) {
     setConnection(false, `Could not connect to Suwayomi: ${friendlySourceErrorMessage(error)}`, "bad");
     setSyncStatus("Not connected", "Test the Suwayomi connection before syncing progress.", "bad");
+    if (navigator.onLine && !networkReconnectPromise) showServerUnavailableStatus();
     return false;
   } finally {
     setBusy(el.testConnection, false);
@@ -2304,6 +2426,8 @@ async function loadLibraryItems() {
   state.libraryItems = Array.isArray(localItems) ? localItems : [];
   renderLibrary();
 
+  if (!navigator.onLine) return;
+
   try {
     const payload = await localJson("/api/library");
     const remoteItems = Array.isArray(payload.items) ? payload.items : [];
@@ -2323,6 +2447,7 @@ function saveLibraryItems() {
   state.libraryItems = mergeLibraryItems(state.libraryItems);
   persistLibraryItemsLocally();
   state.librarySavePending = true;
+  if (!navigator.onLine) return Promise.resolve(null);
   if (!state.librarySavePromise) {
     state.librarySavePromise = flushLibraryItems().finally(() => {
       state.librarySavePromise = null;
@@ -2343,11 +2468,10 @@ async function flushLibraryItems() {
         persistLibraryItemsLocally();
       }
     } catch {
-      state.librarySavePending = false;
-      window.setTimeout(() => {
-        state.librarySavePending = true;
-        saveLibraryItems();
-      }, 5000);
+      state.librarySavePending = true;
+      if (navigator.onLine) {
+        window.setTimeout(() => saveLibraryItems(), 5000);
+      }
       break;
     }
   }
@@ -2811,6 +2935,16 @@ async function selectLibraryManga(item, resume) {
     setActiveView("reader");
     await loadChapterPages({ chapter: item, skipLibraryEnsure: true, fastResume: true });
     void fetchChapters({ background: true });
+    return;
+  }
+  if (!navigator.onLine) {
+    handleBrowserOffline();
+    setActiveView("reader");
+    showReaderError(
+      "This chapter is not available offline yet",
+      "The app shell and local library are available. Reconnect to load this chapter; device-local chapter downloads arrive in Phase 4.",
+      reconnectPanelPilot
+    );
     return;
   }
   await fetchChapters();
@@ -3656,7 +3790,8 @@ function applyNavigationHistory(event) {
         el.mangaId.value = target.manga.id;
       }
       showMangaDetail(state.currentManga, state.currentManga.sourceLabel, { history: false });
-      void fetchChapters();
+      if (navigator.onLine) void fetchChapters();
+      else renderChapterError("You’re offline. Reconnect to refresh this chapter list.");
     } else if (!el.mangaDetail?.hidden) {
       closeMangaDetail({ history: false });
     }
@@ -3678,6 +3813,21 @@ async function restoreInitialRoute() {
     el.mangaId.value = route.manga.id;
     showMangaDetail(route.manga, route.manga.sourceLabel, { history: false });
     await fetchChapters();
+  }
+}
+
+function restoreInitialRouteOffline() {
+  const route = state.initialRoute;
+  if (!route) return;
+  if (route.view === "reader") {
+    setActiveView("reader", { history: false });
+    showReaderError(
+      "This chapter is not available offline yet",
+      "Reconnect to load the saved chapter. Device-local chapter downloads arrive in Phase 4.",
+      reconnectPanelPilot
+    );
+  } else if (route.detail && route.manga) {
+    renderChapterError("You’re offline. Reconnect to refresh this chapter list.");
   }
 }
 
@@ -6482,7 +6632,7 @@ function updatePanelModeControls() {
 
 function renderVersionNote() {
   if (!el.versionNote) return;
-  el.versionNote.textContent = `${appVersion} | ${appBuildTime} | ${detectorVersion}`;
+  el.versionNote.textContent = `${appVersion} | ${buildId} | ${detectorVersion}`;
 }
 
 async function setPanelMode(mode) {
@@ -7103,20 +7253,307 @@ async function clearAppCache() {
   try {
     if ("caches" in window) {
       const keys = await caches.keys();
-      await Promise.all(keys.map((key) => caches.delete(key)));
+      const appCacheKeys = keys.filter((key) => (
+        /^panel-pilot-v\d+$/.test(key)
+        || key.startsWith("workbox-precache-")
+      ));
+      await Promise.all(appCacheKeys.map((key) => caches.delete(key)));
     }
     if ("serviceWorker" in navigator) {
-      const registrations = await navigator.serviceWorker.getRegistrations();
-      await Promise.all(registrations.map((registration) => registration.unregister()));
+      const registration = await navigator.serviceWorker.getRegistration("/");
+      await registration?.update();
     }
     setConnection(state.connected, "App cache cleared. Reloading latest version...", "good");
-    const url = new URL(location.href);
-    url.searchParams.set("v", String(Date.now()));
-    window.setTimeout(() => location.replace(url.toString()), 250);
+    window.setTimeout(() => location.reload(), 250);
   } catch (error) {
     setConnection(state.connected, `Could not clear app cache: ${error.message}`, "bad");
   } finally {
     setBusy(el.clearAppCache, false);
+  }
+}
+
+let activateWaitingServiceWorker = null;
+let panelPilotServiceWorkerRegistration = null;
+let serviceWorkerReloadPending = false;
+let serviceWorkerReloaded = false;
+let appUpdateReady = false;
+let deferredInstallPrompt = null;
+let installRequestPending = false;
+let appInstallConfirmed = false;
+const observedServiceWorkerRegistrations = new WeakSet();
+
+function isInstalledApp() {
+  return appInstallConfirmed
+    || navigator.standalone === true
+    || window.matchMedia?.("(display-mode: standalone)").matches === true
+    || window.matchMedia?.("(display-mode: fullscreen)").matches === true;
+}
+
+function isIosDevice() {
+  return /iPad|iPhone|iPod/i.test(navigator.userAgent)
+    || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+
+function isIosSafari() {
+  return isIosDevice()
+    && /Safari/i.test(navigator.userAgent)
+    && !/CriOS|FxiOS|EdgiOS|OPiOS/i.test(navigator.userAgent);
+}
+
+function renderInstallExperience(message = "") {
+  if (!el.appInstallState || !el.appInstallNote) return;
+
+  el.installApp.hidden = true;
+  el.installApp.disabled = false;
+  el.iosInstallSteps.hidden = true;
+
+  if (isInstalledApp()) {
+    el.appInstallState.textContent = "Installed";
+    el.appInstallNote.textContent = "Panel Pilot is running as an installed app on this device.";
+    return;
+  }
+
+  if (installRequestPending) {
+    el.appInstallState.textContent = "Installing…";
+    el.appInstallNote.textContent = message || "Finish the browser installation to add Panel Pilot to this device.";
+    return;
+  }
+
+  if (deferredInstallPrompt) {
+    el.appInstallState.textContent = "Ready to install";
+    el.appInstallNote.textContent = message || "Install Panel Pilot for a full-screen launcher and app-like experience.";
+    el.installApp.hidden = false;
+    return;
+  }
+
+  if (isIosDevice()) {
+    el.appInstallState.textContent = "Home Screen install";
+    el.appInstallNote.textContent = message || (isIosSafari()
+      ? "In Safari, use Share and Add to Home Screen."
+      : "Open this page in Safari, then use Share and Add to Home Screen.");
+    el.iosInstallSteps.hidden = false;
+    return;
+  }
+
+  if (!window.isSecureContext) {
+    el.appInstallState.textContent = "HTTPS required";
+    el.appInstallNote.textContent = "Open Panel Pilot over HTTPS before installing it on this device.";
+    return;
+  }
+
+  el.appInstallState.textContent = "Browser menu";
+  el.appInstallNote.textContent = message || "If your browser supports installation, choose Install app from its menu.";
+}
+
+function initializeInstallExperience() {
+  const displayMode = window.matchMedia?.("(display-mode: standalone)");
+  const refresh = () => renderInstallExperience();
+
+  window.addEventListener("beforeinstallprompt", (event) => {
+    event.preventDefault();
+    if (isInstalledApp()) return;
+    deferredInstallPrompt = event;
+    installRequestPending = false;
+    renderInstallExperience();
+  });
+  window.addEventListener("appinstalled", () => {
+    deferredInstallPrompt = null;
+    installRequestPending = false;
+    appInstallConfirmed = true;
+    renderInstallExperience();
+  });
+  window.addEventListener("pageshow", refresh);
+  window.addEventListener("focus", refresh);
+  if (displayMode?.addEventListener) displayMode.addEventListener("change", refresh);
+  else displayMode?.addListener?.(refresh);
+  renderInstallExperience();
+}
+
+async function promptAppInstall() {
+  const installPrompt = deferredInstallPrompt;
+  if (!installPrompt || isInstalledApp()) {
+    renderInstallExperience("Installation is not currently being offered by this browser.");
+    return;
+  }
+
+  // Browser install events are single-use, so remove the action before awaiting
+  // the browser-owned prompt. A later event will reveal it again.
+  deferredInstallPrompt = null;
+  installRequestPending = true;
+  renderInstallExperience();
+
+  try {
+    const promptResult = await installPrompt.prompt();
+    const choice = promptResult?.outcome ? promptResult : await installPrompt.userChoice;
+    if (choice?.outcome === "accepted") {
+      renderInstallExperience("Panel Pilot is being added to this device.");
+      return;
+    }
+    installRequestPending = false;
+    renderInstallExperience("Installation was dismissed. You can try again when your browser offers it.");
+  } catch (error) {
+    installRequestPending = false;
+    renderInstallExperience(`The install prompt could not open: ${error.message}`);
+  }
+}
+
+function setAppUpdateMessage(message) {
+  if (el.appUpdateNote) el.appUpdateNote.textContent = message;
+}
+
+function showAppUpdate() {
+  appUpdateReady = true;
+  setAppUpdateMessage(`Update ready for Panel Pilot ${appVersion}. Apply it when you are ready.`);
+  if (el.appUpdate) {
+    el.appUpdate.hidden = false;
+    el.appUpdate.disabled = false;
+    el.appUpdate.textContent = "Update ready · Restart app";
+  }
+  if (el.applyAppUpdate) {
+    el.applyAppUpdate.hidden = false;
+    el.applyAppUpdate.disabled = false;
+    el.applyAppUpdate.textContent = "Apply update";
+  }
+}
+
+function preserveReaderStateForUpdate() {
+  flushScheduledReadingProgress();
+  persistSuwayomiProgressOutbox();
+  persistMangaBakaOutbox();
+}
+
+async function activateAppUpdate() {
+  const waitingWorker = panelPilotServiceWorkerRegistration?.waiting;
+  if (!waitingWorker && !activateWaitingServiceWorker) {
+    setAppUpdateMessage("The update is no longer waiting. Check for updates again.");
+    return;
+  }
+
+  preserveReaderStateForUpdate();
+  serviceWorkerReloadPending = true;
+  if (el.appUpdate) {
+    el.appUpdate.disabled = true;
+    el.appUpdate.textContent = "Updating…";
+  }
+  if (el.applyAppUpdate) {
+    el.applyAppUpdate.disabled = true;
+    el.applyAppUpdate.textContent = "Applying…";
+  }
+  setAppUpdateMessage("Applying the update and preserving your reading position…");
+
+  try {
+    if (waitingWorker) waitingWorker.postMessage({ type: "SKIP_WAITING" });
+    else await activateWaitingServiceWorker(false);
+  } catch (error) {
+    serviceWorkerReloadPending = false;
+    showAppUpdate();
+    setAppUpdateMessage(`Could not activate the app update: ${error.message}`);
+    setConnection(state.connected, `Could not activate the app update: ${error.message}`, "bad");
+  }
+}
+
+function observeServiceWorkerRegistration(registration) {
+  if (!registration) return;
+  panelPilotServiceWorkerRegistration = registration;
+  if (registration.waiting) showAppUpdate();
+  if (observedServiceWorkerRegistrations.has(registration)) return;
+  observedServiceWorkerRegistrations.add(registration);
+
+  registration.addEventListener("updatefound", () => {
+    const worker = registration.installing;
+    if (!worker) return;
+    setAppUpdateMessage("Downloading an app update…");
+    worker.addEventListener("statechange", () => {
+      if (registration.waiting || (worker.state === "installed" && navigator.serviceWorker.controller)) {
+        showAppUpdate();
+      } else if (worker.state === "redundant" && !appUpdateReady) {
+        setAppUpdateMessage("The update could not be installed. Online reading is still available.");
+      }
+    });
+  });
+}
+
+async function checkForAppUpdate() {
+  if (!("serviceWorker" in navigator) || location.protocol === "file:") {
+    setAppUpdateMessage("Update checks are unavailable in this browser. Online reading still works.");
+    return;
+  }
+
+  setBusy(el.checkAppUpdate, true, "Checking…");
+  setAppUpdateMessage("Checking for an app update…");
+  try {
+    const registration = panelPilotServiceWorkerRegistration
+      || await navigator.serviceWorker.getRegistration("/");
+    if (!registration) throw new Error("No service worker registration is available");
+    observeServiceWorkerRegistration(registration);
+    await registration.update();
+    await new Promise((resolveCheck) => window.setTimeout(resolveCheck, 250));
+    if (registration.waiting) {
+      showAppUpdate();
+    } else if (registration.installing) {
+      setAppUpdateMessage("Downloading an app update…");
+    } else if (!appUpdateReady) {
+      setAppUpdateMessage(`Panel Pilot ${appVersion} is up to date.`);
+    }
+  } catch (error) {
+    setAppUpdateMessage(`Update check failed: ${error.message}. Online reading still works.`);
+  } finally {
+    setBusy(el.checkAppUpdate, false);
+  }
+}
+
+async function registerPanelPilotServiceWorker() {
+  const isProductionBuild = Boolean(packageAppVersion);
+  if (!isProductionBuild) {
+    setAppUpdateMessage("Update checks are available in production builds.");
+    if (el.checkAppUpdate) el.checkAppUpdate.disabled = true;
+    return;
+  }
+  if (!("serviceWorker" in navigator) || location.protocol === "file:") {
+    setAppUpdateMessage("Update checks are unavailable in this browser. Online reading still works.");
+    if (el.checkAppUpdate) el.checkAppUpdate.disabled = true;
+    return;
+  }
+
+  setAppUpdateMessage(`Preparing update checks for Panel Pilot ${appVersion}…`);
+
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (!serviceWorkerReloadPending || serviceWorkerReloaded) return;
+    serviceWorkerReloaded = true;
+    location.reload();
+  });
+
+  try {
+    const { registerSW } = await import("virtual:pwa-register");
+    activateWaitingServiceWorker = registerSW({
+      immediate: true,
+      onNeedRefresh() {
+        showAppUpdate();
+      },
+      // The generated helper otherwise reloads on its own. The controllerchange
+      // listener above owns the single, state-preserving reload.
+      onNeedReload() {},
+      onRegisteredSW(_workerUrl, registration) {
+        if (!registration) return;
+        observeServiceWorkerRegistration(registration);
+        if (!registration.waiting && !registration.installing) {
+          setAppUpdateMessage(`Panel Pilot ${appVersion} is up to date.`);
+        }
+        registration.update().catch((error) => {
+          setAppUpdateMessage(`Automatic update check failed: ${error.message}. Online reading still works.`);
+        });
+      },
+      onRegisterError(error) {
+        console.warn("Panel Pilot service worker registration failed; continuing online.", error);
+        setAppUpdateMessage("Update checks are unavailable because registration failed. Online reading still works.");
+      },
+    });
+
+    const registration = await navigator.serviceWorker.getRegistration("/");
+    if (registration) observeServiceWorkerRegistration(registration);
+  } catch (error) {
+    console.warn("Panel Pilot service worker registration failed; continuing online.", error);
+    setAppUpdateMessage(`Update checks are unavailable: ${error.message}. Online reading still works.`);
   }
 }
 
@@ -7251,6 +7688,10 @@ async function loadDemo() {
 }
 
 async function initializeSuwayomi() {
+  if (!navigator.onLine) {
+    handleBrowserOffline();
+    return false;
+  }
   setConnection(false, "Connecting to Suwayomi…", "");
   const connected = await testConnection();
   if (connected) {
@@ -7260,20 +7701,27 @@ async function initializeSuwayomi() {
     await flushSuwayomiProgressOutbox().catch(() => false);
   }
   await refreshDownloadStatus().catch(() => null);
+  return connected;
 }
 
 async function recoverSuwayomiConnection() {
   if (document.hidden || !navigator.onLine) return false;
-  const wasConnected = state.connected;
-  const connected = await testConnection();
-  if (!connected) return false;
-  if (!wasConnected || !state.sources.length) {
-    await loadSources();
-    await syncSuwayomiLibrary().catch(() => 0);
-  }
-  await flushSuwayomiProgressOutbox().catch(() => false);
-  await refreshDownloadStatus().catch(() => null);
-  return true;
+  if (suwayomiRecoveryPromise) return suwayomiRecoveryPromise;
+  suwayomiRecoveryPromise = (async () => {
+    const wasConnected = state.connected;
+    const connected = await testConnection();
+    if (!connected || !navigator.onLine) return false;
+    if (!wasConnected || !state.sources.length) {
+      await loadSources();
+      await syncSuwayomiLibrary().catch(() => 0);
+    }
+    await flushSuwayomiProgressOutbox().catch(() => false);
+    await refreshDownloadStatus().catch(() => null);
+    return true;
+  })().finally(() => {
+    suwayomiRecoveryPromise = null;
+  });
+  return suwayomiRecoveryPromise;
 }
 
 async function refreshDownloadStatus() {
@@ -7404,7 +7852,11 @@ function wireEvents() {
     setActiveView("library");
   });
   el.readerTapHintClose?.addEventListener("click", dismissReaderTapHint);
-  el.appUpdate?.addEventListener("click", () => location.reload());
+  el.appUpdate?.addEventListener("click", () => { void activateAppUpdate(); });
+  el.installApp?.addEventListener("click", () => { void promptAppInstall(); });
+  el.checkAppUpdate?.addEventListener("click", () => { void checkForAppUpdate(); });
+  el.applyAppUpdate?.addEventListener("click", () => { void activateAppUpdate(); });
+  el.retryNetwork?.addEventListener("click", () => { void reconnectPanelPilot(); });
   el.testConnection.addEventListener("click", testConnection);
   el.loadSources.addEventListener("click", loadSources);
   el.finishSuwayomiSetup?.addEventListener("click", () => { void finishSuwayomiSetup(); });
@@ -7489,12 +7941,17 @@ function wireEvents() {
     scheduleCameraFit();
   });
   window.addEventListener("popstate", applyNavigationHistory);
-  window.addEventListener("online", () => { void recoverSuwayomiConnection(); });
+  window.addEventListener("online", () => { void reconnectPanelPilot(); });
+  window.addEventListener("offline", handleBrowserOffline);
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
       flushScheduledReadingProgress();
       persistSuwayomiProgressOutbox();
       persistMangaBakaOutbox();
+      return;
+    }
+    if (!navigator.onLine) {
+      handleBrowserOffline();
       return;
     }
     if (state.connected) {
@@ -7580,15 +8037,7 @@ function wireEvents() {
     if (event.key.toLowerCase() === "f") toggleFullPage();
   });
 
-  if ("serviceWorker" in navigator && location.protocol !== "file:") {
-    const hadController = Boolean(navigator.serviceWorker.controller);
-    navigator.serviceWorker.addEventListener("controllerchange", () => {
-      if (hadController && el.appUpdate) el.appUpdate.hidden = false;
-    });
-    navigator.serviceWorker.register("sw.js").then((registration) => {
-      registration.update().catch(() => {});
-    }).catch(() => {});
-  }
+  void registerPanelPilotServiceWorker();
 }
 
 window.PanelPilot = {
@@ -7632,6 +8081,7 @@ window.PanelPilot = {
 if (el.stage) {
   el.stage.dataset.readerBuild = appVersion;
   renderVersionNote();
+  initializeInstallExperience();
   loadSettings();
   state.initialRoute = routeFromLocation();
   if (state.initialRoute.detail && state.initialRoute.manga) {
@@ -7656,12 +8106,18 @@ if (el.stage) {
   } else {
     recordNavigationState("replace", Boolean(state.initialRoute.detail));
   }
-  void refreshMangaBakaStatus();
-  void loadMangaBakaRecommendations();
-  setTimeout(() => {
-    initializeSuwayomi().then(() => restoreInitialRoute()).catch((error) => {
-      setConnection(false, `Could not initialize Suwayomi: ${error.message}`, "bad");
-      void restoreInitialRoute();
-    });
-  }, 250);
+  if (navigator.onLine) {
+    void refreshMangaBakaStatus();
+    void loadMangaBakaRecommendations();
+    setTimeout(() => {
+      initializeSuwayomi().then(() => restoreInitialRoute()).catch((error) => {
+        setConnection(false, `Could not initialize Suwayomi: ${error.message}`, "bad");
+        showServerUnavailableStatus();
+        void restoreInitialRoute();
+      });
+    }, 250);
+  } else {
+    handleBrowserOffline();
+    restoreInitialRouteOffline();
+  }
 }

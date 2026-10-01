@@ -11,12 +11,19 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
     <title>Panel Pilot</title>
-    <link rel="manifest" href="manifest.webmanifest">
-    <link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png">
-    <link rel="stylesheet" href="styles.css?v=54">
+    <link rel="apple-touch-icon" sizes="180x180" href="/assets/apple-touch-icon.png">
+    <link rel="stylesheet" href="/src/styles.css">
   </head>
   <body>
     <main class="app-shell">
+      <section class="network-status-banner" id="network-status-banner" data-state="offline" role="status" aria-live="polite" hidden>
+        <div class="network-status-copy">
+          <strong id="network-status-title">You’re offline</strong>
+          <span id="network-status-note">Panel Pilot will keep trying to reconnect.</span>
+        </div>
+        <button id="retry-network" type="button">Try again</button>
+      </section>
+
       <section class="app-view reader-view" id="reader-view" data-view="reader" aria-label="Guided manga reader">
         <div class="reader-topbar">
           <button class="mini-button reader-back" id="reader-back" type="button">Back</button>
@@ -241,6 +248,33 @@
           <span class="status-dot" id="connection-dot" aria-label="Connection status"></span>
         </header>
 
+        <section class="panel app-management-panel" aria-labelledby="app-management-title">
+          <div class="panel-heading">
+            <h2 id="app-management-title">App</h2>
+            <span class="small-count app-install-state" id="app-install-state">Checking…</span>
+          </div>
+          <div class="app-management-grid">
+            <div class="app-management-card">
+              <h3>Install on this device</h3>
+              <p class="note" id="app-install-note" aria-live="polite">Checking whether Panel Pilot can be installed…</p>
+              <button class="wide-button" id="install-app" type="button" hidden>Install Panel Pilot</button>
+              <ol class="ios-install-steps" id="ios-install-steps" hidden>
+                <li>Tap <strong>Share</strong>.</li>
+                <li>Choose <strong>Add to Home Screen</strong>.</li>
+                <li>Tap <strong>Add</strong> to place Panel Pilot on your Home Screen.</li>
+              </ol>
+            </div>
+            <div class="app-management-card">
+              <h3>App updates</h3>
+              <p class="note" id="app-update-note" aria-live="polite">Panel Pilot checks for updates automatically.</p>
+              <div class="button-row app-update-actions">
+                <button id="check-app-update" type="button">Check for updates</button>
+                <button id="apply-app-update" type="button" hidden>Apply update</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <section class="panel suwayomi-panel">
           <div class="panel-heading">
             <h2>Suwayomi</h2>
@@ -423,6 +457,6 @@
     <div class="app-toast" id="app-toast" role="status" aria-live="polite" hidden></div>
     <button class="app-update" id="app-update" type="button" hidden>Update ready · Restart app</button>
 
-    <script src="script.js?v=104"></script>
+    <script type="module" src="/src/main.js"></script>
   </body>
 </html>

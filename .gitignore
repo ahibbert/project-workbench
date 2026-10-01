@@ -2,3 +2,7 @@ australian-data-review/
 .DS_Store
 __pycache__/
 *.pyc
+panel-pilot/node_modules/
+panel-pilot/dist/
+panel-pilot/test-results/
+panel-pilot/playwright-report/
