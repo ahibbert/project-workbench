@@ -66,26 +66,34 @@ function expectedEarliestIds(mangaId) {
 
 async function installPlanFixture(page, {
   initialItems = [],
+  initialOutbox = [],
   libraryMangas = [],
   searchableManga = null,
   rejectedBufferResponses = 0,
+  remoteProgressMangaIds = [],
+  bufferResponseDelayMs = 0,
 } = {}) {
   const items = initialItems.map((item) => ({ ...item }));
   const serverMangas = libraryMangas.map((entry) => ({ ...entry }));
   const chapterMap = new Map(
     [...libraryMangas, searchableManga].filter(Boolean).map((entry) => [Number(entry.id), chaptersFor(Number(entry.id))]),
   );
+  remoteProgressMangaIds.forEach((mangaId) => {
+    const chapter = chapterMap.get(Number(mangaId))?.find((entry) => entry.sourceOrder === 1);
+    if (chapter) chapter.lastPageRead = 9;
+  });
   const bufferPosts = [];
   const bufferPriorities = [];
   let remainingRejectedResponses = rejectedBufferResponses;
   let storedChapterQueries = 0;
 
-  await page.addInitScript(({ baseUrl, seededItems }) => {
+  await page.addInitScript(({ baseUrl, seededItems, seededOutbox }) => {
     try { delete Navigator.prototype.serviceWorker; } catch { /* Service-worker behavior is outside this suite. */ }
     localStorage.setItem("panel-pilot-settings", JSON.stringify({ baseUrl, readerMotion: "instant" }));
     localStorage.setItem("panel-pilot-tap-hint-seen", "1");
     localStorage.setItem("panel-pilot-library", JSON.stringify(seededItems));
-  }, { baseUrl: serverUrl, seededItems: initialItems });
+    localStorage.setItem("panel-pilot-progress-outbox", JSON.stringify(seededOutbox));
+  }, { baseUrl: serverUrl, seededItems: initialItems, seededOutbox: initialOutbox });
 
   await page.route(/\/api(?:\/|$)/, async (route) => {
     const request = route.request();
@@ -158,6 +166,9 @@ async function installPlanFixture(page, {
       const uniqueIds = [...new Set(bufferPosts.flat())];
       const rejected = remainingRejectedResponses > 0 ? 1 : 0;
       remainingRejectedResponses = Math.max(0, remainingRejectedResponses - 1);
+      if (bufferResponseDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, bufferResponseDelayMs));
+      }
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -332,4 +343,30 @@ test("a rejected Plan buffer response is retried and is not cached as success", 
   expect(fixture.bufferPosts[1]).toEqual(expectedEarliestIds(entry.id));
   expect(fixture.bufferPriorities).toEqual(["background", "background"]);
   await expectNoDeviceLocalChapters(page);
+});
+
+test("a delayed Plan buffer request cannot restore progress pruned by another title", async ({ page }) => {
+  const planned = manga(1905, "Delayed Plan Fixture");
+  const reading = manga(1906, "Concurrent Reading Fixture");
+  const initialOutbox = [planned, reading].map((entry) => ({
+    serverUrl,
+    mangaId: entry.id,
+    chapterId: entry.id * 100 + 1,
+    lastPageRead: 4,
+    completed: false,
+    updatedAt: Date.parse("2026-10-01T12:00:00.000Z"),
+  }));
+  const fixture = await installPlanFixture(page, {
+    initialItems: [libraryItem(planned, "plan_to_read"), libraryItem(reading, "reading")],
+    initialOutbox,
+    libraryMangas: [planned, reading],
+    remoteProgressMangaIds: [planned.id, reading.id],
+    bufferResponseDelayMs: 350,
+  });
+
+  await page.goto("/");
+  await expect.poll(() => fixture.bufferPosts.length).toBe(1);
+  await expect.poll(async () => page.evaluate(() => (
+    JSON.parse(localStorage.getItem("panel-pilot-progress-outbox") || "[]").length
+  ))).toBe(0);
 });

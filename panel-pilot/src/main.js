@@ -3397,9 +3397,6 @@ async function hydrateImportedReadingProgress(mangas, { mangaIds = null } = {}) 
       const reconciledStatus = existing?.statusExplicit
         ? normalizedLibraryStatus(existing)
         : (reconciliation.started ? "reading" : "plan_to_read");
-      if (reconciledStatus === "plan_to_read") {
-        await enqueuePlanToReadServerBuffer({ ...existing, libraryStatus: reconciledStatus }, nodes);
-      }
       if (reconciliation.outbox.length !== state.suwayomiProgressOutbox.length) {
         state.suwayomiProgressOutbox = reconciliation.outbox;
         outboxChanged = true;
@@ -3415,6 +3412,11 @@ async function hydrateImportedReadingProgress(mangas, { mangaIds = null } = {}) 
       const resumeChapterId = reconciliation.winner?.chapterId || existing?.chapterId;
       offlineWindows.set(key, offlineWindowForStoredChapters(nodes, resumeChapterId));
       updates.set(key, reconciliation);
+      // Server buffering is opportunistic and must not delay committing the
+      // progress reconciliation shared by every title in this sync pass.
+      if (reconciledStatus === "plan_to_read") {
+        void enqueuePlanToReadServerBuffer({ ...existing, libraryStatus: reconciledStatus }, nodes);
+      }
     } catch {
       // One title should not block the rest of the library reconciliation.
     }
