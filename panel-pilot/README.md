@@ -105,6 +105,28 @@ responses, sign-in and sign-out, Test Lab, and chapter media that were not
 explicitly saved to the device are never served from the application-shell
 fallback.
 
+### Apple platform support
+
+The supported baseline is iOS/iPadOS 16.4 for Home Screen installation and
+the core online/offline reader. Some optional browser capabilities have a
+higher platform floor:
+
+- Screen Wake Lock works inside an installed Home Screen app on iOS/iPadOS
+  18.4 or newer. On 16.4–18.3, Panels reports that wake lock is unavailable
+  and keeps the reader usable without it.
+- Full origin-usage estimates and persistent-storage protection require
+  iOS/iPadOS 17 or newer. On 16.4, chapter totals and device downloads still
+  work, but retention is best-effort and the operating system may evict them.
+- Lockdown Mode disables Service Workers and Cache Storage on affected Safari
+  versions. Panels remains usable online, but the offline shell and
+  device-local chapters cannot work while those platform features are
+  disabled.
+
+These limits come from WebKit rather than the Panels server. See WebKit's
+[Safari 18.4 feature notes](https://webkit.org/blog/16574/webkit-features-in-safari-18-4/),
+[storage policy](https://webkit.org/blog/14403/updates-to-storage-policy/), and
+[Safari 16.4 feature notes](https://webkit.org/blog/13966/webkit-features-in-safari-16-4/).
+
 The offline shell is intended for a trusted browser profile: locally stored
 library metadata, settings, and downloaded chapters are not encrypted and can
 be displayed without a fresh server session check. Server data and actions

@@ -116,6 +116,19 @@ Verify through the public HTTPS origin:
 7. Container restart count is stable and `data/panels` is mounted at
    `/app/data`.
 
+For the real-device gate, keep iOS/iPadOS 16.4 as the core install and reader
+floor, but judge optional platform features against their actual WebKit floor:
+
+- On an installed Home Screen app, successful Screen Wake Lock acquisition is
+  required only on iOS/iPadOS 18.4 or newer. On 16.4–18.3, verify the truthful
+  unavailable fallback and uninterrupted reading instead.
+- Full storage estimates and persistent-storage protection are required only
+  on iOS/iPadOS 17 or newer. On 16.4, verify chapter totals, best-effort
+  downloads, eviction detection, and repair behavior.
+- Lockdown Mode disables Service Workers and Cache Storage on affected Safari
+  versions, so offline installation behavior is not an achievable acceptance
+  criterion while Lockdown Mode is enabled.
+
 Retain the prior image and data archive until this verification and a real
 device install/update test have passed.
 
