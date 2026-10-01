@@ -997,6 +997,33 @@ test("the built shell keeps safe-area, no-collision, and non-composited header i
 
 test("iPad full-page reading advances whole pages and returns to panel navigation", async ({ page }) => {
   await page.setViewportSize({ width: 820, height: 1180 });
+  await page.addInitScript(() => {
+    window.__readerFullscreenRequests = 0;
+    window.__readerFullscreenExits = 0;
+    window.__mockFullscreenElement = null;
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      get: () => window.__mockFullscreenElement,
+    });
+    Object.defineProperty(HTMLElement.prototype, "requestFullscreen", {
+      configurable: true,
+      value() {
+        window.__readerFullscreenRequests += 1;
+        window.__mockFullscreenElement = this;
+        document.dispatchEvent(new Event("fullscreenchange"));
+        return Promise.resolve();
+      },
+    });
+    Object.defineProperty(document, "exitFullscreen", {
+      configurable: true,
+      value() {
+        window.__readerFullscreenExits += 1;
+        window.__mockFullscreenElement = null;
+        document.dispatchEvent(new Event("fullscreenchange"));
+        return Promise.resolve();
+      },
+    });
+  });
   await seedSettings(page);
   await installBackend(page, { chapterIds: [1101], pageCount: 3 });
   await gotoApp(page);
@@ -1020,19 +1047,71 @@ test("iPad full-page reading advances whole pages and returns to panel navigatio
   await expect(toggle).toHaveText("Panel view");
   await expect(toggle).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator("#panel-stat")).toHaveText("Full page");
+  await expect(page.locator("body")).toHaveClass(/\breader-full-page\b/);
+  await expect.poll(() => page.evaluate(() => ({
+    requests: window.__readerFullscreenRequests,
+    fullscreenReader: document.fullscreenElement === document.querySelector("#reader-view"),
+  }))).toEqual({ requests: 1, fullscreenReader: true });
 
-  await page.locator("#next-panel").click();
+  const presentation = await page.evaluate(async () => {
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const stage = document.querySelector("#stage").getBoundingClientRect();
+    const readerStyle = getComputedStyle(document.querySelector("#reader-view"));
+    const image = document.querySelector("#stage-image");
+    const imageStyle = getComputedStyle(image);
+    const transform = new DOMMatrix(imageStyle.transform);
+    const expectedScale = Math.min(
+      stage.width / Number.parseFloat(image.style.width),
+      stage.height / Number.parseFloat(image.style.height),
+    );
+    return {
+      stage: {
+        top: Math.round(stage.top),
+        right: Math.round(stage.right),
+        bottom: Math.round(stage.bottom),
+        left: Math.round(stage.left),
+      },
+      borderWidth: readerStyle.borderWidth,
+      borderRadius: readerStyle.borderRadius,
+      imageShadow: imageStyle.boxShadow,
+      scaleDelta: Math.abs(transform.a - expectedScale),
+      chromeHidden: document.body.classList.contains("reader-chrome-hidden"),
+    };
+  });
+  expect(presentation.stage).toEqual({ top: 0, right: 820, bottom: 1180, left: 0 });
+  expect(presentation.borderWidth).toBe("0px");
+  expect(presentation.borderRadius).toBe("0px");
+  expect(presentation.imageShadow).toBe("none");
+  expect(presentation.scaleDelta).toBeLessThan(0.001);
+  expect(presentation.chromeHidden).toBe(true);
+
+  const fullPageStage = await page.locator("#stage").boundingBox();
+  await page.locator("#stage").click({
+    position: { x: 40, y: Math.round((fullPageStage?.height || 1180) / 2) },
+  });
   await expect(page.locator("#page-stat")).toHaveText(/^Page 2 \/ 3$/);
   await expect(page.locator("#panel-stat")).toHaveText("Full page");
   await expect(toggle).toHaveText("Panel view");
   await expect(toggle).toHaveAttribute("aria-pressed", "true");
 
+  await page.locator("#stage").click({
+    position: {
+      x: Math.round((fullPageStage?.width || 820) / 2),
+      y: Math.round((fullPageStage?.height || 1180) / 2),
+    },
+  });
+  await expect(page.locator(".reader-options > summary")).toBeVisible();
   await page.locator(".reader-options > summary").click();
   await expect(toggle).toBeVisible();
   await toggle.click();
   await expect(toggle).toHaveText("Full page");
   await expect(toggle).toHaveAttribute("aria-pressed", "false");
   await expect(page.locator("#panel-stat")).toHaveText(/^Panel 1 \/ [2-9]\d*$/);
+  await expect(page.locator("body")).not.toHaveClass(/\breader-full-page\b/);
+  await expect.poll(() => page.evaluate(() => ({
+    exits: window.__readerFullscreenExits,
+    fullscreenElement: document.fullscreenElement,
+  }))).toEqual({ exits: 1, fullscreenElement: null });
 
   await page.locator("#next-panel").click();
   await expect(page.locator("#page-stat")).toHaveText(/^Page 2 \/ 3$/);

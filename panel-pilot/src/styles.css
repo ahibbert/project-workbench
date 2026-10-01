@@ -244,6 +244,25 @@ h2 {
   background: #fff;
 }
 
+body.reader-full-page #stage-image,
+body.reader-full-page .stage-strip {
+  box-shadow: none;
+}
+
+.reader-view:fullscreen,
+.reader-view:-webkit-full-screen {
+  width: 100vw;
+  height: 100dvh;
+  min-height: 100dvh;
+  border: 0;
+  border-radius: 0;
+  background: #fff;
+}
+
+.reader-view:fullscreen::backdrop {
+  background: #fff;
+}
+
 .stage-strip {
   position: absolute;
   left: 0;

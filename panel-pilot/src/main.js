@@ -444,6 +444,7 @@ const state = {
   pageIndex: 0,
   panelIndex: 0,
   fullPage: false,
+  readerFullscreenOwned: false,
   panelMode: "manga",
   panelModeUserOverride: false,
   panelPadding: 8,
@@ -1055,6 +1056,7 @@ function setActiveView(view, options = {}) {
     button.setAttribute("aria-current", isActive ? "page" : "false");
   });
   document.body.classList.toggle("reader-active", view === "reader");
+  document.body.classList.toggle("reader-full-page", view === "reader" && state.fullPage);
   if (view === "reader") setDownloadStatusSheet(false);
   if (view === "settings") void refreshDeviceStorage();
   if (view === "stats") void refreshReadingStats();
@@ -1063,6 +1065,7 @@ function setActiveView(view, options = {}) {
     setReaderFocus(isReaderFocusAvailable());
     void resumeReaderLifecycle();
   } else {
+    exitReaderFullscreen();
     setReaderFocus(false);
     pauseReaderBackgroundWork();
     trimReaderMemory({ aggressive: true });
@@ -9385,7 +9388,7 @@ function fitStage() {
   const target = state.fullPage
     ? fullPagePanel(imageWidth, imageHeight)
     : expandPanelRect(framedRect || fullPagePanel(imageWidth, imageHeight), state.panelPadding / 100);
-  const margin = state.fullPage ? 0.94 : 1;
+  const margin = 1;
   let scale = Math.min(
     stageRect.width / (imageWidth * target.w),
     stageRect.height / (imageHeight * target.h)
@@ -10672,6 +10675,7 @@ async function resortAndDetect(direction) {
 }
 
 function updateReaderViewToggle() {
+  document.body.classList.toggle("reader-full-page", state.activeView === "reader" && state.fullPage);
   if (!el.toggleFit) return;
   el.toggleFit.textContent = state.fullPage ? "Panel view" : "Full page";
   el.toggleFit.setAttribute("aria-pressed", state.fullPage ? "true" : "false");
@@ -10680,10 +10684,53 @@ function updateReaderViewToggle() {
     : "Switch to full-page reading";
 }
 
+function readerFullscreenElement() {
+  return document.fullscreenElement || document.webkitFullscreenElement || null;
+}
+
+function requestReaderFullscreen() {
+  const request = el.readerView?.requestFullscreen || el.readerView?.webkitRequestFullscreen;
+  if (!request || readerFullscreenElement()) return;
+  state.readerFullscreenOwned = true;
+  try {
+    Promise.resolve(request.call(el.readerView)).then(() => {
+      state.readerFullscreenOwned = readerFullscreenElement() === el.readerView;
+      scheduleViewportFit();
+    }).catch(() => {
+      state.readerFullscreenOwned = false;
+    });
+  } catch {
+    state.readerFullscreenOwned = false;
+  }
+}
+
+function exitReaderFullscreen() {
+  if (!state.readerFullscreenOwned) return;
+  state.readerFullscreenOwned = false;
+  const exit = document.exitFullscreen || document.webkitExitFullscreen;
+  if (!exit || !readerFullscreenElement()) return;
+  try {
+    Promise.resolve(exit.call(document)).catch(() => {});
+  } catch {
+    // The system may already be completing its own fullscreen exit gesture.
+  }
+}
+
+function handleReaderFullscreenChange() {
+  state.readerFullscreenOwned = readerFullscreenElement() === el.readerView;
+  scheduleViewportFit();
+}
+
 function toggleFullPage() {
   if (!state.pages.length) return;
   state.fullPage = !state.fullPage;
   if (el.readerOptions?.open) el.readerOptions.open = false;
+  if (state.fullPage) {
+    setReaderChromeVisible(false, { refit: false });
+    requestReaderFullscreen();
+  } else {
+    exitReaderFullscreen();
+  }
   updateAfterNavigation();
 }
 
@@ -11125,6 +11172,8 @@ function wireEvents() {
       void recoverSuwayomiConnection();
     }
   });
+  document.addEventListener("fullscreenchange", handleReaderFullscreenChange);
+  document.addEventListener("webkitfullscreenchange", handleReaderFullscreenChange);
   window.addEventListener("pagehide", () => {
     pauseReaderLifecycle({ pageHiding: true });
     void state.readingStatsTracker?.checkpoint().then(() => flushReadingStats({ celebrate: false }));
