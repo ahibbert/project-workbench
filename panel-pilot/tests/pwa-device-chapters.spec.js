@@ -548,25 +548,82 @@ test("the device media namespace is cache-only and ignores query strings", async
 
 test("Clear app cache preserves downloaded device media", async ({ page, context }) => {
   const fixture = await startDeviceChapterFixture();
-  const syntheticPath = "/__panels_device_chapters/v1/cache-cleanup/page-0";
   try {
     await page.addInitScript(() => {
       const loads = Number(sessionStorage.getItem("panels-device-cache-loads") || 0);
       sessionStorage.setItem("panels-device-cache-loads", String(loads + 1));
     });
     await prepareApp(page, context, fixture, { controlled: true });
-    await page.evaluate(async (path) => {
+    const syntheticPath = await page.evaluate(async () => {
+      const serverUrl = "http://127.0.0.1:4567";
+      const chapterId = "cache-cleanup";
+      const key = JSON.stringify([serverUrl, chapterId]);
+      const path = `/__panels_device_chapters/v1/${encodeURIComponent(key)}/fixture/0`;
+      const body = "preserve-device-media";
+      const bodySize = new TextEncoder().encode(body).byteLength;
       const deviceCache = await caches.open("panels-device-chapters-v1");
       await deviceCache.put(
         new Request(new URL(path, location.origin)),
-        new Response("preserve-device-media", {
+        new Response(body, {
           status: 200,
           headers: { "Content-Type": "image/png" },
         }),
       );
+
+      const database = await new Promise((resolve, reject) => {
+        const request = indexedDB.open("panels-device-library", 1);
+        request.addEventListener("upgradeneeded", () => {
+          if (!request.result.objectStoreNames.contains("chapters")) {
+            request.result.createObjectStore("chapters", { keyPath: "key" });
+          }
+        });
+        request.addEventListener("success", () => resolve(request.result), { once: true });
+        request.addEventListener("error", () => reject(request.error), { once: true });
+      });
+      const timestamp = new Date().toISOString();
+      await new Promise((resolve, reject) => {
+        const transaction = database.transaction("chapters", "readwrite");
+        transaction.objectStore("chapters").put({
+          key,
+          serverUrl,
+          chapterId,
+          mangaId: "cache-cleanup-manga",
+          title: "Cache cleanup fixture",
+          chapterTitle: "Preserved chapter",
+          chapterNumber: 1,
+          chapterOrder: 1,
+          sourceId: "fixture-source",
+          sourceLabel: "Fixture source",
+          scanlator: "Fixture group",
+          thumbnailUrl: "",
+          pageUrls: ["/api/image/device-chapters/cache-cleanup/1.png"],
+          pages: [{
+            index: 0,
+            sourceUrl: "/api/image/device-chapters/cache-cleanup/1.png",
+            cacheUrl: path,
+            contentType: "image/png",
+            size: bodySize,
+            completedAt: timestamp,
+          }],
+          status: "ready",
+          totalPages: 1,
+          downloadedPages: 1,
+          storedBytes: bodySize,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          readyAt: timestamp,
+          error: null,
+        });
+        transaction.addEventListener("complete", resolve, { once: true });
+        transaction.addEventListener("abort", () => reject(transaction.error), { once: true });
+        transaction.addEventListener("error", () => reject(transaction.error), { once: true });
+      });
+      database.close();
+
       const legacyCache = await caches.open("panel-pilot-v999");
       await legacyCache.put("/legacy-app-shell", new Response("remove-app-cache"));
-    }, syntheticPath);
+      return path;
+    });
     const loadsBeforeClear = await page.evaluate(
       () => Number(sessionStorage.getItem("panels-device-cache-loads")),
     );

@@ -275,6 +275,63 @@
           </div>
         </section>
 
+        <section class="panel device-storage-panel" id="device-storage-panel" aria-labelledby="device-storage-title">
+          <div class="panel-heading">
+            <h2 id="device-storage-title">Device storage</h2>
+            <span class="small-count" id="device-storage-state">Checking…</span>
+          </div>
+          <p class="note device-storage-summary" id="device-storage-summary" role="status" aria-live="polite" aria-atomic="true">
+            Checking chapters saved on this device…
+          </p>
+          <div class="device-storage-meter">
+            <div class="device-storage-meter-copy">
+              <span id="device-storage-progress-label">Browser storage used by Panels</span>
+              <strong id="device-storage-origin-note">Checking browser allowance…</strong>
+            </div>
+            <progress id="device-storage-progress" max="1" aria-labelledby="device-storage-progress-label" aria-describedby="device-storage-origin-note"></progress>
+          </div>
+          <div class="device-storage-retention">
+            <div>
+              <strong>Keep downloads available</strong>
+              <p class="note" id="device-storage-retention-note">Checking how this browser manages saved chapters…</p>
+            </div>
+            <div class="button-row device-storage-actions">
+              <button id="device-storage-refresh" type="button">Refresh storage</button>
+              <button id="device-storage-persist" type="button" disabled>Protect downloads</button>
+            </div>
+          </div>
+          <details class="settings-detail device-storage-manager" id="device-storage-manager">
+            <summary>
+              <span>Manage saved chapters</span>
+            </summary>
+            <div class="device-storage-selection-bar">
+              <label class="device-storage-select-all" for="device-storage-select-all">
+                <input id="device-storage-select-all" type="checkbox" disabled>
+                <span>Select all</span>
+              </label>
+              <span id="device-storage-selected-count" role="status" aria-live="polite" aria-atomic="true">0 selected</span>
+            </div>
+            <div class="device-storage-list" id="device-storage-list">
+              <p class="device-storage-empty">No chapters are saved on this device yet.</p>
+            </div>
+            <button class="wide-button danger-button device-storage-remove" id="device-storage-remove-selected" type="button" disabled>
+              Remove selected
+            </button>
+          </details>
+          <p class="note device-storage-result" id="device-storage-result" role="status" aria-live="polite" aria-atomic="true"></p>
+        </section>
+
+        <dialog class="device-storage-dialog" id="device-storage-dialog" aria-labelledby="device-storage-dialog-title" aria-describedby="device-storage-dialog-description">
+          <form method="dialog">
+            <h2 id="device-storage-dialog-title">Remove device copies?</h2>
+            <p id="device-storage-dialog-description">Reading progress and copies on your Suwayomi server will not be affected.</p>
+            <div class="button-row device-storage-dialog-actions">
+              <button id="device-storage-cancel" type="submit" value="cancel" autofocus>Cancel</button>
+              <button class="danger-button" id="device-storage-confirm" type="button">Remove chapters</button>
+            </div>
+          </form>
+        </dialog>
+
         <section class="panel suwayomi-panel">
           <div class="panel-heading">
             <h2>Suwayomi</h2>

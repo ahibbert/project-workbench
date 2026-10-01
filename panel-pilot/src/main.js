@@ -1,11 +1,15 @@
 import {
   deviceChapterKey,
   deviceChapterPageUrls,
+  deviceChapterStoredBytes,
   downloadDeviceChapter,
+  getDeviceChapterStorageSnapshot,
   initializeDeviceChapters,
   listDeviceChapters,
   listDeviceChaptersForManga,
   removeDeviceChapter,
+  removeDeviceChapters,
+  requestDeviceChapterPersistence,
 } from "./device-chapters.js";
 
 const storeKey = "panel-pilot-settings";
@@ -323,6 +327,24 @@ const el = {
   appUpdateNote: document.querySelector("#app-update-note"),
   checkAppUpdate: document.querySelector("#check-app-update"),
   applyAppUpdate: document.querySelector("#apply-app-update"),
+  deviceStoragePanel: document.querySelector("#device-storage-panel"),
+  deviceStorageState: document.querySelector("#device-storage-state"),
+  deviceStorageSummary: document.querySelector("#device-storage-summary"),
+  deviceStorageProgress: document.querySelector("#device-storage-progress"),
+  deviceStorageOriginNote: document.querySelector("#device-storage-origin-note"),
+  deviceStorageRetentionNote: document.querySelector("#device-storage-retention-note"),
+  deviceStoragePersist: document.querySelector("#device-storage-persist"),
+  deviceStorageRefresh: document.querySelector("#device-storage-refresh"),
+  deviceStorageManager: document.querySelector("#device-storage-manager"),
+  deviceStorageSelectAll: document.querySelector("#device-storage-select-all"),
+  deviceStorageSelectedCount: document.querySelector("#device-storage-selected-count"),
+  deviceStorageList: document.querySelector("#device-storage-list"),
+  deviceStorageRemoveSelected: document.querySelector("#device-storage-remove-selected"),
+  deviceStorageResult: document.querySelector("#device-storage-result"),
+  deviceStorageDialog: document.querySelector("#device-storage-dialog"),
+  deviceStorageDialogDescription: document.querySelector("#device-storage-dialog-description"),
+  deviceStorageCancel: document.querySelector("#device-storage-cancel"),
+  deviceStorageConfirm: document.querySelector("#device-storage-confirm"),
   networkStatusBanner: document.querySelector("#network-status-banner"),
   networkStatusTitle: document.querySelector("#network-status-title"),
   networkStatusNote: document.querySelector("#network-status-note"),
@@ -426,6 +448,16 @@ const state = {
   deviceChapterWorkerReady: false,
   deviceChapterWorkerController: null,
   deviceChapterWorkerGeneration: 0,
+  deviceStorageSnapshot: null,
+  deviceStorageError: "",
+  deviceStorageRefreshPromise: null,
+  deviceStorageRefreshRequested: false,
+  deviceStorageRefreshAnnounce: false,
+  deviceStorageReconcileRequested: false,
+  deviceStorageSelection: new Set(),
+  deviceStoragePendingRemoval: [],
+  deviceStorageReturnFocus: null,
+  deviceStorageRemoving: false,
   historyApplying: false,
   viewScrollPositions: { library: 0, browse: 0, settings: 0 },
   browseDiscoveryScroll: 0,
@@ -608,6 +640,7 @@ function setActiveView(view, options = {}) {
   });
   document.body.classList.toggle("reader-active", view === "reader");
   if (view === "reader") setDownloadStatusSheet(false);
+  if (view === "settings") void refreshDeviceStorage();
 
   if (view === "reader") {
     setReaderFocus(isReaderFocusAvailable());
@@ -3817,6 +3850,7 @@ function devicePackageForChapter(chapterId, serverUrl = currentDeviceServerUrl()
 function rememberDevicePackage(chapterPackage) {
   if (!chapterPackage?.key) return;
   state.deviceChapters.set(chapterPackage.key, chapterPackage);
+  if (state.deviceStorageRefreshPromise) state.deviceStorageRefreshRequested = true;
 }
 
 async function refreshDeviceChapterWorkerCapability({ render = true } = {}) {
@@ -3877,6 +3911,414 @@ async function initializeDeviceChapterState() {
     console.warn("Panels device chapter storage is unavailable.", error);
   }
   if (el.chapterList?.children.length) renderChapters();
+}
+
+function formatStorageBytes(value, fallback = "Size unavailable") {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes < 0) return fallback;
+  if (bytes === 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const unitIndex = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+  const amount = bytes / (1024 ** unitIndex);
+  const digits = unitIndex === 0 || amount >= 100 ? 0 : amount >= 10 ? 1 : 2;
+  return `${amount.toFixed(digits)} ${units[unitIndex]}`;
+}
+
+function deviceStoragePackageState(chapterPackage) {
+  const completed = Number(chapterPackage.downloadedPages) || 0;
+  const total = Number(chapterPackage.totalPages || chapterPackage.pageUrls?.length) || 0;
+  if (chapterPackage.status === "ready") return "Ready";
+  if (chapterPackage.status === "downloading" || chapterPackage.status === "preparing") return `Saving ${completed}/${total}`;
+  if (chapterPackage.status === "paused") return `Partial ${completed}/${total}`;
+  if (chapterPackage.status === "failed") return `Failed ${completed}/${total}`;
+  if (chapterPackage.status === "removing") return "Removing";
+  return chapterPackage.status || "Incomplete";
+}
+
+function safeDeviceServerLabel(chapterPackage) {
+  const source = String(chapterPackage.sourceLabel || "").trim();
+  let host = "Suwayomi server";
+  try {
+    host = new URL(chapterPackage.serverUrl).host || host;
+  } catch {
+    // Never show raw, potentially credential-bearing server text.
+  }
+  return source && source !== host ? `${source} · ${host}` : source || host;
+}
+
+function activeDeviceReaderPackageKey() {
+  return state.activeView === "reader" && state.activeChapter?.type === "suwayomi" && state.activeChapter.deviceLocal
+    ? String(state.activeChapter.devicePackageKey || "")
+    : "";
+}
+
+function deviceStoragePackageSelectable(chapterPackage) {
+  if (!chapterPackage?.key || chapterPackage.status === "removing") return false;
+  if (["preparing", "downloading"].includes(chapterPackage.status)) return false;
+  if (state.deviceDownloadControllers.has(chapterPackage.key)) return false;
+  return chapterPackage.key !== activeDeviceReaderPackageKey();
+}
+
+function deviceStoragePackages() {
+  return Array.isArray(state.deviceStorageSnapshot?.packages)
+    ? state.deviceStorageSnapshot.packages
+    : [...state.deviceChapters.values()];
+}
+
+function updateDeviceStorageSelectionControls() {
+  const packages = deviceStoragePackages();
+  const selectable = packages.filter(deviceStoragePackageSelectable);
+  const selectableKeys = new Set(selectable.map((chapterPackage) => chapterPackage.key));
+  state.deviceStorageSelection = new Set([...state.deviceStorageSelection].filter((key) => selectableKeys.has(key)));
+  const selectedCount = state.deviceStorageSelection.size;
+  if (el.deviceStorageSelectedCount) {
+    el.deviceStorageSelectedCount.textContent = `${selectedCount} selected`;
+  }
+  if (el.deviceStorageRemoveSelected) {
+    el.deviceStorageRemoveSelected.disabled = selectedCount < 1 || state.deviceStorageRemoving;
+    el.deviceStorageRemoveSelected.textContent = selectedCount ? `Remove selected (${selectedCount})` : "Remove selected";
+  }
+  if (el.deviceStorageSelectAll) {
+    const allSelected = selectable.length > 0 && selectable.every((chapterPackage) => state.deviceStorageSelection.has(chapterPackage.key));
+    if (el.deviceStorageSelectAll instanceof HTMLInputElement) {
+      el.deviceStorageSelectAll.checked = allSelected;
+      el.deviceStorageSelectAll.indeterminate = selectedCount > 0 && !allSelected;
+      el.deviceStorageSelectAll.disabled = selectable.length < 1 || state.deviceStorageRemoving;
+    } else {
+      el.deviceStorageSelectAll.textContent = allSelected ? "Clear selection" : "Select all";
+      el.deviceStorageSelectAll.setAttribute("aria-pressed", allSelected ? "true" : "false");
+      el.deviceStorageSelectAll.disabled = selectable.length < 1 || state.deviceStorageRemoving;
+    }
+  }
+}
+
+function renderDeviceStorage() {
+  if (!el.deviceStorageList || !el.deviceStorageSummary) return;
+  const snapshot = state.deviceStorageSnapshot;
+  const packages = deviceStoragePackages();
+  el.deviceStorageList.replaceChildren();
+
+  if (state.deviceStorageError) {
+    if (el.deviceStorageState) el.deviceStorageState.textContent = "Unavailable";
+    el.deviceStorageSummary.textContent = `Device storage could not be inspected: ${state.deviceStorageError}`;
+    if (el.deviceStorageProgress) el.deviceStorageProgress.hidden = true;
+    if (el.deviceStorageOriginNote) el.deviceStorageOriginNote.textContent = "The online reader remains available.";
+    if (el.deviceStorageRetentionNote) el.deviceStorageRetentionNote.textContent = "Storage protection could not be checked.";
+    if (el.deviceStoragePersist) el.deviceStoragePersist.hidden = true;
+    if (el.deviceStorageManager) el.deviceStorageManager.open = false;
+    updateDeviceStorageSelectionControls();
+    return;
+  }
+
+  if (!snapshot) {
+    if (el.deviceStorageState) el.deviceStorageState.textContent = "Checking…";
+    el.deviceStorageSummary.textContent = "Checking chapters saved on this device…";
+    if (el.deviceStorageProgress) el.deviceStorageProgress.hidden = true;
+    if (el.deviceStoragePersist) el.deviceStoragePersist.hidden = true;
+    updateDeviceStorageSelectionControls();
+    return;
+  }
+
+  const packageCount = Number(snapshot.packageCount ?? packages.length) || 0;
+  const storedBytes = Number(snapshot.storedBytes);
+  const readyCount = Number(snapshot.readyCount) || 0;
+  const partialCount = Number(snapshot.partialCount) || 0;
+  if (el.deviceStorageState) el.deviceStorageState.textContent = `${packageCount} chapter${packageCount === 1 ? "" : "s"}`;
+  el.deviceStorageSummary.dataset.bytes = Number.isFinite(storedBytes) ? String(storedBytes) : "";
+  el.deviceStorageSummary.textContent = `${packageCount} chapter${packageCount === 1 ? "" : "s"} saved · ${formatStorageBytes(storedBytes)}`;
+
+  const origin = snapshot.origin || {};
+  const usageBytes = Number(origin.usageBytes);
+  const quotaBytes = Number(origin.quotaBytes);
+  const hasEstimate = origin.supported && Number.isFinite(usageBytes) && usageBytes >= 0 && Number.isFinite(quotaBytes) && quotaBytes > 0;
+  if (el.deviceStorageProgress) {
+    el.deviceStorageProgress.hidden = !hasEstimate;
+    if (hasEstimate) {
+      el.deviceStorageProgress.max = quotaBytes;
+      el.deviceStorageProgress.value = Math.min(usageBytes, quotaBytes);
+      el.deviceStorageProgress.dataset.usageBytes = String(usageBytes);
+      el.deviceStorageProgress.dataset.quotaBytes = String(quotaBytes);
+    }
+  }
+  if (el.deviceStorageOriginNote) {
+    el.deviceStorageOriginNote.textContent = hasEstimate
+      ? `Browser storage: about ${formatStorageBytes(usageBytes)} of ${formatStorageBytes(quotaBytes)} used by this site. Chapter media accounts for ${formatStorageBytes(storedBytes)}.`
+      : origin.error
+        ? "Browser-wide storage estimate is unavailable. Chapter media totals remain available."
+        : "This browser does not expose a whole-site storage estimate.";
+  }
+
+  const persistence = snapshot.persistence || {};
+  if (el.deviceStorageRetentionNote) {
+    el.deviceStorageRetentionNote.textContent = persistence.persisted
+      ? "Protected from automatic browser cleanup."
+      : persistence.supported
+        ? "Your browser may remove downloads when storage is low."
+        : "Storage retention is managed by this browser; Panels will detect missing pages and offer repair.";
+  }
+  if (el.deviceStoragePersist) {
+    el.deviceStoragePersist.hidden = !persistence.requestSupported || Boolean(persistence.persisted);
+    el.deviceStoragePersist.disabled = state.deviceStorageRemoving;
+  }
+
+  if (!packages.length) {
+    const empty = document.createElement("p");
+    empty.className = "note device-storage-empty";
+    empty.textContent = "No chapters are saved on this device yet.";
+    el.deviceStorageList.append(empty);
+    if (el.deviceStorageManager && !el.deviceStorageManager.dataset.initialized) el.deviceStorageManager.open = false;
+  } else {
+    const groups = new Map();
+    packages.forEach((chapterPackage) => {
+      const groupKey = `${chapterPackage.serverUrl || "server"}\u0000${chapterPackage.mangaId || "manga"}`;
+      if (!groups.has(groupKey)) groups.set(groupKey, []);
+      groups.get(groupKey).push(chapterPackage);
+    });
+    groups.forEach((groupPackages) => {
+      const first = groupPackages[0];
+      const group = document.createElement("fieldset");
+      group.className = "device-storage-group";
+      const legend = document.createElement("legend");
+      const groupTitle = document.createElement("strong");
+      groupTitle.textContent = first.title || `Manga ${first.mangaId || ""}`.trim();
+      const groupMeta = document.createElement("span");
+      const groupBytes = groupPackages.reduce((sum, chapterPackage) => sum + deviceChapterStoredBytes(chapterPackage), 0);
+      groupMeta.textContent = `${safeDeviceServerLabel(first)} · ${groupPackages.length} chapter${groupPackages.length === 1 ? "" : "s"} · ${formatStorageBytes(groupBytes)}`;
+      legend.append(groupTitle, groupMeta);
+      group.append(legend);
+
+      groupPackages.forEach((chapterPackage) => {
+        const row = document.createElement("div");
+        row.className = "device-storage-row";
+        row.dataset.deviceStorageRow = "";
+        const label = document.createElement("label");
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.dataset.deviceStorageSelect = "";
+        const selectable = deviceStoragePackageSelectable(chapterPackage);
+        checkbox.disabled = !selectable || state.deviceStorageRemoving;
+        checkbox.checked = state.deviceStorageSelection.has(chapterPackage.key);
+        checkbox.addEventListener("change", () => {
+          if (checkbox.checked) state.deviceStorageSelection.add(chapterPackage.key);
+          else state.deviceStorageSelection.delete(chapterPackage.key);
+          updateDeviceStorageSelectionControls();
+        });
+        const copy = document.createElement("span");
+        copy.className = "device-storage-row-copy";
+        const title = document.createElement("strong");
+        title.textContent = chapterPackage.chapterTitle || `Chapter ${chapterPackage.chapterNumber || chapterPackage.chapterId}`;
+        const meta = document.createElement("small");
+        const bytes = deviceChapterStoredBytes(chapterPackage);
+        row.dataset.bytes = String(bytes);
+        const restriction = chapterPackage.key === activeDeviceReaderPackageKey()
+          ? "Open in reader · close it before removing"
+          : state.deviceDownloadControllers.has(chapterPackage.key)
+            ? "Pause this download before removing it"
+            : "";
+        meta.textContent = [deviceStoragePackageState(chapterPackage), formatStorageBytes(bytes), restriction].filter(Boolean).join(" · ");
+        copy.append(title, meta);
+        label.append(checkbox, copy);
+        row.append(label);
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "mini-button danger-button";
+        remove.dataset.deviceStorageRemove = "";
+        remove.textContent = "Remove";
+        remove.disabled = !selectable || state.deviceStorageRemoving;
+        remove.setAttribute("aria-label", `Remove ${title.textContent} from this device`);
+        remove.addEventListener("click", () => openDeviceStorageRemovalDialog([chapterPackage.key], remove));
+        row.append(remove);
+        group.append(row);
+      });
+      el.deviceStorageList.append(group);
+    });
+    if (el.deviceStorageManager && !el.deviceStorageManager.dataset.initialized) el.deviceStorageManager.open = true;
+  }
+  if (el.deviceStorageManager) el.deviceStorageManager.dataset.initialized = "true";
+  if (el.deviceStorageOriginNote && (readyCount || partialCount)) {
+    el.deviceStorageOriginNote.dataset.packageBreakdown = `${readyCount} ready, ${partialCount} partial`;
+  }
+  updateDeviceStorageSelectionControls();
+}
+
+function announceDeviceStorage(message, tone = "") {
+  if (!el.deviceStorageResult) return;
+  el.deviceStorageResult.textContent = message;
+  el.deviceStorageResult.dataset.tone = tone;
+}
+
+async function refreshDeviceStorage({ announce = false, reconcile = false } = {}) {
+  state.deviceStorageRefreshRequested = true;
+  state.deviceStorageRefreshAnnounce ||= announce;
+  state.deviceStorageReconcileRequested ||= reconcile;
+  if (state.deviceStorageRefreshPromise) return state.deviceStorageRefreshPromise;
+  if (!state.deviceStorageSnapshot && !state.deviceStorageError) renderDeviceStorage();
+  const request = (async () => {
+    let latestSnapshot = null;
+    while (state.deviceStorageRefreshRequested) {
+      const announceThisRefresh = state.deviceStorageRefreshAnnounce;
+      const reconcileThisRefresh = state.deviceStorageReconcileRequested;
+      state.deviceStorageRefreshRequested = false;
+      state.deviceStorageRefreshAnnounce = false;
+      state.deviceStorageReconcileRequested = false;
+      try {
+        const snapshot = await getDeviceChapterStorageSnapshot({ reconcile: reconcileThisRefresh });
+        state.deviceStorageSnapshot = snapshot;
+        state.deviceStorageError = "";
+        const packages = Array.isArray(snapshot.packages) ? snapshot.packages : [];
+        state.deviceChapters = new Map(packages.map((chapterPackage) => [chapterPackage.key, chapterPackage]));
+        state.deviceChaptersReady = true;
+        state.deviceChapterError = "";
+        renderDeviceStorage();
+        if (el.chapterList?.children.length) renderChapters();
+        if (announceThisRefresh) announceDeviceStorage("Device storage refreshed.", "good");
+        latestSnapshot = snapshot;
+      } catch (error) {
+        state.deviceStorageError = error?.message || "Device storage is unavailable.";
+        renderDeviceStorage();
+        if (announceThisRefresh) announceDeviceStorage(`Could not refresh device storage: ${state.deviceStorageError}`, "bad");
+        latestSnapshot = null;
+      }
+    }
+    return latestSnapshot;
+  })();
+  state.deviceStorageRefreshPromise = request;
+  try {
+    return await request;
+  } finally {
+    if (state.deviceStorageRefreshPromise === request) state.deviceStorageRefreshPromise = null;
+  }
+}
+
+async function refreshDeviceStorageFromControl() {
+  if (!el.deviceStorageRefresh) return;
+  setBusy(el.deviceStorageRefresh, true, "Refreshing");
+  el.deviceStoragePanel?.setAttribute("aria-busy", "true");
+  announceDeviceStorage("Refreshing device storage…");
+  try {
+    await refreshDeviceStorage({ announce: true, reconcile: true });
+  } finally {
+    setBusy(el.deviceStorageRefresh, false);
+    el.deviceStoragePanel?.removeAttribute("aria-busy");
+  }
+}
+
+async function protectDeviceStorage() {
+  if (!el.deviceStoragePersist) return;
+  setBusy(el.deviceStoragePersist, true, "Requesting");
+  try {
+    const result = await requestDeviceChapterPersistence();
+    if (result.error) {
+      announceDeviceStorage(`Storage protection could not be requested: ${result.error.message}`, "bad");
+    } else {
+      announceDeviceStorage(result.persisted
+        ? "Downloads are protected from automatic browser cleanup."
+        : result.requestSupported
+          ? "Storage protection was not granted. Panels will keep detecting and repairing missing pages."
+          : "Storage protection is managed by this browser.", result.persisted ? "good" : "");
+    }
+  } catch (error) {
+    announceDeviceStorage(`Storage protection could not be requested: ${error.message}`, "bad");
+  } finally {
+    setBusy(el.deviceStoragePersist, false);
+    await refreshDeviceStorage();
+  }
+}
+
+function deviceStorageSelectionKeys() {
+  return [...state.deviceStorageSelection].filter((key) => {
+    const chapterPackage = deviceStoragePackages().find((item) => item.key === key);
+    return chapterPackage && deviceStoragePackageSelectable(chapterPackage);
+  });
+}
+
+function setAllDeviceStorageSelection() {
+  const selectable = deviceStoragePackages().filter(deviceStoragePackageSelectable);
+  const allSelected = selectable.length > 0 && selectable.every((chapterPackage) => state.deviceStorageSelection.has(chapterPackage.key));
+  state.deviceStorageSelection = allSelected ? new Set() : new Set(selectable.map((chapterPackage) => chapterPackage.key));
+  renderDeviceStorage();
+}
+
+function closeDeviceStorageDialog({ force = false } = {}) {
+  if (state.deviceStorageRemoving && !force) return;
+  if (el.deviceStorageDialog?.open) el.deviceStorageDialog.close();
+  const returnFocus = state.deviceStorageReturnFocus;
+  state.deviceStorageReturnFocus = null;
+  requestAnimationFrame(() => returnFocus?.isConnected
+    ? returnFocus.focus({ preventScroll: true })
+    : el.deviceStorageManager?.querySelector("input:not(:disabled), summary")?.focus({ preventScroll: true }));
+}
+
+function openDeviceStorageRemovalDialog(keys = deviceStorageSelectionKeys(), returnFocus = document.activeElement) {
+  const keySet = new Set(keys);
+  const packages = deviceStoragePackages().filter((chapterPackage) => keySet.has(chapterPackage.key) && deviceStoragePackageSelectable(chapterPackage));
+  if (!packages.length) {
+    announceDeviceStorage("Select at least one removable chapter.", "bad");
+    return;
+  }
+  state.deviceStoragePendingRemoval = packages.map((chapterPackage) => chapterPackage.key);
+  state.deviceStorageReturnFocus = returnFocus;
+  el.deviceStorageDialog?.removeAttribute("aria-busy");
+  if (el.deviceStorageCancel) el.deviceStorageCancel.disabled = false;
+  const bytes = packages.reduce((sum, chapterPackage) => sum + deviceChapterStoredBytes(chapterPackage), 0);
+  if (el.deviceStorageDialogDescription) {
+    el.deviceStorageDialogDescription.textContent = `Remove ${packages.length} chapter${packages.length === 1 ? "" : "s"} (${formatStorageBytes(bytes)}) from this device. Reading progress and copies on the Suwayomi server are not affected.`;
+  }
+  if (el.deviceStorageConfirm) el.deviceStorageConfirm.textContent = `Remove ${packages.length} chapter${packages.length === 1 ? "" : "s"}`;
+  if (typeof el.deviceStorageDialog?.showModal === "function") {
+    el.deviceStorageDialog.showModal();
+    requestAnimationFrame(() => el.deviceStorageCancel?.focus({ preventScroll: true }));
+  }
+}
+
+function failedDeviceRemovalKey(failure) {
+  if (failure?.key) return failure.key;
+  const reference = failure?.ref || failure?.reference || failure;
+  try {
+    return deviceChapterKey(reference.serverUrl, reference.chapterId);
+  } catch {
+    return "";
+  }
+}
+
+async function confirmDeviceStorageRemoval() {
+  if (state.deviceStorageRemoving) return;
+  const keySet = new Set(state.deviceStoragePendingRemoval);
+  const packages = deviceStoragePackages().filter((chapterPackage) => keySet.has(chapterPackage.key) && deviceStoragePackageSelectable(chapterPackage));
+  if (!packages.length) {
+    closeDeviceStorageDialog();
+    return;
+  }
+  state.deviceStorageRemoving = true;
+  el.deviceStorageDialog?.setAttribute("aria-busy", "true");
+  if (el.deviceStorageCancel) el.deviceStorageCancel.disabled = true;
+  renderDeviceStorage();
+  setBusy(el.deviceStorageConfirm, true, "Removing");
+  try {
+    const result = await removeDeviceChapters(packages.map((chapterPackage) => ({
+      key: chapterPackage.key,
+      serverUrl: chapterPackage.serverUrl,
+      chapterId: chapterPackage.chapterId,
+    })));
+    const failed = Array.isArray(result.failed) ? result.failed : [];
+    const failedKeys = new Set(failed.map(failedDeviceRemovalKey).filter(Boolean));
+    state.deviceStorageSelection = failedKeys;
+    const removedCount = Array.isArray(result.removed) ? result.removed.length : Number(result.removed) || 0;
+    announceDeviceStorage(failed.length
+      ? `${removedCount} chapter${removedCount === 1 ? "" : "s"} removed. ${failed.length} could not be removed and remain selected.`
+      : `${removedCount} chapter${removedCount === 1 ? "" : "s"} removed from this device.`, failed.length ? "bad" : "good");
+  } catch (error) {
+    announceDeviceStorage(`Chapters could not be removed: ${error.message}`, "bad");
+  } finally {
+    state.deviceStoragePendingRemoval = [];
+    await refreshDeviceStorage();
+    state.deviceStorageRemoving = false;
+    el.deviceStorageDialog?.removeAttribute("aria-busy");
+    if (el.deviceStorageCancel) el.deviceStorageCancel.disabled = false;
+    setBusy(el.deviceStorageConfirm, false);
+    renderDeviceStorage();
+    closeDeviceStorageDialog({ force: true });
+  }
 }
 
 function devicePackageAsChapter(chapterPackage) {
@@ -4023,6 +4465,7 @@ async function downloadChapterToDevice(chapter) {
     await initializeDeviceChapterState();
     if (transientFailure && !state.deviceChapters.has(key)) rememberDevicePackage(transientFailure);
     renderChapters();
+    await refreshDeviceStorage();
   }
 }
 
@@ -4036,6 +4479,10 @@ async function removeChapterFromDevice(chapter) {
   const key = deviceChapterKey(serverUrl, chapter.id);
   const chapterPackage = key ? state.deviceChapters.get(key) : null;
   if (!chapterPackage) return;
+  if (key === activeDeviceReaderPackageKey()) {
+    showToast("Close this offline chapter before removing it from the device.", "bad");
+    return;
+  }
   rememberDevicePackage({ ...chapterPackage, status: "removing" });
   renderChapters();
   try {
@@ -4047,6 +4494,7 @@ async function removeChapterFromDevice(chapter) {
     await initializeDeviceChapterState();
   }
   renderChapters();
+  await refreshDeviceStorage();
 }
 
 async function fetchChapters(options = {}) {
@@ -4354,14 +4802,16 @@ function deviceChapterStatus(chapterPackage) {
   if (!chapterPackage) return { state: "none", label: "Not saved to device" };
   const completed = Number(chapterPackage.downloadedPages) || 0;
   const total = Number(chapterPackage.totalPages || chapterPackage.pageUrls?.length) || 0;
+  const size = deviceChapterStoredBytes(chapterPackage);
+  const sizeLabel = size > 0 ? ` · ${formatStorageBytes(size)}` : "";
   if (chapterPackage.status === "preparing") return { state: "preparing", label: "Preparing download…" };
-  if (chapterPackage.status === "downloading") return { state: "downloading", label: `Saving ${completed}/${total}` };
-  if (chapterPackage.status === "paused") return { state: "paused", label: `Partial ${completed}/${total}` };
+  if (chapterPackage.status === "downloading") return { state: "downloading", label: `Saving ${completed}/${total}${sizeLabel}` };
+  if (chapterPackage.status === "paused") return { state: "paused", label: `Partial ${completed}/${total}${sizeLabel}` };
   if (chapterPackage.status === "failed") {
     const quota = chapterPackage.error?.code === "quota-exceeded";
-    return { state: "failed", label: quota ? "Storage full · retry" : `Incomplete ${completed}/${total} · retry` };
+    return { state: "failed", label: quota ? `Storage full${sizeLabel} · retry` : `Incomplete ${completed}/${total}${sizeLabel} · retry` };
   }
-  if (chapterPackage.status === "ready") return { state: "ready", label: "On this device" };
+  if (chapterPackage.status === "ready") return { state: "ready", label: `On this device${sizeLabel}` };
   if (chapterPackage.status === "removing") return { state: "removing", label: "Removing…" };
   return { state: "none", label: "Not saved to device" };
 }
@@ -8414,6 +8864,19 @@ function wireEvents() {
   el.installApp?.addEventListener("click", () => { void promptAppInstall(); });
   el.checkAppUpdate?.addEventListener("click", () => { void checkForAppUpdate(); });
   el.applyAppUpdate?.addEventListener("click", () => { void activateAppUpdate(); });
+  el.deviceStorageRefresh?.addEventListener("click", () => { void refreshDeviceStorageFromControl(); });
+  el.deviceStoragePersist?.addEventListener("click", () => { void protectDeviceStorage(); });
+  el.deviceStorageSelectAll?.addEventListener("click", setAllDeviceStorageSelection);
+  el.deviceStorageRemoveSelected?.addEventListener("click", () => openDeviceStorageRemovalDialog());
+  el.deviceStorageCancel?.addEventListener("click", (event) => {
+    event.preventDefault();
+    closeDeviceStorageDialog();
+  });
+  el.deviceStorageConfirm?.addEventListener("click", () => { void confirmDeviceStorageRemoval(); });
+  el.deviceStorageDialog?.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    closeDeviceStorageDialog();
+  });
   el.retryNetwork?.addEventListener("click", () => { void reconnectPanelPilot(); });
   el.testConnection.addEventListener("click", testConnection);
   el.loadSources.addEventListener("click", loadSources);
@@ -8508,6 +8971,7 @@ function wireEvents() {
       persistMangaBakaOutbox();
       return;
     }
+    if (state.activeView === "settings") void refreshDeviceStorage();
     if (!navigator.onLine) {
       handleBrowserOffline();
       return;
@@ -8642,6 +9106,7 @@ if (el.stage) {
   initializeInstallExperience();
   loadSettings();
   const deviceChapterInitialization = initializeDeviceChapterState();
+  void deviceChapterInitialization.then(() => refreshDeviceStorage()).catch(() => null);
   state.initialRoute = routeFromLocation();
   if (state.initialRoute.detail && state.initialRoute.manga) {
     state.currentManga = { ...state.initialRoute.manga };

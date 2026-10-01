@@ -10,6 +10,7 @@ export const DEVICE_CHAPTER_PATH_PREFIX = "/__panels_device_chapters/v1/";
 let databasePromise = null;
 let baseInitializationPromise = null;
 let maintenancePromise = null;
+let maintenanceCompleted = false;
 let operationChannel = null;
 const activeDownloads = new Set();
 const activeOperations = new Map();
@@ -154,12 +155,26 @@ function cloneMetadata(value) {
   return value === null || value === undefined ? value : JSON.parse(JSON.stringify(value));
 }
 
+export function deviceChapterStoredBytes(chapterPackage) {
+  const pages = Array.isArray(chapterPackage?.pages) ? chapterPackage.pages : [];
+  const seenCachePaths = new Set();
+  return pages.reduce((total, page) => {
+    if (!page || typeof page !== "object") return total;
+    const cachePath = typeof page.cacheUrl === "string" ? page.cacheUrl : "";
+    if (cachePath && seenCachePaths.has(cachePath)) return total;
+    if (cachePath) seenCachePaths.add(cachePath);
+    const size = Number(page.size);
+    return Number.isFinite(size) && size > 0 ? total + Math.floor(size) : total;
+  }, 0);
+}
+
 function publicMetadata(record) {
   const copy = cloneMetadata(record);
   if (!copy) return copy;
   delete copy.lease;
   delete copy.pendingDownload;
   delete copy.replacementError;
+  copy.storedBytes = deviceChapterStoredBytes(copy);
   return copy;
 }
 
@@ -194,6 +209,28 @@ function cacheRequest(cachePath) {
 function pathFromCacheRequest(request) {
   try {
     return new URL(request.url).pathname;
+  } catch {
+    return "";
+  }
+}
+
+function deviceCachePath(value) {
+  if (typeof value !== "string" || !value) return "";
+  try {
+    const path = new URL(value, globalThis.location?.origin).pathname;
+    return path.startsWith(DEVICE_CHAPTER_PATH_PREFIX) ? path : "";
+  } catch {
+    return "";
+  }
+}
+
+function deviceChapterKeyFromCachePath(cachePath) {
+  if (typeof cachePath !== "string" || !cachePath.startsWith(DEVICE_CHAPTER_PATH_PREFIX)) return "";
+  const encodedKey = cachePath.slice(DEVICE_CHAPTER_PATH_PREFIX.length).split("/", 1)[0];
+  if (!encodedKey) return "";
+  try {
+    const key = decodeURIComponent(encodedKey);
+    return cachePath.startsWith(chapterCachePrefix(key)) ? key : "";
   } catch {
     return "";
   }
@@ -376,7 +413,7 @@ async function deleteOperationCache(cache, key, operationId) { await deleteCache
 function mergeDownloadRecord(descriptor, existing) {
   const timestamp = now();
   return { ...descriptor, pages: [], status: "downloading", totalPages: descriptor.pageUrls.length, downloadedPages: 0,
-    createdAt: existing?.createdAt || timestamp, updatedAt: timestamp, readyAt: null, error: null };
+    storedBytes: 0, createdAt: existing?.createdAt || timestamp, updatedAt: timestamp, readyAt: null, error: null };
 }
 
 async function acquireDownloadLease(metadata, operationId) {
@@ -393,6 +430,7 @@ async function acquireDownloadLease(metadata, operationId) {
 
 async function persistWorkingRecord(key, lease, working, preserveReady) {
   working.updatedAt = now();
+  working.storedBytes = deviceChapterStoredBytes(working);
   await updateRecordAtomically(key, (current) => {
     if (!leaseMatches(current, lease)) throw invalidState("The device download is now owned by another tab.");
     const activeLease = refreshedLease(lease);
@@ -401,6 +439,7 @@ async function persistWorkingRecord(key, lease, working, preserveReady) {
 }
 
 async function finishDownloadRecord(key, lease, readyRecord) {
+  readyRecord.storedBytes = deviceChapterStoredBytes(readyRecord);
   await updateRecordAtomically(key, (current) => {
     if (!leaseMatches(current, lease)) throw invalidState("The device download is now owned by another tab.");
     return { record: { ...cloneMetadata(readyRecord), lease: refreshedLease(lease) } };
@@ -452,6 +491,7 @@ async function reconcileExistingPages(cache, working, previous) {
   }
   working.pages = pages;
   working.downloadedPages = pages.filter(Boolean).length;
+  working.storedBytes = deviceChapterStoredBytes(working);
 }
 
 async function storeFetchedPage(cache, cachePath, sourceUrl, signal) {
@@ -479,7 +519,7 @@ async function verifyCompleteRecord(cache, record) {
     pages[index] = { ...(record.pages[index] || {}), index, sourceUrl: record.pageUrls[index], cacheUrl: cachePath,
       contentType: verified.contentType, size: verified.size, completedAt: record.pages[index]?.completedAt || now() };
   }
-  record.pages = pages; record.downloadedPages = pages.length;
+  record.pages = pages; record.downloadedPages = pages.length; record.storedBytes = deviceChapterStoredBytes(record);
   return true;
 }
 
@@ -556,28 +596,89 @@ async function resumeInterruptedRemoval(record, cache) {
   }
 }
 
-async function revalidateReadyRecord(record, cache) {
-  if (record.status !== "ready" || leaseIsActive(record.lease)) return;
-  const totalPages = Number(record.totalPages) || record.pageUrls?.length || 0;
+async function reconcileStoredRecord(record, cache) {
+  if (!record || record.status === "removing" || leaseIsActive(record.lease)) return;
+  const declaredTotal = Number(record.totalPages);
+  const totalPages = Number.isInteger(declaredTotal) && declaredTotal > 0
+    ? declaredTotal
+    : Array.isArray(record.pageUrls) ? record.pageUrls.length : 0;
   const recordedPages = Array.isArray(record.pages) ? record.pages : [];
   const survivingPages = [];
   for (let index = 0; index < totalPages; index += 1) {
     const cachePath = recordedPages[index]?.cacheUrl || cachePathFor(record.key, index);
-    if (!cachePath.startsWith(chapterCachePrefix(record.key))) continue;
+    if (typeof cachePath !== "string" || !cachePath.startsWith(chapterCachePrefix(record.key))) continue;
     const verified = await inspectCachedPage(cache, cachePath);
     if (!verified) continue;
     survivingPages[index] = { ...(recordedPages[index] || {}), index, sourceUrl: record.pageUrls?.[index] || recordedPages[index]?.sourceUrl || "",
       cacheUrl: cachePath, contentType: verified.contentType, size: verified.size, completedAt: recordedPages[index]?.completedAt || now() };
   }
-  if (totalPages > 0 && survivingPages.filter(Boolean).length === totalPages) return;
+  const downloadedPages = survivingPages.filter(Boolean).length;
+  const storedBytes = deviceChapterStoredBytes({ pages: survivingPages });
+  const complete = totalPages > 0 && downloadedPages === totalPages;
+  const pagesChanged = JSON.stringify(recordedPages) !== JSON.stringify(survivingPages);
+  const countsChanged = Number(record.downloadedPages) !== downloadedPages
+    || Number(record.storedBytes) !== storedBytes;
+  const shouldDowngrade = record.status === "ready" && !complete;
+  if (!pagesChanged && !countsChanged && !shouldDowngrade) return;
   await updateRecordAtomically(record.key, (current) => {
-    if (!current || current.status !== "ready" || leaseIsActive(current.lease)) return { result: false };
-    if (current.updatedAt !== record.updatedAt || current.readyAt !== record.readyAt) return { result: false };
-    const incomplete = { ...current, pages: survivingPages, status: "paused", downloadedPages: survivingPages.filter(Boolean).length,
-      updatedAt: now(), readyAt: null, error: { code: "cache-missing", name: "MissingDeviceMedia", message: "One or more saved pages are missing from device storage. Resume the download to repair it." } };
-    delete incomplete.lease; delete incomplete.pendingDownload;
-    return { record: incomplete, result: true };
+    if (!current || current.status === "removing" || leaseIsActive(current.lease)) return { result: false };
+    if (current.updatedAt !== record.updatedAt || current.readyAt !== record.readyAt || current.status !== record.status) return { result: false };
+    const reconciled = { ...current, pages: survivingPages, downloadedPages, storedBytes };
+    if (shouldDowngrade) {
+      reconciled.status = "paused";
+      reconciled.updatedAt = now();
+      reconciled.readyAt = null;
+      reconciled.error = { code: "cache-missing", name: "MissingDeviceMedia", message: "One or more saved pages are missing from device storage. Resume the download to repair it." };
+      delete reconciled.lease; delete reconciled.pendingDownload;
+    }
+    return { record: reconciled, result: true };
   });
+}
+
+function referencedCachePaths(record) {
+  const paths = new Set();
+  const addPages = (pages) => {
+    if (!Array.isArray(pages)) return;
+    for (const page of pages) {
+      const path = deviceCachePath(page?.cacheUrl);
+      if (path) paths.add(path);
+    }
+  };
+  addPages(record?.pages);
+  addPages(record?.pendingDownload?.pages);
+  return paths;
+}
+
+async function removeOrphanedCachePaths(cache) {
+  const requestsByKey = new Map();
+  const malformedRequests = [];
+  for (const request of await cache.keys()) {
+    const path = pathFromCacheRequest(request);
+    if (!path.startsWith(DEVICE_CHAPTER_PATH_PREFIX)) continue;
+    const key = deviceChapterKeyFromCachePath(path);
+    if (!key) {
+      malformedRequests.push(request);
+      continue;
+    }
+    if (!requestsByKey.has(key)) requestsByKey.set(key, []);
+    requestsByKey.get(key).push({ request, path });
+  }
+
+  for (const request of malformedRequests) {
+    try { await cache.delete(request); }
+    catch { /* Orphan cleanup is best-effort and must not make storage unavailable. */ }
+  }
+
+  for (const [key, entries] of requestsByKey) {
+    const current = await getRecord(key);
+    if (leaseIsActive(current?.lease) || activeDownloads.has(key) || activeOperations.has(key)) continue;
+    const referenced = referencedCachePaths(current);
+    for (const entry of entries) {
+      if (referenced.has(entry.path)) continue;
+      try { await cache.delete(entry.request); }
+      catch { /* A later explicit reconciliation can retry cleanup. */ }
+    }
+  }
 }
 
 async function runMaintenance() {
@@ -587,11 +688,12 @@ async function runMaintenance() {
     else if (record) await recoverInterruptedRecord(record, cache);
   }
   for (const record of await getAllRecords()) {
-    if (record?.status === "ready") await revalidateReadyRecord(record, cache);
+    await reconcileStoredRecord(record, cache);
   }
+  await removeOrphanedCachePaths(cache);
 }
 
-export function initializeDeviceChapters() {
+export function initializeDeviceChapters({ reconcile = false } = {}) {
   if (!baseInitializationPromise) {
     baseInitializationPromise = (async () => {
       requireBrowserApi("caches");
@@ -602,7 +704,12 @@ export function initializeDeviceChapters() {
     })().catch((error) => { baseInitializationPromise = null; throw error; });
   }
   return baseInitializationPromise.then(async () => {
-    if (!maintenancePromise) maintenancePromise = runMaintenance().finally(() => { maintenancePromise = null; });
+    if (maintenanceCompleted && !reconcile) return true;
+    if (!maintenancePromise) {
+      maintenancePromise = runMaintenance()
+        .then(() => { maintenanceCompleted = true; })
+        .finally(() => { maintenancePromise = null; });
+    }
     await maintenancePromise;
     return true;
   });
@@ -624,6 +731,88 @@ export async function listDeviceChaptersForManga(serverUrl, mangaId) {
   const normalizedMangaId = normalizeIdentifier(mangaId, "mangaId");
   const records = (await getAllRecords()).filter((record) => record.serverUrl === normalizedServerUrl && String(record.mangaId) === normalizedMangaId);
   return sortRecords(records.map(publicMetadata));
+}
+
+async function readOriginStorageEstimate() {
+  const storageManager = globalThis.navigator?.storage;
+  if (typeof storageManager?.estimate !== "function") {
+    return { supported: false, usageBytes: null, quotaBytes: null, error: null };
+  }
+  try {
+    const estimate = await storageManager.estimate();
+    const usage = Number(estimate?.usage);
+    const quota = Number(estimate?.quota);
+    return {
+      supported: true,
+      usageBytes: Number.isFinite(usage) && usage >= 0 ? Math.floor(usage) : null,
+      quotaBytes: Number.isFinite(quota) && quota >= 0 ? Math.floor(quota) : null,
+      error: null,
+    };
+  } catch (error) {
+    return { supported: true, usageBytes: null, quotaBytes: null, error: errorDetails(error, "estimate-failed") };
+  }
+}
+
+async function readPersistenceStatus() {
+  const storageManager = globalThis.navigator?.storage;
+  const supported = typeof storageManager?.persisted === "function" || typeof storageManager?.persist === "function";
+  const requestSupported = typeof storageManager?.persist === "function";
+  if (!supported) return { supported: false, requestSupported: false, persisted: null, error: null };
+  if (typeof storageManager.persisted !== "function") return { supported: true, requestSupported, persisted: null, error: null };
+  try {
+    return { supported: true, requestSupported, persisted: Boolean(await storageManager.persisted()), error: null };
+  } catch (error) {
+    return { supported: true, requestSupported, persisted: null, error: errorDetails(error, "persistence-check-failed") };
+  }
+}
+
+export async function getDeviceChapterStorageSnapshot({ reconcile = false } = {}) {
+  await initializeDeviceChapters({ reconcile });
+  const packages = sortRecords((await getAllRecords()).map(publicMetadata));
+  const readyPackages = packages.filter((chapterPackage) => chapterPackage.status === "ready");
+  const storedBytes = packages.reduce((total, chapterPackage) => total + deviceChapterStoredBytes(chapterPackage), 0);
+  const readyBytes = readyPackages.reduce((total, chapterPackage) => total + deviceChapterStoredBytes(chapterPackage), 0);
+  const [origin, persistence] = await Promise.all([
+    readOriginStorageEstimate(),
+    readPersistenceStatus(),
+  ]);
+  return {
+    packages,
+    storedBytes,
+    readyBytes,
+    partialBytes: Math.max(0, storedBytes - readyBytes),
+    packageCount: packages.length,
+    readyCount: readyPackages.length,
+    partialCount: packages.length - readyPackages.length,
+    origin,
+    persistence,
+    measuredAt: now(),
+  };
+}
+
+export async function requestDeviceChapterPersistence() {
+  const storageManager = globalThis.navigator?.storage;
+  if (typeof storageManager?.persist !== "function") return readPersistenceStatus();
+  const current = await readPersistenceStatus();
+  if (current.persisted === true) return current;
+  try {
+    const granted = Boolean(await storageManager.persist());
+    if (typeof storageManager.persisted !== "function") {
+      return { supported: true, requestSupported: true, persisted: granted, error: null };
+    }
+    try {
+      return { supported: true, requestSupported: true, persisted: Boolean(await storageManager.persisted()), error: null };
+    } catch (error) {
+      return {
+        supported: true,
+        requestSupported: true,
+        persisted: granted,
+        error: errorDetails(error, "persistence-check-failed"),
+      };
+    }
+  } catch (error) {
+    return { supported: true, requestSupported: true, persisted: current.persisted, error: errorDetails(error, "persistence-request-failed") };
+  }
 }
 
 export async function downloadDeviceChapter(descriptor, { signal, onProgress } = {}) {
@@ -691,8 +880,7 @@ export async function downloadDeviceChapter(descriptor, { signal, onProgress } =
   }
 }
 
-export async function removeDeviceChapter(serverUrl, chapterId) {
-  await initializeDeviceChapters();
+async function removeDeviceChapterWithoutInitialization(serverUrl, chapterId) {
   const key = deviceChapterKey(serverUrl, chapterId);
   if (activeDownloads.has(key)) throw invalidState("Pause the chapter download before removing it.");
   const operationId = createOperationId("remove");
@@ -715,6 +903,64 @@ export async function removeDeviceChapter(serverUrl, chapterId) {
     stopHeartbeat();
     if (activeOperations.get(key) === operationId) activeOperations.delete(key);
   }
+}
+
+export async function removeDeviceChapter(serverUrl, chapterId) {
+  await initializeDeviceChapters();
+  return removeDeviceChapterWithoutInitialization(serverUrl, chapterId);
+}
+
+function reportBulkRemovalProgress(onProgress, progress) {
+  if (typeof onProgress !== "function") return;
+  try { onProgress(progress); }
+  catch { /* UI progress reporting must never stop removal. */ }
+}
+
+export async function removeDeviceChapters(references, { onProgress } = {}) {
+  if (!Array.isArray(references)) throw new TypeError("Device chapter references must be an array.");
+  await initializeDeviceChapters();
+  const targets = [];
+  const failed = [];
+  const seenKeys = new Set();
+  for (const reference of references) {
+    try {
+      const serverUrl = normalizeServerUrl(reference?.serverUrl);
+      const chapterId = normalizeIdentifier(reference?.chapterId, "chapterId");
+      const key = deviceChapterKey(serverUrl, chapterId);
+      if (seenKeys.has(key)) continue;
+      seenKeys.add(key);
+      targets.push({ key, serverUrl, chapterId: serializableValue(reference.chapterId) });
+    } catch (error) {
+      failed.push({
+        key: "",
+        serverUrl: String(reference?.serverUrl || ""),
+        chapterId: serializableValue(reference?.chapterId),
+        error: errorDetails(error, "invalid-reference"),
+      });
+    }
+  }
+  const removed = [];
+  const total = targets.length + failed.length;
+  let completed = 0;
+  for (const failure of failed) {
+    completed += 1;
+    reportBulkRemovalProgress(onProgress, { completed, total, status: "failed", target: failure, error: failure.error });
+  }
+  for (const target of targets) {
+    try {
+      const existed = await removeDeviceChapterWithoutInitialization(target.serverUrl, target.chapterId);
+      const result = { ...target, existed };
+      removed.push(result);
+      completed += 1;
+      reportBulkRemovalProgress(onProgress, { completed, total, status: "removed", target: result, error: null });
+    } catch (error) {
+      const failure = { ...target, error: errorDetails(error, "removal-failed") };
+      failed.push(failure);
+      completed += 1;
+      reportBulkRemovalProgress(onProgress, { completed, total, status: "failed", target: failure, error: failure.error });
+    }
+  }
+  return { requested: total, removed, failed };
 }
 
 export function deviceChapterPageUrls(chapterPackage) {
