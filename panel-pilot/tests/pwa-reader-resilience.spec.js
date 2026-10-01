@@ -288,8 +288,12 @@ async function gotoApp(page) {
 
 async function openDemo(page) {
   await page.locator("#nav-settings").click();
-  await page.locator("#toggle-suwayomi-panel").click();
-  await page.locator(".setup-advanced > summary").click();
+  if (!await page.locator("#suwayomi-setup").isVisible()) {
+    await page.locator("#toggle-suwayomi-panel").click();
+  }
+  if (!await page.locator("#load-demo").isVisible()) {
+    await page.locator(".setup-advanced > summary").click();
+  }
   await page.locator("#load-demo").click();
   await expect(page.locator("#reader-view")).toHaveClass(/\bactive\b/, { timeout: 20_000 });
   await expect(page.locator("#reader-loading")).toHaveAttribute("aria-hidden", "true", { timeout: 20_000 });
@@ -390,6 +394,17 @@ test("wake lock follows reader visibility and the persisted preference", async (
     active: 1,
   });
 
+  await page.locator("#reader-back").click();
+  await expect.poll(() => page.evaluate(() => window.__readerWakeLock.snapshot())).toMatchObject({
+    releases: 2,
+    active: 0,
+  });
+  await openDemo(page);
+  await expect.poll(() => page.evaluate(() => window.__readerWakeLock.snapshot())).toMatchObject({
+    requests: 3,
+    active: 1,
+  });
+
   await page.locator(".reader-options > summary").click();
   await expect(page.locator("#keep-screen-awake")).toBeVisible();
   await expect(page.locator("#keep-screen-awake")).toBeChecked();
@@ -469,20 +484,36 @@ test("stale and cancelled chapter responses cannot replace current reader state"
   await expect(page.locator("#stage-image")).not.toHaveAttribute("src", /\/1101\//);
 });
 
-test("pagehide flushes progress and BFCache pageshow resumes once", async ({ page }) => {
+test("pagehide preserves the exact page and panel while BFCache pageshow resumes once", async ({ page }) => {
   await seedSettings(page, { keepScreenAwake: true });
   await installVisibilityShim(page);
   await installWakeLockMock(page);
-  await installBackend(page, { chapterIds: [1101], pageCount: 3 });
+  await installBackend(page, { chapterIds: [1101], pageCount: 5 });
   await gotoApp(page);
   await openFixtureChapter(page);
 
+  await moveToPage(page, 3);
   await page.locator("#next-panel").click();
+  await expect(page.locator("#page-stat")).toHaveText("Page 3 / 5");
+  await expect(page.locator("#panel-stat")).toHaveText(/^Panel 2 \/ /);
+  const positionBeforeHide = await page.evaluate(() => ({
+    page: document.querySelector("#page-stat")?.textContent,
+    panel: document.querySelector("#panel-stat")?.textContent,
+    detectorRuns: window.PanelPilot.getReaderLifecycleDiagnostics().detectorRuns,
+  }));
+  const backgroundStartsBeforeHide = await page.evaluate(() => (
+    window.PanelPilot.getPerformanceStats().backgroundStarts
+  ));
+
   await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true })));
   await expect.poll(() => page.evaluate(() => {
     const outbox = JSON.parse(localStorage.getItem("panel-pilot-progress-outbox") || "[]");
     return outbox.length;
   })).toBe(1);
+  await expect.poll(() => page.evaluate(() => {
+    const [item] = JSON.parse(localStorage.getItem("panel-pilot-library") || "[]");
+    return item ? { pageIndex: item.pageIndex, panelIndex: item.panelIndex } : null;
+  })).toEqual({ pageIndex: 2, panelIndex: 1 });
   await expect.poll(() => page.evaluate(() => window.__readerWakeLock.snapshot().active)).toBe(0);
 
   const requestsBeforeResume = await page.evaluate(() => window.__readerWakeLock.snapshot().requests);
@@ -492,6 +523,13 @@ test("pagehide flushes progress and BFCache pageshow resumes once", async ({ pag
   });
   await expect.poll(() => page.evaluate(() => window.__readerWakeLock.snapshot().active)).toBe(1);
   await expect.poll(() => page.evaluate(() => window.__readerWakeLock.snapshot().requests)).toBe(requestsBeforeResume + 1);
+  await expect.poll(() => page.evaluate(() => window.PanelPilot.getPerformanceStats().backgroundStarts))
+    .toBe(backgroundStartsBeforeHide + 1);
+  await expect.poll(() => page.evaluate(() => ({
+    page: document.querySelector("#page-stat")?.textContent,
+    panel: document.querySelector("#panel-stat")?.textContent,
+    detectorRuns: window.PanelPilot.getReaderLifecycleDiagnostics().detectorRuns,
+  }))).toEqual(positionBeforeHide);
 });
 
 test("reader memory stays capped and revisiting a prepared page does not rerun detection", async ({ page }) => {
@@ -516,6 +554,68 @@ test("reader memory stays capped and revisiting a prepared page does not rerun d
   const revisited = await page.evaluate(() => window.PanelPilot.getReaderLifecycleDiagnostics());
   expect(revisited.detectorRuns).toBe(detectorRunsBefore);
   expect(revisited.residentDecodedImages).toBeLessThanOrEqual(revisited.decodedImageCap);
+});
+
+test("a long webtoon caps decoded images and live DOM nodes while its render window advances", async ({ page }) => {
+  const pageCount = 14;
+  await seedSettings(page, { panelMode: "webtoon" });
+  await installBackend(page, { chapterIds: [1101], pageCount, webtoon: true });
+  await gotoApp(page);
+  await openFixtureChapter(page);
+
+  await expect.poll(() => page.evaluate(() => ({
+    nextSourceIndex: window.PanelPilot.getPerformanceStats().webtoonPreparation?.nextSourceIndex,
+    backgroundPreparing: window.PanelPilot.getReaderLifecycleDiagnostics().backgroundPreparing,
+  })), { timeout: 30_000 }).toEqual({ nextSourceIndex: pageCount, backgroundPreparing: false });
+
+  const initial = await page.evaluate(() => {
+    const diagnostics = window.PanelPilot.getReaderLifecycleDiagnostics();
+    const strip = document.querySelector(".stage-strip");
+    return {
+      decoded: diagnostics.residentDecodedImages,
+      decodedCap: diagnostics.decodedImageCap,
+      liveNodes: diagnostics.liveWebtoonImageNodes,
+      liveCap: diagnostics.liveWebtoonImageCap,
+      images: strip?.querySelectorAll("img[data-segment-index]").length || 0,
+      placeholders: strip?.querySelectorAll("[data-segment-placeholder]").length || 0,
+      children: strip?.children.length || 0,
+    };
+  });
+  expect(initial.decoded).toBeLessThanOrEqual(initial.decodedCap);
+  expect(initial.liveNodes).toBeLessThanOrEqual(initial.liveCap);
+  expect(initial.images).toBe(initial.liveNodes);
+  expect(initial.children).toBe(pageCount);
+  expect(initial.images + initial.placeholders).toBe(pageCount);
+
+  await expect.poll(async () => {
+    const indexes = await page.locator(".stage-strip img[data-segment-index]").evaluateAll((images) => (
+      images.map((image) => Number(image.dataset.segmentIndex))
+    ));
+    if (Math.max(...indexes) >= 10) return true;
+    await page.locator("#next-panel").click();
+    return false;
+  }, { timeout: 20_000, intervals: [20, 30, 50] }).toBe(true);
+
+  const advanced = await page.evaluate(() => {
+    const diagnostics = window.PanelPilot.getReaderLifecycleDiagnostics();
+    const strip = document.querySelector(".stage-strip");
+    const liveIndexes = [...strip.querySelectorAll("img[data-segment-index]")]
+      .map((image) => Number(image.dataset.segmentIndex));
+    return {
+      decoded: diagnostics.residentDecodedImages,
+      decodedCap: diagnostics.decodedImageCap,
+      liveNodes: diagnostics.liveWebtoonImageNodes,
+      liveCap: diagnostics.liveWebtoonImageCap,
+      minLiveIndex: Math.min(...liveIndexes),
+      maxLiveIndex: Math.max(...liveIndexes),
+      children: strip.children.length,
+    };
+  });
+  expect(advanced.decoded).toBeLessThanOrEqual(advanced.decodedCap);
+  expect(advanced.liveNodes).toBeLessThanOrEqual(advanced.liveCap);
+  expect(advanced.minLiveIndex).toBeGreaterThan(0);
+  expect(advanced.maxLiveIndex).toBeGreaterThanOrEqual(10);
+  expect(advanced.children).toBe(pageCount);
 });
 
 test("a failed webtoon segment recovers without escaping strip bounds", async ({ page }) => {
@@ -583,6 +683,145 @@ test("reader layout respects visual viewport changes without horizontal overflow
       reader: { left: 0, right: viewport.width },
     });
   }
+});
+
+test("the first viewport fit is not suppressed during a fast reader startup", async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(performance, "now", {
+      configurable: true,
+      value: () => 100,
+    });
+  });
+  await seedSettings(page);
+  await installBackend(page, { chapterIds: [1101], pageCount: 2 });
+  await gotoApp(page);
+  await openFixtureChapter(page);
+
+  await expect.poll(() => page.evaluate(() => window.PanelPilot.getPerformanceStats().viewportFits)).toBe(1);
+});
+
+test("rotation preserves page and panel, coalesces one refit, and does not rerun detection", async ({ page }) => {
+  await page.setViewportSize({ width: 820, height: 1180 });
+  await seedSettings(page);
+  await installBackend(page, { chapterIds: [1101], pageCount: 4 });
+  await gotoApp(page);
+  await openFixtureChapter(page);
+  const stageBox = await page.locator("#stage").boundingBox();
+  await page.locator("#stage").click({
+    position: { x: Math.round((stageBox?.width || 820) / 2), y: Math.round((stageBox?.height || 1180) / 2) },
+  });
+  await expect(page.locator("#next-panel")).toBeVisible();
+  await moveToPage(page, 3);
+  await page.locator("#next-panel").click();
+  await expect(page.locator("#panel-stat")).toHaveText(/^Panel 2 \/ /);
+  await expect.poll(() => page.evaluate(() => window.PanelPilot.getReaderLifecycleDiagnostics().metadataPages)).toBe(4);
+  await page.waitForTimeout(250);
+
+  const before = await page.evaluate(() => ({
+    page: document.querySelector("#page-stat")?.textContent,
+    panel: document.querySelector("#panel-stat")?.textContent,
+    detectorRuns: window.PanelPilot.getReaderLifecycleDiagnostics().detectorRuns,
+    cameraFits: window.PanelPilot.getPerformanceStats().cameraFits,
+    viewportFits: window.PanelPilot.getPerformanceStats().viewportFits,
+    transform: document.querySelector("#stage-image")?.style.transform,
+  }));
+
+  await page.setViewportSize({ width: 1180, height: 820 });
+  await page.evaluate(() => {
+    window.visualViewport?.dispatchEvent(new Event("resize"));
+    window.dispatchEvent(new Event("orientationchange"));
+  });
+  await expect.poll(() => page.evaluate(() => window.PanelPilot.getPerformanceStats().viewportFits)).toBe(before.viewportFits + 1);
+  await page.waitForTimeout(250);
+
+  const after = await page.evaluate(() => ({
+    page: document.querySelector("#page-stat")?.textContent,
+    panel: document.querySelector("#panel-stat")?.textContent,
+    detectorRuns: window.PanelPilot.getReaderLifecycleDiagnostics().detectorRuns,
+    cameraFits: window.PanelPilot.getPerformanceStats().cameraFits,
+    viewportFits: window.PanelPilot.getPerformanceStats().viewportFits,
+    transform: document.querySelector("#stage-image")?.style.transform,
+  }));
+  expect(after.page).toBe(before.page);
+  expect(after.panel).toBe(before.panel);
+  expect(after.detectorRuns).toBe(before.detectorRuns);
+  expect(after.viewportFits).toBe(before.viewportFits + 1);
+  expect(after.cameraFits).toBeGreaterThan(before.cameraFits);
+  expect(after.transform).not.toBe(before.transform);
+
+  await page.setViewportSize({ width: 820, height: 1180 });
+  await page.evaluate(() => {
+    window.visualViewport?.dispatchEvent(new Event("resize"));
+    window.dispatchEvent(new Event("orientationchange"));
+  });
+  await expect.poll(() => page.evaluate(() => window.PanelPilot.getPerformanceStats().viewportFits))
+    .toBe(before.viewportFits + 2);
+  await expect.poll(() => page.evaluate(() => ({
+    page: document.querySelector("#page-stat")?.textContent,
+    panel: document.querySelector("#panel-stat")?.textContent,
+    detectorRuns: window.PanelPilot.getReaderLifecycleDiagnostics().detectorRuns,
+  }))).toEqual({
+    page: before.page,
+    panel: before.panel,
+    detectorRuns: before.detectorRuns,
+  });
+});
+
+test("the built shell keeps the standalone safe-area and non-composited header invariants", async ({ page }) => {
+  await seedSettings(page);
+  await installBackend(page);
+  await gotoApp(page);
+
+  const contract = await page.evaluate(async () => {
+    const rules = [];
+    const collectRules = (ruleList) => {
+      for (const rule of ruleList) {
+        if (rule.selectorText) rules.push({ selector: rule.selectorText, cssText: rule.style.cssText });
+        else if (rule.cssRules) collectRules(rule.cssRules);
+      }
+    };
+    for (const sheet of document.styleSheets) collectRules(sheet.cssRules);
+    const declarationsFor = (selector) => rules
+      .filter((rule) => rule.selector.split(",").map((item) => item.trim()).includes(selector))
+      .map((rule) => rule.cssText)
+      .join(" ");
+    const header = document.querySelector("#library-view .view-header");
+    const activeView = document.querySelector("#library-view");
+    document.documentElement.style.setProperty("--app-nav-bottom-inset", "31px");
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const navigation = document.querySelector(".app-nav").getBoundingClientRect();
+    return {
+      viewport: document.querySelector('meta[name="viewport"]')?.content || "",
+      root: declarationsFor(":root"),
+      viewHeader: declarationsFor(".view-header"),
+      readerTopbar: declarationsFor(".reader-topbar"),
+      readerControls: declarationsFor(".reader-controls"),
+      appNav: declarationsFor(".app-nav"),
+      computed: {
+        activeViewAnimation: getComputedStyle(activeView).animationName,
+        activeViewTransform: getComputedStyle(activeView).transform,
+        headerFilter: getComputedStyle(header).filter,
+        headerBackdrop: getComputedStyle(header).backdropFilter,
+        navigationBottom: Math.round(innerHeight - navigation.bottom),
+      },
+    };
+  });
+
+  expect(contract.viewport).toContain("viewport-fit=cover");
+  expect(contract.root).toMatch(/--app-nav-bottom-inset:\s*max\([^;]*safe-area-inset-bottom/i);
+  expect(contract.viewHeader).toMatch(/safe-area-inset-(?:top|left|right)/i);
+  expect(contract.readerTopbar).toMatch(/safe-area-inset-(?:top|left|right)/i);
+  expect(contract.readerControls).toMatch(/safe-area-inset-(?:bottom|left|right)/i);
+  expect(contract.appNav).toMatch(/safe-area-inset-left/i);
+  expect(contract.appNav).toMatch(/safe-area-inset-right/i);
+  expect(contract.appNav).toMatch(/bottom:\s*var\(--app-nav-bottom-inset\)/i);
+  expect(contract.computed).toEqual({
+    activeViewAnimation: "none",
+    activeViewTransform: "none",
+    headerFilter: "none",
+    headerBackdrop: "none",
+    navigationBottom: 31,
+  });
 });
 
 test("iPad full-page reading advances whole pages and returns to panel navigation", async ({ page }) => {

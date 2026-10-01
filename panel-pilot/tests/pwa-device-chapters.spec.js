@@ -84,6 +84,21 @@ function fixtureImage(chapterId, pageNumber) {
   `);
 }
 
+function fixtureMultiPanelImage(chapterId, pageNumber) {
+  const hue = (Number(chapterId) + pageNumber * 47) % 360;
+  return Buffer.from(`
+    <svg xmlns="http://www.w3.org/2000/svg" width="360" height="540" viewBox="0 0 360 540">
+      <rect width="360" height="540" fill="white"/>
+      <g fill="hsl(${hue} 32% 93%)" stroke="#202522" stroke-width="7">
+        <rect x="12" y="12" width="158" height="246"/>
+        <rect x="190" y="12" width="158" height="246"/>
+        <rect x="12" y="282" width="158" height="246"/>
+        <rect x="190" y="282" width="158" height="246"/>
+      </g>
+    </svg>
+  `);
+}
+
 async function readJsonRequest(request) {
   const chunks = [];
   for await (const chunk of request) chunks.push(chunk);
@@ -91,8 +106,15 @@ async function readJsonRequest(request) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
-function startDeviceChapterFixture({ phaseThreeController = false, incapableUpdate = false } = {}) {
+function startDeviceChapterFixture({
+  phaseThreeController = false,
+  incapableUpdate = false,
+  mangaBakaConnected = false,
+} = {}) {
   const missingImages = new Set();
+  const nonImageResponses = new Set();
+  const emptyImageResponses = new Set();
+  const multiPanelImages = new Set();
   const heldImages = new Set();
   const pendingImages = new Map();
   const imageRequests = new Map();
@@ -103,12 +125,16 @@ function startDeviceChapterFixture({ phaseThreeController = false, incapableUpda
   const progressAttempts = [];
   const chapterListRequests = new Map();
   const progressMutations = [];
+  const mangaBakaMutations = [];
   let libraryItems = [{ ...manga }];
+  let libraryResumeRevision = 0;
   let serveUpdatedWorker = false;
   let failChapterListQueries = false;
 
   function sendImage(response, chapterId, pageNumber) {
-    const body = fixtureImage(chapterId, pageNumber);
+    const body = multiPanelImages.has(imagePath(chapterId, pageNumber))
+      ? fixtureMultiPanelImage(chapterId, pageNumber)
+      : fixtureImage(chapterId, pageNumber);
     response.writeHead(200, {
       "Cache-Control": "no-store",
       "Content-Length": body.length,
@@ -169,6 +195,25 @@ function startDeviceChapterFixture({ phaseThreeController = false, incapableUpda
       if (missingImages.has(url.pathname)) {
         response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
         response.end("Fixture page intentionally missing");
+        return;
+      }
+      if (nonImageResponses.has(url.pathname)) {
+        const body = Buffer.from("Fixture page is not an image");
+        response.writeHead(200, {
+          "Cache-Control": "no-store",
+          "Content-Length": body.length,
+          "Content-Type": "text/plain; charset=utf-8",
+        });
+        response.end(body);
+        return;
+      }
+      if (emptyImageResponses.has(url.pathname)) {
+        response.writeHead(200, {
+          "Cache-Control": "no-store",
+          "Content-Length": 0,
+          "Content-Type": "image/svg+xml; charset=utf-8",
+        });
+        response.end();
         return;
       }
       if (heldImages.has(url.pathname)) {
@@ -279,7 +324,19 @@ function startDeviceChapterFixture({ phaseThreeController = false, incapableUpda
 
     if (url.pathname === "/api/mangabaka/status") {
       response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-      response.end(JSON.stringify({ configured: false, connected: false }));
+      response.end(JSON.stringify(mangaBakaConnected ? {
+        configured: true,
+        connected: true,
+        profile: { id: "fixture-mangabaka-account" },
+        recommendations: { ready: true },
+      } : { configured: false, connected: false }));
+      return;
+    }
+
+    if (url.pathname === "/api/mangabaka/library" && request.method === "POST") {
+      mangaBakaMutations.push(await readJsonRequest(request));
+      response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({ updated: true }));
       return;
     }
 
@@ -335,6 +392,15 @@ function startDeviceChapterFixture({ phaseThreeController = false, incapableUpda
         markImageMissing(chapterId, pageNumber) {
           missingImages.add(imagePath(chapterId, pageNumber));
         },
+        markImageNonImage(chapterId, pageNumber) {
+          nonImageResponses.add(imagePath(chapterId, pageNumber));
+        },
+        markImageEmpty(chapterId, pageNumber) {
+          emptyImageResponses.add(imagePath(chapterId, pageNumber));
+        },
+        markChapterMultiPanel(chapterId) {
+          fixturePages(chapterId).forEach((path) => multiPanelImages.add(path));
+        },
         imageRequestCount(chapterId, pageNumber) {
           return imageRequests.get(imagePath(chapterId, pageNumber)) || 0;
         },
@@ -354,8 +420,9 @@ function startDeviceChapterFixture({ phaseThreeController = false, incapableUpda
           if (kind) return chapterListRequests.get(kind) || 0;
           return [...chapterListRequests.values()].reduce((total, count) => total + count, 0);
         },
-        setLibraryResume(chapterId) {
+        setLibraryResume(chapterId, overrides = {}) {
           const chapter = chapters.find((entry) => entry.id === Number(chapterId));
+          libraryResumeRevision += 1;
           libraryItems = [{
             ...manga,
             chapterId: Number(chapterId),
@@ -363,7 +430,8 @@ function startDeviceChapterFixture({ phaseThreeController = false, incapableUpda
             pageIndex: 0,
             panelIndex: 0,
             progressLabel: "Page 1",
-            updatedAt: "2026-10-02T00:00:00.000Z",
+            updatedAt: new Date(Date.UTC(2099, 0, 1, 0, 0, libraryResumeRevision)).toISOString(),
+            ...structuredClone(overrides),
           }];
         },
         progressAttempts,
@@ -372,6 +440,10 @@ function startDeviceChapterFixture({ phaseThreeController = false, incapableUpda
           return [...syntheticRequests.values()].reduce((total, count) => total + count, 0);
         },
         progressMutations,
+        mangaBakaMutations,
+        librarySnapshot() {
+          return structuredClone(libraryItems);
+        },
         close() {
           for (const responses of pendingImages.values()) {
             for (const pendingResponse of responses) pendingResponse.destroy();
@@ -416,7 +488,7 @@ async function prepareApp(page, context, fixture, { controlled = false } = {}) {
 
 async function openChapterList(page) {
   const row = chapterRow(page, chapters[0].id);
-  if (await row.count()) return;
+  if (await row.isVisible().catch(() => false)) return;
   await page.locator("#nav-library").click();
   const card = page.locator(".library-card").filter({ hasText: manga.mangaTitle });
   await expect(card).toBeVisible();
@@ -430,6 +502,12 @@ function chapterRow(page, chapterId) {
 
 function chapterAction(page, chapterId, action) {
   return chapterRow(page, chapterId).locator(`[data-device-action="${action}"]`);
+}
+
+function deviceStorageRow(page, chapterTitle) {
+  return page.locator("[data-device-storage-row]").filter({
+    has: page.getByText(chapterTitle, { exact: true }),
+  });
 }
 
 async function deviceState(page, chapterId) {
@@ -501,6 +579,8 @@ async function devicePackageIntegrity(page, chapterId) {
       status: record.status,
       totalPages: record.totalPages,
       downloadedPages: record.downloadedPages,
+      storedBytes: record.storedBytes,
+      cachePaths: record.pages.map((entry) => entry?.cacheUrl || "").filter(Boolean),
       cachedPages: cachedPaths.length,
     };
   }, chapterId);
@@ -524,6 +604,17 @@ async function installQuotaFailureShim(page) {
       }
       return cache;
     };
+  });
+}
+
+async function installIndexedDbFailureShim(page) {
+  await page.addInitScript(() => {
+    Object.defineProperty(IDBFactory.prototype, "open", {
+      configurable: true,
+      value() {
+        throw new DOMException("Fixture private-mode storage denial", "SecurityError");
+      },
+    });
   });
 }
 
@@ -734,6 +825,59 @@ test("a downloaded chapter survives reload, opens offline, and advances", async 
   }
 });
 
+for (const scenario of [
+  { mode: "manga", direction: "rtl", pageIndex: 1, panelIndex: 1 },
+  { mode: "comic", direction: "ltr", pageIndex: 2, panelIndex: 2 },
+  { mode: "webtoon", direction: "rtl", pageIndex: 0, panelIndex: 3 },
+]) {
+  test(`offline ${scenario.mode} reading restores ${scenario.direction.toUpperCase()} page and panel position`, async ({ page, context }) => {
+    const fixture = await startDeviceChapterFixture();
+    try {
+      fixture.markChapterMultiPanel(1101);
+      fixture.setLibraryResume(1101, {
+        pageIndex: scenario.pageIndex,
+        panelIndex: scenario.panelIndex,
+        panelMode: scenario.mode,
+        readingDirection: scenario.direction,
+        progressLabel: `Page ${scenario.pageIndex + 1}, panel ${scenario.panelIndex + 1}`,
+      });
+      await prepareApp(page, context, fixture, { controlled: true });
+      await openChapterList(page);
+      await downloadChapter(page, 1101);
+      await expectDeviceReady(page, 1101);
+      const imageRequestsBeforeOfflineOpen = [1, 2, 3].map((pageNumber) => (
+        fixture.imageRequestCount(1101, pageNumber)
+      ));
+
+      await context.setOffline(true);
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.locator("#nav-library").click();
+      const card = page.locator(".library-card").filter({ hasText: manga.mangaTitle });
+      await expect(card).toBeVisible();
+      await card.locator(".manga-cover-button").click();
+
+      await expect(page.locator("#reader-view")).toHaveClass(/\bactive\b/);
+      await expect(page.locator("#reader-loading")).toHaveAttribute("aria-hidden", "true", { timeout: 15_000 });
+      await expect(page.locator("#reader-error")).toBeHidden();
+      await expect(page.locator(`#${scenario.mode}-mode`)).toHaveAttribute("aria-pressed", "true");
+      await expect(page.locator(`#${scenario.direction}-order`)).toHaveAttribute("aria-pressed", "true");
+      await expect(page.locator("#page-stat")).toHaveText(
+        scenario.mode === "webtoon" ? /^Page 1 \/ 1$/ : new RegExp(`^Page ${scenario.pageIndex + 1} \\/ 3$`),
+      );
+      await expect(page.locator("#panel-stat")).toHaveText(
+        new RegExp(`^Panel ${scenario.panelIndex + 1} \\/ \\d+$`),
+      );
+      const panelTotal = Number((await page.locator("#panel-stat").textContent())?.split("/")[1]);
+      expect(panelTotal).toBeGreaterThan(scenario.panelIndex);
+      expect([1, 2, 3].map((pageNumber) => fixture.imageRequestCount(1101, pageNumber)))
+        .toEqual(imageRequestsBeforeOfflineOpen);
+    } finally {
+      await context.setOffline(false);
+      await fixture.close();
+    }
+  });
+}
+
 test("a ready device chapter survives suspension without network fallback or position loss", async ({ page, context }) => {
   const fixture = await startDeviceChapterFixture();
   try {
@@ -753,7 +897,7 @@ test("a ready device chapter survives suspension without network fallback or pos
       panel: await page.locator("#panel-stat").textContent(),
     };
     const integrityBefore = await devicePackageIntegrity(page, 1101);
-    expect(integrityBefore).toEqual({
+    expect(integrityBefore).toMatchObject({
       status: "ready",
       totalPages: 3,
       downloadedPages: 3,
@@ -875,6 +1019,62 @@ test("a missing page reports an incomplete package while the online app and Test
   }
 });
 
+test("non-image and empty page responses never become ready and leave the online app usable", async ({ page, context }) => {
+  const fixture = await startDeviceChapterFixture();
+  const pageErrors = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  try {
+    fixture.markImageNonImage(1101, 2);
+    fixture.markImageEmpty(1102, 2);
+    await prepareApp(page, context, fixture, { controlled: true });
+    await openChapterList(page);
+
+    for (const chapterId of [1101, 1102]) {
+      await downloadChapter(page, chapterId);
+      await expect.poll(() => deviceState(page, chapterId), { timeout: 15_000 })
+        .toMatch(/failed|error|incomplete|interrupted|retry|unavailable/);
+      await expect(chapterAction(page, chapterId, "open")).toBeHidden();
+      await expect(chapterAction(page, chapterId, "download")).toBeVisible();
+      await expect.poll(() => devicePackageIntegrity(page, chapterId)).toMatchObject({
+        status: "failed",
+        totalPages: 3,
+        downloadedPages: 1,
+        cachedPages: 1,
+      });
+    }
+
+    await page.locator("#nav-settings").click();
+    await expect(page.locator("#settings-view")).toHaveClass(/\bactive\b/);
+    await page.goto(`${fixture.origin}/panel-test.html`, { waitUntil: "networkidle" });
+    await expect.poll(() => page.evaluate(() => typeof window.PanelPilot?.detectPanels)).toBe("function");
+    expect(pageErrors).toEqual([]);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("an IndexedDB privacy denial is nonfatal to online reading and Test Lab", async ({ page, context }) => {
+  const fixture = await startDeviceChapterFixture();
+  const pageErrors = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  try {
+    await installIndexedDbFailureShim(page);
+    await prepareApp(page, context, fixture, { controlled: true });
+    await openChapterList(page);
+
+    await chapterRow(page, 1101).locator('[data-chapter-action="read"]').click();
+    await expect(page.locator("#reader-view")).toHaveClass(/\bactive\b/, { timeout: 20_000 });
+    await expect(page.locator("#chapter-title")).toContainText("Device chapter one");
+    await expect(page.locator("#stage-image")).toBeVisible();
+
+    await page.goto(`${fixture.origin}/panel-test.html`, { waitUntil: "networkidle" });
+    await expect.poll(() => page.evaluate(() => typeof window.PanelPilot?.detectPanels)).toBe("function");
+    expect(pageErrors).toEqual([]);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("quota exhaustion is reported honestly without breaking online navigation", async ({ page, context }) => {
   const fixture = await startDeviceChapterFixture();
   try {
@@ -923,6 +1123,72 @@ test("removing one package leaves another downloaded chapter available offline",
   }
 });
 
+test("offline bulk removal preserves progress and server state while the surviving package opens", async ({ page, context }) => {
+  const fixture = await startDeviceChapterFixture();
+  const preservedOutbox = [{
+    serverUrl: "http://localhost:4567",
+    chapterId: 1102,
+    lastPageRead: 1,
+    completed: false,
+    updatedAt: 1,
+  }];
+  try {
+    await prepareApp(page, context, fixture, { controlled: true });
+    await openChapterList(page);
+    await downloadChapter(page, 1101);
+    await expectDeviceReady(page, 1101);
+    await downloadChapter(page, 1102);
+    await expectDeviceReady(page, 1102);
+
+    await page.evaluate((outbox) => {
+      localStorage.setItem("panel-pilot-progress-outbox", JSON.stringify(outbox));
+    }, preservedOutbox);
+    const serverLibraryBefore = fixture.librarySnapshot();
+    const progressMutationsBefore = fixture.progressMutations.length;
+
+    await page.locator("#nav-settings").click();
+    await expect(page.locator("#device-storage-panel")).toBeVisible();
+    await page.locator("#device-storage-manager > summary").click();
+    const removeRow = deviceStorageRow(page, "Device chapter one");
+    const survivingRow = deviceStorageRow(page, "Device chapter two");
+    await expect(removeRow).toBeVisible();
+    await expect(survivingRow).toBeVisible();
+    await removeRow.locator("[data-device-storage-select]").check();
+    await page.locator("#device-storage-remove-selected").click();
+    await expect(page.locator("#device-storage-dialog")).toHaveAttribute("open", "");
+
+    await context.setOffline(true);
+    await page.locator("#device-storage-confirm").click();
+    await expect(removeRow).toHaveCount(0);
+    await expect(survivingRow).toBeVisible();
+    expect(await page.evaluate(() => JSON.parse(localStorage.getItem("panel-pilot-progress-outbox") || "[]")))
+      .toEqual(preservedOutbox);
+    expect(fixture.librarySnapshot()).toEqual(serverLibraryBefore);
+    expect(fixture.progressMutations).toHaveLength(progressMutationsBefore);
+    await survivingRow.locator("[data-device-storage-select]").check();
+    await expect(page.locator("#device-storage-remove-selected")).toBeEnabled();
+
+    await openChapterList(page);
+    await chapterAction(page, 1102, "open").click();
+    await expect(page.locator("#reader-view")).toHaveClass(/\bactive\b/);
+    await expect(page.locator("#chapter-title")).toContainText("Device chapter two");
+    await advanceReaderToNextPage(page);
+    await page.locator("#device-storage-refresh").evaluate((button) => button.click());
+    await expect.poll(() => survivingRow.locator("[data-device-storage-select]").isDisabled()).toBe(true);
+    await expect(page.locator("#device-storage-remove-selected")).toBeDisabled();
+    await expect(page.locator("#device-storage-panel")).toBeHidden();
+    await expect(page.locator("#device-storage-remove-selected")).toBeHidden();
+    await expect.poll(() => devicePackageIntegrity(page, 1102)).toMatchObject({
+      status: "ready",
+      downloadedPages: 3,
+      cachedPages: 3,
+    });
+  } finally {
+    await context.setOffline(false);
+    await fixture.close();
+  }
+});
+
 test("offline reading coalesces latest progress and one reconnect mutation clears the outbox", async ({ page, context }) => {
   const fixture = await startDeviceChapterFixture();
   try {
@@ -953,6 +1219,56 @@ test("offline reading coalesces latest progress and one reconnect mutation clear
     ).length)).toBe(0);
     await page.waitForTimeout(500);
     expect(fixture.progressMutations).toHaveLength(1);
+  } finally {
+    await context.setOffline(false);
+    await fixture.close();
+  }
+});
+
+test("offline MangaBaka progress coalesces to the latest entry and is acknowledged once after reconnect", async ({ page, context }) => {
+  const fixture = await startDeviceChapterFixture({ mangaBakaConnected: true });
+  const accountKey = "fixture-mangabaka-account";
+  try {
+    await prepareApp(page, context, fixture, { controlled: true });
+    await context.setOffline(true);
+    await page.addInitScript(({ key, account }) => {
+      if (sessionStorage.getItem("fixture-mangabaka-outbox-seeded")) return;
+      sessionStorage.setItem("fixture-mangabaka-outbox-seeded", "1");
+      localStorage.setItem(key, JSON.stringify({
+        accountKey: account,
+        entries: [
+          { series_id: 9901, state: "reading", progress_chapter: 2, accountKey: account, revision: 1 },
+          { series_id: 9901, state: "paused", progress_chapter: 4, accountKey: account, revision: 3 },
+          { series_id: 9901, state: "reading", progress_chapter: 7, accountKey: account, revision: 2 },
+        ],
+      }));
+    }, { key: "panel-pilot-mangabaka-outbox", account: accountKey });
+    await page.reload({ waitUntil: "domcontentloaded" });
+
+    await expect.poll(() => page.evaluate(() => {
+      const saved = JSON.parse(localStorage.getItem("panel-pilot-mangabaka-outbox") || "{}");
+      return saved.entries || [];
+    })).toEqual([{
+      series_id: 9901,
+      state: "paused",
+      progress_chapter: 7,
+      accountKey,
+      revision: 3,
+    }]);
+    expect(fixture.mangaBakaMutations).toHaveLength(0);
+
+    await context.setOffline(false);
+    await expect.poll(() => fixture.mangaBakaMutations.length, { timeout: 15_000 }).toBe(1);
+    expect(fixture.mangaBakaMutations[0]).toEqual({
+      accountKey,
+      entries: [{ series_id: 9901, state: "paused", progress_chapter: 7 }],
+    });
+    await expect.poll(() => page.evaluate(() => {
+      const saved = JSON.parse(localStorage.getItem("panel-pilot-mangabaka-outbox") || "{}");
+      return saved.entries || [];
+    })).toEqual([]);
+    await page.waitForTimeout(400);
+    expect(fixture.mangaBakaMutations).toHaveLength(1);
   } finally {
     await context.setOffline(false);
     await fixture.close();
@@ -1154,6 +1470,53 @@ test("cache eviction downgrades a ready package to resumable", async ({ page, co
       .toContainText(/partial|incomplete|resume|retry/i);
     await expect(chapterAction(page, 1101, "download")).toHaveAccessibleName(/resume|download/i);
     await expect(chapterAction(page, 1101, "open")).toBeHidden();
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("a corrupt cached page reduces verified bytes and a resumed repair restores readiness", async ({ page, context }) => {
+  const fixture = await startDeviceChapterFixture();
+  try {
+    await prepareApp(page, context, fixture, { controlled: true });
+    await openChapterList(page);
+    await downloadChapter(page, 1101);
+    await expectDeviceReady(page, 1101);
+
+    const ready = await devicePackageIntegrity(page, 1101);
+    expect(ready).toMatchObject({ status: "ready", downloadedPages: 3, cachedPages: 3 });
+    expect(ready.storedBytes).toBeGreaterThan(0);
+    expect(ready.cachePaths).toHaveLength(3);
+
+    await page.evaluate(async (cachePath) => {
+      const cache = await caches.open("panels-device-chapters-v1");
+      await cache.put(cachePath, new Response("corrupt fixture payload", {
+        status: 200,
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+      }));
+    }, ready.cachePaths[1]);
+
+    await page.locator("#nav-settings").click();
+    await expect(page.locator("#device-storage-panel")).toBeVisible();
+    await page.locator("#device-storage-refresh").click();
+    await expect(page.locator("#device-storage-result")).toContainText(/refreshed/i);
+    await expect.poll(() => devicePackageIntegrity(page, 1101)).toMatchObject({
+      status: "paused",
+      downloadedPages: 2,
+      cachedPages: 2,
+    });
+    const partial = await devicePackageIntegrity(page, 1101);
+    expect(partial.storedBytes).toBeLessThan(ready.storedBytes);
+
+    await openChapterList(page);
+    await downloadChapter(page, 1101);
+    await expectDeviceReady(page, 1101);
+    await expect.poll(() => devicePackageIntegrity(page, 1101)).toMatchObject({
+      status: "ready",
+      downloadedPages: 3,
+      cachedPages: 3,
+      storedBytes: ready.storedBytes,
+    });
   } finally {
     await fixture.close();
   }

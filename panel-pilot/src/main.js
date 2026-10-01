@@ -426,6 +426,9 @@ const state = {
   panelMoveQueueRunning: false,
   cameraFitFrame: 0,
   viewportFitTimer: 0,
+  // Do not suppress the first viewport event during a fast startup.
+  viewportFitAt: Number.NEGATIVE_INFINITY,
+  viewportFitSignature: "",
   keepScreenAwake: true,
   wakeLockSentinel: null,
   wakeLockRequest: null,
@@ -443,6 +446,8 @@ const state = {
   pagePreparationDurations: [],
   performanceStats: {
     cameraFits: 0,
+    viewportFits: 0,
+    backgroundStarts: 0,
     transformWrites: 0,
     panelStripRebuilds: 0,
     queuedPanelMoves: 0,
@@ -6170,6 +6175,7 @@ function startReaderBackgroundPreparation(generation = state.prepareGeneration) 
     return null;
   }
   if (state.backgroundPreparing && state.backgroundPreparationPromise) return state.backgroundPreparationPromise;
+  state.performanceStats.backgroundStarts += 1;
   const controller = new AbortController();
   state.backgroundWorkController = controller;
   const task = state.panelMode === "webtoon"
@@ -8589,11 +8595,21 @@ function scheduleCameraFit() {
 }
 
 function scheduleViewportFit() {
-  scheduleCameraFit();
+  const viewportSignature = `${window.innerWidth}x${window.innerHeight}:${window.visualViewport?.width || 0}x${window.visualViewport?.height || 0}`;
+  if (
+    !state.viewportFitTimer
+    && viewportSignature === state.viewportFitSignature
+    && performance.now() - state.viewportFitAt < 500
+  ) return;
   window.clearTimeout(state.viewportFitTimer);
   state.viewportFitTimer = window.setTimeout(() => {
     state.viewportFitTimer = 0;
-    if (readerIsVisible() && state.activeView === "reader") scheduleCameraFit();
+    if (readerIsVisible() && state.activeView === "reader") {
+      state.viewportFitAt = performance.now();
+      state.viewportFitSignature = `${window.innerWidth}x${window.innerHeight}:${window.visualViewport?.width || 0}x${window.visualViewport?.height || 0}`;
+      state.performanceStats.viewportFits += 1;
+      scheduleCameraFit();
+    }
   }, 140);
 }
 

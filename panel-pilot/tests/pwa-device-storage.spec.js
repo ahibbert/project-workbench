@@ -154,6 +154,24 @@ async function mockStorageManager(context, configuration = {}) {
   }, configuration);
 }
 
+async function installVisibilityShim(page) {
+  await page.addInitScript(() => {
+    let visibility = "visible";
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => visibility,
+    });
+    Object.defineProperty(document, "hidden", {
+      configurable: true,
+      get: () => visibility === "hidden",
+    });
+    window.__setStorageTestVisibility = (nextVisibility) => {
+      visibility = nextVisibility;
+      document.dispatchEvent(new Event("visibilitychange"));
+    };
+  });
+}
+
 function packageKey(serverUrl, chapterId) {
   return JSON.stringify([String(serverUrl).replace(/\/+$/, ""), String(chapterId)]);
 }
@@ -442,6 +460,27 @@ test("explicit Refresh reconciles evicted pages and stored-byte totals", async (
 
     const record = (await inspectDeviceStorage(page)).records.find((entry) => entry.key === key);
     expect(record).toMatchObject({ status: "paused", downloadedPages: 1, storedBytes: 1024 });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("returning to visible Settings refreshes the storage snapshot", async ({ page, context }) => {
+  const fixture = await startStorageFixture();
+  try {
+    await installVisibilityShim(page);
+    await prepareStorageDashboard(page, context, fixture, [readyPackage()]);
+    const estimatesBefore = await page.evaluate(() => globalThis.__panelsStorageFixture.estimate);
+
+    await page.evaluate(() => {
+      window.__setStorageTestVisibility("hidden");
+      window.__setStorageTestVisibility("visible");
+    });
+
+    await expect.poll(
+      () => page.evaluate(() => globalThis.__panelsStorageFixture.estimate),
+    ).toBeGreaterThan(estimatesBefore);
+    await expect(page.locator("#device-storage-summary")).toContainText(/1 chapter/i);
   } finally {
     await fixture.close();
   }

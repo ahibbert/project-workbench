@@ -38,6 +38,15 @@ function startMigrationServer({ failWorker = false } = {}) {
       return;
     }
 
+    if (url.pathname === "/__session-check") {
+      const authenticated = /(?:^|;\s*)panel_pilot_session=migration-test(?:;|$)/.test(
+        String(request.headers.cookie || ""),
+      );
+      response.writeHead(authenticated ? 200 : 401, { "Content-Type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({ authenticated }));
+      return;
+    }
+
     if (url.pathname === "/legacy.html") {
       response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       response.end("<!doctype html><title>Panels legacy migration fixture</title>");
@@ -113,6 +122,22 @@ test("a v103 worker waits for consent, preserves state, and reloads exactly once
         completed: false,
         updatedAt: 1,
       }]));
+      localStorage.setItem("panel-pilot-library", JSON.stringify([{
+        mangaId: 103,
+        mangaTitle: "Migration position fixture",
+        sourceId: 7,
+        sourceLabel: "Migration source",
+        suwayomiLibrary: true,
+        started: true,
+        libraryStatus: "reading",
+        chapterId: 103,
+        chapterTitle: "Chapter 103",
+        pageIndex: 7,
+        panelIndex: 3,
+        progressLabel: "Page 8, panel 4",
+        serverUrl: "http://localhost:4567",
+        updatedAt: "2026-10-01T00:00:00.000Z",
+      }]));
       document.cookie = "panel_pilot_session=migration-test; Path=/; SameSite=Lax";
     });
 
@@ -160,13 +185,18 @@ test("a v103 worker waits for consent, preserves state, and reloads exactly once
     ).toBe(loadsBeforeActivation + 1);
     await page.waitForTimeout(500);
 
-    const migratedState = await page.evaluate(async () => ({
-      loads: Number(sessionStorage.getItem("panel-pilot-test-loads")),
-      outbox: JSON.parse(localStorage.getItem("panel-pilot-progress-outbox")),
-      sessionCookiePresent: document.cookie.includes("panel_pilot_session=migration-test"),
-      legacyCachePresent: (await caches.keys()).includes("panel-pilot-v103"),
-      controllerPresent: Boolean(navigator.serviceWorker.controller),
-    }));
+    const migratedState = await page.evaluate(async () => {
+      const sessionResponse = await fetch("/__session-check", { cache: "no-store" });
+      return {
+        loads: Number(sessionStorage.getItem("panel-pilot-test-loads")),
+        outbox: JSON.parse(localStorage.getItem("panel-pilot-progress-outbox")),
+        library: JSON.parse(localStorage.getItem("panel-pilot-library")),
+        sessionCookiePresent: document.cookie.includes("panel_pilot_session=migration-test"),
+        sessionAuthenticated: sessionResponse.ok && (await sessionResponse.json()).authenticated,
+        legacyCachePresent: (await caches.keys()).includes("panel-pilot-v103"),
+        controllerPresent: Boolean(navigator.serviceWorker.controller),
+      };
+    });
     expect(migratedState).toEqual({
       loads: loadsBeforeActivation + 1,
       outbox: [{
@@ -176,7 +206,15 @@ test("a v103 worker waits for consent, preserves state, and reloads exactly once
         updatedAt: 1,
         serverUrl: "http://localhost:4567",
       }],
+      library: [expect.objectContaining({
+        mangaId: 103,
+        chapterId: 103,
+        pageIndex: 7,
+        panelIndex: 3,
+        progressLabel: "Page 8, panel 4",
+      })],
       sessionCookiePresent: true,
+      sessionAuthenticated: true,
       legacyCachePresent: false,
       controllerPresent: true,
     });
@@ -185,7 +223,7 @@ test("a v103 worker waits for consent, preserves state, and reloads exactly once
   }
 });
 
-test("a registration failure does not prevent the online application from working", async ({ page }) => {
+test("a registration failure does not prevent the online application or Test Lab from working", async ({ page, context }) => {
   const fixture = await startMigrationServer({ failWorker: true });
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
@@ -200,6 +238,10 @@ test("a registration failure does not prevent the online application from workin
     await page.locator("#check-app-update").click();
     await expect(page.locator("#app-update-note")).toContainText(/unavailable|could not|failed/i);
     await expect.poll(() => page.evaluate(() => typeof window.PanelPilot?.detectPanels)).toBe("function");
+    const lab = await context.newPage();
+    await lab.goto(`${fixture.origin}/panel-test.html`, { waitUntil: "networkidle" });
+    await expect.poll(() => lab.evaluate(() => typeof window.PanelPilot?.detectPanels)).toBe("function");
+    await lab.close();
     expect(pageErrors).toEqual([]);
   } finally {
     await fixture.close();

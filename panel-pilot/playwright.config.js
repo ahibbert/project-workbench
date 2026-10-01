@@ -5,8 +5,12 @@ export default defineConfig({
   testMatch: "**/*.spec.js",
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
-  retries: process.env.CI ? 2 : 0,
-  workers: process.env.CI ? 1 : undefined,
+  retries: 0,
+  // The service-worker and lifecycle fixtures intentionally exercise several
+  // local HTTP servers and browser processes. A single worker keeps the
+  // advertised `npm test` command deterministic on developer machines as well
+  // as CI instead of making startup timing depend on host core count.
+  workers: 1,
   reporter: "line",
   use: {
     baseURL: "http://127.0.0.1:4173",
