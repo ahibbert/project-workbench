@@ -585,6 +585,50 @@ test("reader layout respects visual viewport changes without horizontal overflow
   }
 });
 
+test("iPad full-page reading advances whole pages and returns to panel navigation", async ({ page }) => {
+  await page.setViewportSize({ width: 820, height: 1180 });
+  await seedSettings(page);
+  await installBackend(page, { chapterIds: [1101], pageCount: 3 });
+  await gotoApp(page);
+  await openFixtureChapter(page);
+
+  await expect(page.locator("#page-stat")).toHaveText(/^Page 1 \/ 3$/);
+  await expect(page.locator("#panel-stat")).toHaveText(/^Panel 1 \/ [2-9]\d*$/);
+
+  const stageBox = await page.locator("#stage").boundingBox();
+  await page.locator("#stage").click({
+    position: { x: Math.round((stageBox?.width || 820) / 2), y: Math.round((stageBox?.height || 1180) / 2) },
+  });
+  await expect(page.locator(".reader-options > summary")).toBeVisible();
+  await page.locator(".reader-options > summary").click();
+  const toggle = page.locator("#toggle-fit");
+  await expect(toggle).toBeVisible();
+  await expect(toggle).toHaveText("Full page");
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+
+  await toggle.click();
+  await expect(toggle).toHaveText("Panel view");
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#panel-stat")).toHaveText("Full page");
+
+  await page.locator("#next-panel").click();
+  await expect(page.locator("#page-stat")).toHaveText(/^Page 2 \/ 3$/);
+  await expect(page.locator("#panel-stat")).toHaveText("Full page");
+  await expect(toggle).toHaveText("Panel view");
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+
+  await page.locator(".reader-options > summary").click();
+  await expect(toggle).toBeVisible();
+  await toggle.click();
+  await expect(toggle).toHaveText("Full page");
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator("#panel-stat")).toHaveText(/^Panel 1 \/ [2-9]\d*$/);
+
+  await page.locator("#next-panel").click();
+  await expect(page.locator("#page-stat")).toHaveText(/^Page 2 \/ 3$/);
+  await expect(page.locator("#panel-stat")).toHaveText(/^Panel 2 \/ [2-9]\d*$/);
+});
+
 test("loading progress, modal focus, and the Next action remain accessible", async ({ page }) => {
   await seedSettings(page);
   await installBackend(page, { chapterIds: [1101], pageCount: 1 });

@@ -1,4 +1,7 @@
 data
+backups
+.env
+.env.*
 test-output
 dist
 node_modules

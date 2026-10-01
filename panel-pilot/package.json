@@ -1,9 +1,19 @@
 {
-  "name": "panel-pilot",
-  "version": "0.109.0",
+  "name": "panels",
+  "version": "0.110.0",
   "private": true,
   "type": "module",
   "description": "A mobile-first Suwayomi manga reader with guided panel navigation.",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ahibbert/project-workbench.git",
+    "directory": "panel-pilot"
+  },
+  "bugs": {
+    "url": "https://github.com/ahibbert/project-workbench/issues"
+  },
+  "homepage": "https://github.com/ahibbert/project-workbench/tree/main/panel-pilot#readme",
   "engines": {
     "node": ">=22.12.0"
   },
@@ -13,7 +23,7 @@
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0",
     "test:reproducible": "node tests/verify-reproducible-build.mjs",
-    "test": "npm run test:reproducible && node --test tests/build-contract.test.mjs && playwright test"
+    "test": "npm run test:reproducible && node --test tests/build-contract.test.mjs tests/progress-reconciliation.test.mjs && playwright test"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",

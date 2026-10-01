@@ -11,6 +11,7 @@ import {
   removeDeviceChapters,
   requestDeviceChapterPersistence,
 } from "./device-chapters.js";
+import { reconcileReadingProgress } from "./progress-reconciliation.js";
 
 const storeKey = "panel-pilot-settings";
 const panelModeStoreKey = "panel-pilot-panel-mode";
@@ -29,6 +30,7 @@ const readerLoadingGraceMs = 180;
 const nextChapterPreparedPageCount = 3;
 const webtoonLiveImageCap = 8;
 const downloadAheadChapterCount = 10;
+const planBufferRetryDelaysMs = [1000, 4000, 15000];
 const progressOutboxStoreKey = "panel-pilot-progress-outbox";
 const mangabakaOutboxStoreKey = "panel-pilot-mangabaka-outbox";
 const tapHintStoreKey = "panel-pilot-tap-hint-seen";
@@ -154,6 +156,17 @@ const queries = {
       }
     }
   }`,
+  chapterProgress: `query GET_CHAPTER_PROGRESS($id: Int!) {
+    chapter(id: $id) {
+      id
+      mangaId
+      sourceOrder
+      chapterNumber
+      pageCount
+      isRead
+      lastPageRead
+    }
+  }`,
   updateManga: `mutation UPDATE_MANGA_LIBRARY($input: UpdateMangaInput!) {
     updateManga(input: $input) {
       manga {
@@ -270,6 +283,8 @@ const el = {
   openSuwayomi: document.querySelector("#open-suwayomi"),
   toggleLibraryPanel: document.querySelector("#toggle-library-panel"),
   toggleHiddenLibrary: document.querySelector("#toggle-hidden-library"),
+  librarySyncStatus: document.querySelector("#library-sync-status"),
+  librarySyncStatusLabel: document.querySelector("#library-sync-status-label"),
   libraryBody: document.querySelector("#library-body"),
   libraryList: document.querySelector("#library-list"),
   libraryCount: document.querySelector("#library-count"),
@@ -454,7 +469,11 @@ const state = {
   lastSuwayomiSyncKey: "",
   suwayomiSyncing: false,
   suwayomiSyncPromise: null,
+  suwayomiForegroundSyncPromise: null,
   suwayomiProgressOutbox: [],
+  planBufferSignatures: new Map(),
+  planBufferRequests: new Map(),
+  planBufferRetryTimers: new Map(),
   reconnectTimer: null,
   downloadStatusTimer: null,
   downloadStatus: null,
@@ -862,8 +881,8 @@ function setConnection(connected, message, tone = "") {
       checking ? "Checking the Suwayomi connection…" : "Test the Suwayomi connection before syncing progress.",
       checking ? "" : "bad"
     );
-  } else {
-    setSyncStatus("Ready", "Suwayomi is connected and ready to sync.", "good");
+  } else if (connectionChanged) {
+    setSyncStatus("Connected", "Connected to Suwayomi; checking reading progress next.");
   }
 }
 
@@ -2043,11 +2062,11 @@ async function testConnection() {
     }
     if (!state.suwayomiSyncing) {
       setSyncStatus(
-        state.suwayomiProgressOutbox.length ? "Queued" : "Ready",
+        state.suwayomiProgressOutbox.length ? "Queued" : "Connected",
         state.suwayomiProgressOutbox.length
           ? `${state.suwayomiProgressOutbox.length} progress update${state.suwayomiProgressOutbox.length === 1 ? "" : "s"} waiting to sync.`
-          : "Suwayomi is connected and ready to sync.",
-        state.suwayomiProgressOutbox.length ? "" : "good"
+          : "Connected to Suwayomi; checking reading progress next.",
+        ""
       );
     }
     return true;
@@ -2609,6 +2628,8 @@ async function addCurrentMangaToLibrary() {
     saveLibraryItems();
     renderLibrary();
     updateMangaDetailActions();
+    const added = state.libraryItems.find((item) => libraryItemKey(item) === libraryItemKey(state.currentManga));
+    void enqueuePlanToReadServerBuffer(added);
     showToast("Added to Plan to read.", "good");
   } catch (error) {
     showToast(`Could not add this title: ${friendlySourceErrorMessage(error)}`, "bad");
@@ -3215,6 +3236,7 @@ function setLibraryItemFlag(item, field, value) {
 function setLibraryItemStatus(item, status, { sync = true } = {}) {
   if (!libraryStatuses.includes(status)) return;
   const key = libraryItemKey(item);
+  const previousStatus = normalizedLibraryStatus(state.libraryItems.find((entry) => libraryItemKey(entry) === key));
   state.libraryItems = state.libraryItems.map((existing) =>
     libraryItemKey(existing) === key
       ? { ...existing, libraryStatus: status, statusExplicit: true, updatedAt: new Date().toISOString() }
@@ -3224,6 +3246,13 @@ function setLibraryItemStatus(item, status, { sync = true } = {}) {
   saveLibraryItems();
   renderLibrary();
   if (sync) enqueueMangaBakaLibraryItem(updated);
+  if (status === "plan_to_read" && previousStatus !== "plan_to_read") {
+    void enqueuePlanToReadServerBuffer(updated);
+  } else if (status !== "plan_to_read") {
+    const bufferKey = planToReadBufferKey(updated);
+    clearPlanToReadBufferRetry(bufferKey);
+    state.planBufferSignatures.delete(bufferKey);
+  }
   showToast(`Moved to ${libraryStatusLabels[status]}.`, "good");
 }
 
@@ -3306,7 +3335,7 @@ async function ensureCurrentMangaInSuwayomiLibrary() {
   return Boolean(data.updateManga?.manga?.inLibrary);
 }
 
-async function syncSuwayomiLibrary({ announce = false } = {}) {
+async function syncSuwayomiLibrary({ announce = false, progressMangaIds = null } = {}) {
   const data = await graphQL(queries.libraryMangas, {}, { timeoutMs: 15000 });
   const mangas = data.mangas?.nodes || [];
   const existingByKey = new Map(state.libraryItems.map((item) => [libraryItemKey(item), item]));
@@ -3326,7 +3355,7 @@ async function syncSuwayomiLibrary({ announce = false } = {}) {
     };
   });
   state.libraryItems = mergeLibraryItems(serverItems, state.libraryItems);
-  await hydrateImportedReadingProgress(mangas);
+  await hydrateImportedReadingProgress(mangas, { mangaIds: progressMangaIds });
   saveLibraryItems();
   renderLibrary();
   if (announce) {
@@ -3336,41 +3365,63 @@ async function syncSuwayomiLibrary({ announce = false } = {}) {
   return mangas.length;
 }
 
-async function hydrateImportedReadingProgress(mangas) {
-  const candidates = mangas.slice(0, 60);
+async function hydrateImportedReadingProgress(mangas, { mangaIds = null } = {}) {
+  const requestedIds = Array.isArray(mangaIds)
+    ? new Set(mangaIds.map(Number).filter((id) => Number.isInteger(id) && id > 0))
+    : null;
+  const requested = requestedIds
+    ? mangas.filter((manga) => requestedIds.has(Number(manga.id)))
+    : mangas.slice(0, 60);
+  const planToRead = requestedIds ? [] : mangas.filter((manga) => {
+    const key = libraryItemKey({ mangaId: manga.id, sourceId: manga.sourceId });
+    return normalizedLibraryStatus(state.libraryItems.find((item) => libraryItemKey(item) === key)) === "plan_to_read";
+  });
+  const candidates = [...new Map([...requested, ...planToRead].map((manga) => [Number(manga.id), manga])).values()];
   const updates = new Map();
   const existingItems = new Map(state.libraryItems.map((item) => [libraryItemKey(item), item]));
   const offlineWindows = new Map();
+  let outboxChanged = false;
   await mapWithConcurrency(candidates, 3, async (manga) => {
     try {
       const data = await graphQL(queries.storedChapters, { mangaId: Number(manga.id) }, { timeoutMs: 10000 });
       const nodes = data.chapters?.nodes || [];
-      let active = nodes
-        .filter((chapter) => !chapter.isRead && Number(chapter.lastPageRead) > 0)
-        .sort((a, b) => Number(b.chapterNumber ?? b.sourceOrder ?? 0) - Number(a.chapterNumber ?? a.sourceOrder ?? 0))[0];
-      if (!active) {
-        const highestRead = nodes
-          .filter((chapter) => chapter.isRead)
-          .sort((a, b) => Number(b.chapterNumber ?? b.sourceOrder ?? 0) - Number(a.chapterNumber ?? a.sourceOrder ?? 0))[0];
-        if (highestRead) {
-          const readOrder = Number(highestRead.chapterNumber ?? highestRead.sourceOrder ?? -Infinity);
-          active = nodes
-            .filter((chapter) => !chapter.isRead && Number(chapter.chapterNumber ?? chapter.sourceOrder ?? Infinity) > readOrder)
-            .sort((a, b) => Number(a.chapterNumber ?? a.sourceOrder ?? 0) - Number(b.chapterNumber ?? b.sourceOrder ?? 0))[0];
-        }
-      }
-      const started = nodes.some((chapter) => chapter.isRead || Number(chapter.lastPageRead) > 0);
       const key = libraryItemKey({ mangaId: manga.id, sourceId: manga.sourceId });
       const existing = existingItems.get(key);
-      const resumeChapterId = existing?.chapterId || active?.id;
+      const serverUrl = existing?.serverUrl || currentDeviceServerUrl();
+      const reconciliation = reconcileReadingProgress({
+        chapters: nodes,
+        libraryItem: existing,
+        outbox: state.suwayomiProgressOutbox,
+        serverUrl,
+      });
+      const reconciledStatus = existing?.statusExplicit
+        ? normalizedLibraryStatus(existing)
+        : (reconciliation.started ? "reading" : "plan_to_read");
+      if (reconciledStatus === "plan_to_read") {
+        await enqueuePlanToReadServerBuffer({ ...existing, libraryStatus: reconciledStatus }, nodes);
+      }
+      if (reconciliation.outbox.length !== state.suwayomiProgressOutbox.length) {
+        state.suwayomiProgressOutbox = reconciliation.outbox;
+        outboxChanged = true;
+      }
+      if (reconciliation.push) {
+        upsertSuwayomiProgressOutbox({
+          serverUrl,
+          mangaId: Number(manga.id),
+          ...reconciliation.push,
+        });
+        outboxChanged = true;
+      }
+      const resumeChapterId = reconciliation.winner?.chapterId || existing?.chapterId;
       offlineWindows.set(key, offlineWindowForStoredChapters(nodes, resumeChapterId));
-      updates.set(key, { chapter: active, started });
+      updates.set(key, reconciliation);
     } catch {
       // One title should not block the rest of the library reconciliation.
     }
   });
   state.libraryOfflineWindows = offlineWindows;
   updateLibraryOfflineReadiness();
+  if (outboxChanged) persistSuwayomiProgressOutbox();
   if (!updates.size) return;
   state.libraryItems = state.libraryItems.map((item) => {
     const update = updates.get(libraryItemKey(item));
@@ -3378,26 +3429,33 @@ async function hydrateImportedReadingProgress(mangas) {
     const inferredStatus = item.statusExplicit
       ? normalizedLibraryStatus(item)
       : (update.started ? "reading" : "plan_to_read");
-    if ((item.chapterId && Date.parse(item.updatedAt || 0) > 0) || !update.chapter) {
+    if (!update.winner) {
       return { ...item, started: update.started, libraryStatus: inferredStatus };
     }
-    const chapter = update.chapter;
+    const chapter = update.winner.chapter;
+    const pageIndex = Math.max(0, Number(update.winner.lastPageRead) || 0);
+    const sameLocalPosition = Number(item.chapterId) === Number(chapter.id)
+      && Math.max(0, Number(item.pageIndex) || 0) === pageIndex;
+    const progressChanged = !sameLocalPosition;
     return {
       ...item,
       started: update.started,
       libraryStatus: inferredStatus,
       chapterId: Number(chapter.id),
       chapterTitle: chapter.name || `Chapter ${chapter.chapterNumber || chapter.sourceOrder || chapter.id}`,
-      pageIndex: Math.max(0, Number(chapter.lastPageRead) || 0),
-      panelIndex: 0,
-      progressLabel: `Page ${Math.max(0, Number(chapter.lastPageRead) || 0) + 1}`,
-      updatedAt: new Date().toISOString(),
+      pageIndex,
+      panelIndex: sameLocalPosition ? Math.max(0, Number(item.panelIndex) || 0) : 0,
+      progressLabel: sameLocalPosition && item.progressLabel
+        ? item.progressLabel
+        : `Page ${pageIndex + 1}`,
+      updatedAt: progressChanged ? new Date().toISOString() : item.updatedAt,
     };
   });
 }
 
 async function syncLibraryAndProgress() {
   setBusy(el.syncProgress, true, "Syncing");
+  setSyncStatus("Syncing", "Checking Suwayomi and sending any queued reading progress.");
   try {
     const count = await syncSuwayomiLibrary();
     const progressSynced = await syncSuwayomiProgress({ manual: true }).catch(() => false);
@@ -3412,6 +3470,51 @@ async function syncLibraryAndProgress() {
     setSyncStatus("Sync failed", friendlySourceErrorMessage(error), "bad");
   } finally {
     setBusy(el.syncProgress, false);
+  }
+}
+
+function foregroundProgressMangaIds(limit = 12) {
+  const ids = [];
+  const add = (value) => {
+    const id = Number(value);
+    if (Number.isInteger(id) && id > 0 && !ids.includes(id)) ids.push(id);
+  };
+  add(state.currentManga?.id);
+  state.suwayomiProgressOutbox.forEach((entry) => add(entry.mangaId));
+  state.libraryItems
+    .slice()
+    .sort((left, right) => Date.parse(right.updatedAt || 0) - Date.parse(left.updatedAt || 0))
+    .forEach((item) => add(item.mangaId));
+  return ids.slice(0, limit);
+}
+
+async function reconcileSuwayomiOnForeground() {
+  if (state.suwayomiForegroundSyncPromise) return state.suwayomiForegroundSyncPromise;
+  if (!navigator.onLine || !state.connected) return false;
+  const request = (async () => {
+    // Pull first so a stale local queue can never overwrite progress made on
+    // another device while this page was suspended. The bounded recent-title
+    // set avoids a full-library chapter fan-out on every foreground event.
+    setSyncStatus("Syncing", "Checking Suwayomi for progress from your other devices.");
+    await syncSuwayomiLibrary({ progressMangaIds: foregroundProgressMangaIds() });
+    await flushSuwayomiProgressOutbox();
+    setSyncStatus("Synced", "Reading progress is reconciled with Suwayomi and ready on your other devices.", "good");
+    return true;
+  })();
+  state.suwayomiForegroundSyncPromise = request;
+  try {
+    return await request;
+  } catch (error) {
+    setSyncStatus(
+      state.suwayomiProgressOutbox.length ? "Queued" : "Sync failed",
+      state.suwayomiProgressOutbox.length
+        ? `Progress is saved and will retry: ${friendlySourceErrorMessage(error)}`
+        : friendlySourceErrorMessage(error),
+      state.suwayomiProgressOutbox.length ? "" : "bad"
+    );
+    throw error;
+  } finally {
+    if (state.suwayomiForegroundSyncPromise === request) state.suwayomiForegroundSyncPromise = null;
   }
 }
 
@@ -3625,6 +3728,31 @@ function setSyncStatus(label, message, tone = "") {
     el.syncNote.textContent = message;
     el.syncNote.className = `note ${tone}`;
   }
+  if (el.librarySyncStatus && el.librarySyncStatusLabel) {
+    const normalized = String(label || "").toLowerCase();
+    const status = /syncing|checking/.test(normalized)
+      ? "syncing"
+      : /queued|partial/.test(normalized)
+        ? "queued"
+        : tone === "good" && /synced/.test(normalized)
+          ? "synced"
+          : tone === "bad"
+            ? "error"
+            : "idle";
+    const shortLabel = status === "synced"
+      ? "Synced"
+      : status === "syncing"
+        ? (/checking/.test(normalized) ? "Checking" : "Syncing")
+        : status === "queued"
+          ? "Queued"
+          : status === "error"
+            ? (navigator.onLine ? "Sync issue" : "Offline")
+            : "Connected";
+    el.librarySyncStatus.dataset.state = status;
+    el.librarySyncStatusLabel.textContent = shortLabel;
+    el.librarySyncStatus.title = message || `Reading sync: ${shortLabel}`;
+    el.librarySyncStatus.setAttribute("aria-label", `Reading sync: ${shortLabel}. ${message || ""}`.trim());
+  }
 }
 
 function scheduleSuwayomiProgressSync() {
@@ -3659,17 +3787,40 @@ function enqueueCurrentSuwayomiProgress({ completed = false } = {}) {
     ? Math.max(0, state.chapterPageUrls.length - 1)
     : currentSuwayomiPageIndex();
   const lastPageRead = Math.max(localPage, Number(chapter?.lastPageRead) || 0);
+  upsertSuwayomiProgressOutbox({
+    serverUrl,
+    mangaId: Number(state.currentManga?.id || chapter?.mangaId) || null,
+    chapterId,
+    lastPageRead,
+    completed,
+  });
+  persistSuwayomiProgressOutbox();
+  setSyncStatus("Queued", "Latest reading progress is saved and waiting to sync.");
+  return true;
+}
+
+function upsertSuwayomiProgressOutbox({ serverUrl, mangaId = null, chapterId, lastPageRead, completed = false }) {
+  const normalizedServerUrl = String(serverUrl || currentDeviceServerUrl()).trim().replace(/\/+$/, "");
+  const normalizedChapterId = Number(chapterId);
+  if (!Number.isInteger(normalizedChapterId)) return false;
   const existing = state.suwayomiProgressOutbox.find((item) => (
-    item.chapterId === chapterId && item.serverUrl === serverUrl
+    item.chapterId === normalizedChapterId && item.serverUrl === normalizedServerUrl
   ));
   if (existing) {
-    existing.lastPageRead = Math.max(existing.lastPageRead, lastPageRead);
+    existing.lastPageRead = Math.max(existing.lastPageRead, Math.max(0, Number(lastPageRead) || 0));
     existing.completed = existing.completed || completed;
+    if (!existing.mangaId && Number.isInteger(Number(mangaId)) && Number(mangaId) > 0) existing.mangaId = Number(mangaId);
     existing.updatedAt = Date.now();
   } else {
-    state.suwayomiProgressOutbox.push({ serverUrl, chapterId, lastPageRead, completed, updatedAt: Date.now() });
+    state.suwayomiProgressOutbox.push({
+      serverUrl: normalizedServerUrl,
+      ...(Number.isInteger(Number(mangaId)) && Number(mangaId) > 0 ? { mangaId: Number(mangaId) } : {}),
+      chapterId: normalizedChapterId,
+      lastPageRead: Math.max(0, Number(lastPageRead) || 0),
+      completed: Boolean(completed),
+      updatedAt: Date.now(),
+    });
   }
-  persistSuwayomiProgressOutbox();
   return true;
 }
 
@@ -3679,6 +3830,7 @@ function loadSuwayomiProgressOutbox() {
     state.suwayomiProgressOutbox = Array.isArray(stored)
       ? stored.filter((item) => Number.isInteger(Number(item.chapterId))).map((item) => ({
           chapterId: Number(item.chapterId),
+          ...(Number.isInteger(Number(item.mangaId)) && Number(item.mangaId) > 0 ? { mangaId: Number(item.mangaId) } : {}),
           serverUrl: String(item.serverUrl || currentDeviceServerUrl()).trim().replace(/\/+$/, ""),
           lastPageRead: Math.max(0, Number(item.lastPageRead) || 0),
           completed: Boolean(item.completed),
@@ -3716,6 +3868,30 @@ async function flushSuwayomiProgressOutbox({ manual = false } = {}) {
       const patch = sent.completed ? { lastPageRead: sent.lastPageRead, isRead: true } : { lastPageRead: sent.lastPageRead };
       let data;
       try {
+        const currentData = await graphQL(
+          queries.chapterProgress,
+          { id: sent.chapterId },
+          { timeoutMs: 10000, baseUrl: sent.serverUrl },
+        );
+        const remote = currentData.chapter;
+        const remoteAlreadyWins = Boolean(remote) && (
+          remote.isRead
+          || (!sent.completed && Number(remote.lastPageRead) >= sent.lastPageRead)
+        );
+        if (remoteAlreadyWins) {
+          const current = state.suwayomiProgressOutbox.find((item) => (
+            item.chapterId === sent.chapterId && item.serverUrl === sent.serverUrl
+          ));
+          if (
+            current
+            && current.lastPageRead <= Math.max(sent.lastPageRead, Number(remote.lastPageRead) || 0)
+            && (!current.completed || remote.isRead)
+          ) {
+            state.suwayomiProgressOutbox = state.suwayomiProgressOutbox.filter((item) => item !== current);
+            persistSuwayomiProgressOutbox();
+          }
+          continue;
+        }
         data = await graphQL(
           queries.updateChapter,
           { input: { id: sent.chapterId, patch } },
@@ -3769,6 +3945,7 @@ async function flushSuwayomiProgressOutbox({ manual = false } = {}) {
 }
 
 async function finishChapterAndLoadNext() {
+  const keepFullPageReading = state.fullPage;
   if (state.activeChapter?.type === "suwayomi") {
     window.clearTimeout(state.suwayomiSyncTimer);
     enqueueCurrentSuwayomiProgress({ completed: true });
@@ -3776,6 +3953,10 @@ async function finishChapterAndLoadNext() {
     completeMangaBakaChapter();
   }
   await loadNextChapter();
+  if (keepFullPageReading && state.pages.length) {
+    state.fullPage = true;
+    updateAfterNavigation();
+  }
 }
 
 function nextSuwayomiChapterAfter(chapterId) {
@@ -3941,6 +4122,113 @@ function renderDownloadStatus(status) {
   if (el.downloadStatusRetry) el.downloadStatusRetry.hidden = globalFailed < 1;
 }
 
+function earliestPlanToReadChapterIds(chapters, limit = downloadAheadChapterCount) {
+  const readable = chapters.filter((chapter) => Number.isInteger(Number(chapter?.id)) && Number(chapter.id) > 0);
+  const counts = new Map(scanlatorCounts(readable));
+  const variants = new Map();
+  readable.forEach((chapter) => {
+    const key = chapterGroupKey(chapter);
+    if (!variants.has(key)) variants.set(key, []);
+    variants.get(key).push(chapter);
+  });
+  return [...variants.values()]
+    .map((items) => chooseChapterVariant(items, counts))
+    .filter(Boolean)
+    .sort((left, right) => (
+      Number(left.sourceOrder ?? left.chapterNumber ?? 0) - Number(right.sourceOrder ?? right.chapterNumber ?? 0)
+      || Number(left.id) - Number(right.id)
+    ))
+    .slice(0, Math.max(0, limit))
+    .map((chapter) => Number(chapter.id));
+}
+
+function planToReadBufferKey(item) {
+  const mangaId = Number(item?.mangaId ?? item?.id);
+  if (!Number.isInteger(mangaId) || mangaId < 1) return "";
+  const configuredServerUrl = currentDeviceServerUrl();
+  const serverUrl = String(item.serverUrl || configuredServerUrl).trim().replace(/\/+$/, "");
+  return `${serverUrl}:${mangaId}`;
+}
+
+function clearPlanToReadBufferRetry(key) {
+  const timer = state.planBufferRetryTimers.get(key);
+  if (timer) window.clearTimeout(timer);
+  state.planBufferRetryTimers.delete(key);
+}
+
+function schedulePlanToReadBufferRetry(item, knownChapters, attempt) {
+  const key = planToReadBufferKey(item);
+  const delay = planBufferRetryDelaysMs[attempt - 1];
+  if (!key || !Number.isFinite(delay) || state.planBufferRetryTimers.has(key)) return;
+  const timer = window.setTimeout(() => {
+    state.planBufferRetryTimers.delete(key);
+    const current = state.libraryItems.find((entry) => libraryItemKey(entry) === libraryItemKey(item));
+    if (normalizedLibraryStatus(current) !== "plan_to_read") return;
+    void enqueuePlanToReadServerBuffer(current, knownChapters, { retryAttempt: attempt });
+  }, delay);
+  state.planBufferRetryTimers.set(key, timer);
+}
+
+async function enqueuePlanToReadServerBuffer(item, knownChapters = null, { retryAttempt = 0 } = {}) {
+  const mangaId = Number(item?.mangaId ?? item?.id);
+  if (!Number.isInteger(mangaId) || mangaId < 1 || normalizedLibraryStatus(item) !== "plan_to_read") return false;
+  if (!navigator.onLine || !state.connected) return false;
+  const configuredServerUrl = currentDeviceServerUrl();
+  const serverUrl = String(item.serverUrl || configuredServerUrl).trim().replace(/\/+$/, "");
+  // The server-side buffer is attached to this Panels deployment's configured
+  // Suwayomi. Never send chapter IDs belonging to a different server instance.
+  if (serverUrl !== configuredServerUrl) return false;
+  const key = `${serverUrl}:${mangaId}`;
+  if (state.planBufferRequests.has(key)) return state.planBufferRequests.get(key);
+
+  const request = (async () => {
+    try {
+      let chapters = knownChapters;
+      if (!Array.isArray(chapters)) {
+        const data = await graphQL(queries.storedChapters, { mangaId }, { timeoutMs: 10000, baseUrl: serverUrl });
+        chapters = data.chapters?.nodes || [];
+      }
+      const chapterIds = earliestPlanToReadChapterIds(chapters);
+      const signature = chapterIds.join(",");
+      const current = state.libraryItems.find((entry) => libraryItemKey(entry) === libraryItemKey(item));
+      if (normalizedLibraryStatus(current) !== "plan_to_read") return false;
+      if (state.planBufferSignatures.get(key) === signature) {
+        clearPlanToReadBufferRetry(key);
+        return true;
+      }
+      if (!chapterIds.length) {
+        state.planBufferSignatures.set(key, signature);
+        clearPlanToReadBufferRetry(key);
+        return true;
+      }
+      const status = await postLocalJson("/api/download-buffer", { chapterIds, priority: "background" });
+      if (Number(status?.rejected) > 0) {
+        throw new Error(`${status.rejected} chapter${Number(status.rejected) === 1 ? " was" : "s were"} not accepted by the server buffer`);
+      }
+      const stillPlanned = state.libraryItems.find((entry) => libraryItemKey(entry) === libraryItemKey(item));
+      if (normalizedLibraryStatus(stillPlanned) === "plan_to_read") {
+        state.planBufferSignatures.set(key, signature);
+      } else {
+        state.planBufferSignatures.delete(key);
+      }
+      clearPlanToReadBufferRetry(key);
+      renderDownloadStatus(status);
+      return true;
+    } catch {
+      // Buffering is opportunistic. The next library sync or status transition
+      // retries without interfering with normal online reading.
+      schedulePlanToReadBufferRetry(item, knownChapters, retryAttempt + 1);
+      return false;
+    }
+  })();
+  state.planBufferRequests.set(key, request);
+  try {
+    return await request;
+  } finally {
+    if (state.planBufferRequests.get(key) === request) state.planBufferRequests.delete(key);
+  }
+}
+
 async function ensureDownloadAhead(chapterId) {
   const candidates = downloadAheadChapters(chapterId);
   const chapters = candidates;
@@ -3952,7 +4240,7 @@ async function ensureDownloadAhead(chapterId) {
   const ids = chapters.map((chapter) => Number(chapter.id));
   if (el.offlineNote) el.offlineNote.textContent = `Server chapter buffer: sending ${ids.length} chapter${ids.length === 1 ? "" : "s"} to the background queue…`;
   try {
-    const status = await postLocalJson("/api/download-buffer", { chapterIds: ids });
+    const status = await postLocalJson("/api/download-buffer", { chapterIds: ids, priority: "foreground" });
     renderDownloadStatus(status);
     if (el.offlineNote) el.offlineNote.textContent = downloadBufferStatusText(status);
   } catch (error) {
@@ -5432,7 +5720,7 @@ async function loadChapter(pageUrls, title, options = {}) {
   state.pageIndex = 0;
   state.panelIndex = 0;
   state.fullPage = false;
-  el.toggleFit.textContent = "Page overview";
+  updateReaderViewToggle();
   el.chapterTitle.textContent = title;
   el.stage.classList.add("has-image");
 
@@ -8540,6 +8828,7 @@ async function drainPanelMoveQueue() {
 
 async function performPanelMove(delta) {
   if (state.navigationPending || !state.pages.length) return false;
+  if (state.fullPage) return moveToAdjacentPage(delta);
   const page = state.pages[state.pageIndex];
   if (!Array.isArray(page?.panels) || !page.panels.length) {
     page.panels = sanitizePanels(page?.panels, page?.naturalWidth || 1, page?.naturalHeight || 1);
@@ -8664,7 +8953,6 @@ async function moveToAdjacentPage(delta) {
     const panels = state.pages[nextPage].panels;
     state.pageIndex = nextPage;
     state.panelIndex = delta > 0 ? 0 : Math.max(0, panels.length - 1);
-    state.fullPage = false;
     renderCurrentPage();
     updateAfterNavigation();
     trimReaderMemory();
@@ -8815,7 +9103,7 @@ async function loadNextSuwayomiChapter() {
 }
 
 function updateAfterNavigation() {
-  el.toggleFit.textContent = state.fullPage ? "Panel view" : "Page overview";
+  updateReaderViewToggle();
   const page = state.pages[state.pageIndex];
   if (page?.stripImages) renderStripPage(page, { refit: false });
   scheduleCameraFit();
@@ -8830,19 +9118,29 @@ function updateStats() {
   const totalPanels = page?.panels.length || 0;
   const unit = "Panel";
   el.pageStat.textContent = totalPages ? `Page ${state.pageIndex + 1} / ${totalPages}` : "Page 0";
-  el.panelStat.textContent = totalPanels ? `${unit} ${state.panelIndex + 1} / ${totalPanels}` : `${unit} 0`;
+  el.panelStat.textContent = state.fullPage
+    ? "Full page"
+    : totalPanels ? `${unit} ${state.panelIndex + 1} / ${totalPanels}` : `${unit} 0`;
   const detectedPages = state.pages.filter((item) => item.detected).length;
   const detectedPanels = state.pages.reduce((sum, item) => sum + item.panels.length, 0);
   el.panelCount.textContent = `${detectedPanels} ${unit.toLowerCase()}s on ${detectedPages} pages`;
   if (el.nextPanel) {
-    el.nextPanel.setAttribute("aria-label", totalPanels
-      ? `Next panel. Current panel ${state.panelIndex + 1} of ${totalPanels}`
-      : "Next panel");
+    const label = state.fullPage
+      ? `Next page. Current page ${state.pageIndex + 1} of ${totalPages}`
+      : totalPanels
+        ? `Next panel. Current panel ${state.panelIndex + 1} of ${totalPanels}`
+        : "Next panel";
+    el.nextPanel.setAttribute("aria-label", label);
+    el.nextPanel.title = state.fullPage ? "Next page" : "Next panel";
   }
   if (el.prevPanel) {
-    el.prevPanel.setAttribute("aria-label", totalPanels
-      ? `Previous panel. Current panel ${state.panelIndex + 1} of ${totalPanels}`
-      : "Previous panel");
+    const label = state.fullPage
+      ? `Previous page. Current page ${state.pageIndex + 1} of ${totalPages}`
+      : totalPanels
+        ? `Previous panel. Current panel ${state.panelIndex + 1} of ${totalPanels}`
+        : "Previous panel";
+    el.prevPanel.setAttribute("aria-label", label);
+    el.prevPanel.title = state.fullPage ? "Previous page" : "Previous panel";
   }
 }
 
@@ -9411,9 +9709,19 @@ async function resortAndDetect(direction) {
   }
 }
 
+function updateReaderViewToggle() {
+  if (!el.toggleFit) return;
+  el.toggleFit.textContent = state.fullPage ? "Panel view" : "Full page";
+  el.toggleFit.setAttribute("aria-pressed", state.fullPage ? "true" : "false");
+  el.toggleFit.title = state.fullPage
+    ? "Switch to panel-by-panel reading"
+    : "Switch to full-page reading";
+}
+
 function toggleFullPage() {
   if (!state.pages.length) return;
   state.fullPage = !state.fullPage;
+  if (el.readerOptions?.open) el.readerOptions.open = false;
   updateAfterNavigation();
 }
 
@@ -9520,9 +9828,14 @@ async function initializeSuwayomi() {
   const connected = await testConnection();
   if (connected) {
     await loadSources();
-    await syncSuwayomiLibrary().catch(() => 0);
+    const librarySynced = await syncSuwayomiLibrary().then(() => true).catch(() => false);
     await hydrateLibraryCovers();
-    await flushSuwayomiProgressOutbox().catch(() => false);
+    const progressSynced = await flushSuwayomiProgressOutbox().catch(() => false);
+    if (librarySynced && progressSynced) {
+      setSyncStatus("Synced", "Reading progress is reconciled with Suwayomi and ready on your other devices.", "good");
+    } else if (!librarySynced) {
+      setSyncStatus("Sync failed", "Connected, but reading progress could not be checked yet.", "bad");
+    }
   }
   await refreshDownloadStatus().catch(() => null);
   return connected;
@@ -9535,9 +9848,10 @@ async function recoverSuwayomiConnection() {
     const wasConnected = state.connected;
     const connected = await testConnection();
     if (!connected || !navigator.onLine) return false;
+    let librarySynced = true;
     if (!wasConnected || !state.sources.length) {
       await loadSources();
-      await syncSuwayomiLibrary().catch(() => 0);
+      librarySynced = await syncSuwayomiLibrary().then(() => true).catch(() => false);
     }
     if (state.activeChapter?.type === "suwayomi" && state.activeChapter.deviceLocal && state.currentManga?.id) {
       await fetchChapters({
@@ -9546,7 +9860,10 @@ async function recoverSuwayomiConnection() {
         serverUrl: state.activeChapter.serverUrl || currentDeviceServerUrl(),
       }).catch(() => {});
     }
-    await flushSuwayomiProgressOutbox().catch(() => false);
+    const progressSynced = await flushSuwayomiProgressOutbox().catch(() => false);
+    if (librarySynced && progressSynced) {
+      setSyncStatus("Synced", "Reading progress is reconciled with Suwayomi and ready on your other devices.", "good");
+    }
     await refreshDownloadStatus().catch(() => null);
     return true;
   })().finally(() => {
@@ -9800,7 +10117,7 @@ function wireEvents() {
       return;
     }
     if (state.connected) {
-      void flushSuwayomiProgressOutbox().catch(() => false);
+      void reconcileSuwayomiOnForeground().catch(() => false);
       void refreshDownloadStatus().catch(() => null);
       void flushMangaBakaOutbox().catch(() => false);
     } else {
@@ -9810,9 +10127,12 @@ function wireEvents() {
   window.addEventListener("pagehide", () => {
     pauseReaderLifecycle({ pageHiding: true });
   });
-  window.addEventListener("pageshow", () => {
+  window.addEventListener("pageshow", (event) => {
     state.readerLifecyclePaused = false;
     void resumeReaderLifecycle();
+    if (event.persisted && navigator.onLine && state.connected) {
+      void reconcileSuwayomiOnForeground().catch(() => false);
+    }
   });
 
   el.stage.addEventListener("click", handleStageTap);

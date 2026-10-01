@@ -1,0 +1,4 @@
+{$PANELS_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:{$PANELS_PORT:8013}
+}

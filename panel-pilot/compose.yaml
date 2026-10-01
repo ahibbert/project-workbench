@@ -1,0 +1,39 @@
+services:
+  panels:
+    image: panels:${PANELS_IMAGE_TAG:-local}
+    build:
+      context: .
+      args:
+        PANEL_PILOT_BUILD_ID: ${PANELS_BUILD_ID:-local}
+    restart: unless-stopped
+    environment:
+      PANEL_PILOT_AUTH_USER: ${PANEL_PILOT_AUTH_USER:?set PANEL_PILOT_AUTH_USER in .env}
+      PANEL_PILOT_AUTH_PASSWORD: ${PANEL_PILOT_AUTH_PASSWORD:?set PANEL_PILOT_AUTH_PASSWORD in .env}
+      PANEL_PILOT_SESSION_SECRET: ${PANEL_PILOT_SESSION_SECRET:?set PANEL_PILOT_SESSION_SECRET in .env}
+      PANEL_PILOT_SESSION_MAX_AGE: ${PANEL_PILOT_SESSION_MAX_AGE:-2592000}
+      SUWAYOMI_INTERNAL_URL: ${SUWAYOMI_INTERNAL_URL:?set SUWAYOMI_INTERNAL_URL in .env}
+      SUWAYOMI_AUTH_USER: ${SUWAYOMI_AUTH_USER:-}
+      SUWAYOMI_AUTH_PASSWORD: ${SUWAYOMI_AUTH_PASSWORD:-}
+      MANGABAKA_API_KEY: ${MANGABAKA_API_KEY:-}
+      PANEL_PILOT_LIBRARY_PATH: /app/data/library.json
+      PANEL_PILOT_REPORTS_PATH: /app/data/panel-reports
+      PANEL_PILOT_DOWNLOAD_BUFFER_PATH: /app/data/download-buffer.json
+      PANEL_PILOT_MANGABAKA_CONFIG_PATH: /app/data/mangabaka-config.json
+      PANEL_PILOT_MANGA_DETECTOR_URL: ${PANEL_PILOT_MANGA_DETECTOR_URL:-}
+      PANEL_PILOT_MANGA_DETECTOR_CACHE_VERSION: v1-yolo26n-1024
+      PANEL_PILOT_MANGA_DETECTOR_CACHE_PATH: /app/data/detector-cache
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    volumes:
+      - ./data/panels:/app/data
+    ports:
+      - ${PANELS_BIND_ADDRESS:-127.0.0.1}:${PANELS_PORT:-8013}:8013
+  manga-detector:
+    profiles:
+      - manga-detector
+    build:
+      context: ./ml
+    restart: unless-stopped
+    environment:
+      MANGA_SCORE_THRESHOLD: ${MANGA_SCORE_THRESHOLD:-0.25}
+      MANGA_INPUT_SIZE: ${MANGA_INPUT_SIZE:-1024}

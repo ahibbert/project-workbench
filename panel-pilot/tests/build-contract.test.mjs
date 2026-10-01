@@ -269,13 +269,14 @@ test("dist is isolated from application source and server data", () => {
   }
 });
 
-test("the Docker runtime stage contains only the server and generated frontend", () => {
+test("the Docker runtime stage contains only the server, generated frontend, and notices", () => {
   const dockerfile = readFileSync(join(projectRoot, "Dockerfile"), "utf8");
   assert.match(dockerfile, /^FROM node:22\.21\.1-alpine AS frontend-builder$/m);
 
   const runtimeStage = dockerfile.slice(dockerfile.lastIndexOf("FROM python:"));
   assert.match(runtimeStage, /^ENV PANEL_PILOT_STATIC_ROOT=\/app\/web$/m);
   assert.match(runtimeStage, /^COPY server\.py \.\/server\.py$/m);
+  assert.match(runtimeStage, /^COPY LICENSE THIRD_PARTY_NOTICES\.md \.\/$/m);
   assert.match(runtimeStage, /^COPY --from=frontend-builder \/build\/dist \.\/web$/m);
   assert.doesNotMatch(runtimeStage, /^COPY\s+\.\s+/m, "the runtime stage must not copy the source tree");
   assert.doesNotMatch(runtimeStage, /package(?:-lock)?\.json|\/src\b|\/data\b/m);

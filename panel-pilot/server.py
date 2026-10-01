@@ -340,7 +340,9 @@ class DownloadBufferManager:
             if temporary_path and os.path.exists(temporary_path):
                 os.unlink(temporary_path)
 
-    def enqueue(self, chapter_ids):
+    def enqueue(self, chapter_ids, priority="foreground"):
+        if priority not in ("foreground", "background"):
+            raise ValueError("Download buffer priority must be foreground or background")
         added = 0
         candidates = []
         for raw_id in chapter_ids[:25]:
@@ -353,8 +355,10 @@ class DownloadBufferManager:
         requested = self.library_chapter_ids(candidates)
         rejected = len(candidates) - len(requested)
         with self.lock:
-            window_changed = requested != self.requested_chapter_ids
-            self.requested_chapter_ids = requested
+            window_changed = priority == "foreground" and requested != self.requested_chapter_ids
+            if priority == "foreground":
+                self.requested_chapter_ids = requested
+            before_order = [item["chapterId"] for item in self.tasks]
             existing = {item["chapterId"] for item in self.tasks}
             if self.active_chapter_id:
                 existing.add(self.active_chapter_id)
@@ -367,7 +371,17 @@ class DownloadBufferManager:
                 self.tasks.append({"chapterId": chapter_id, "attempts": 0, "notBefore": 0, "lastError": ""})
                 existing.add(chapter_id)
                 added += 1
-            if added or window_changed:
+            if priority == "foreground":
+                requested_set = set(requested)
+                available = {item["chapterId"] for item in self.tasks}
+                preferred = [
+                    next(item for item in self.tasks if item["chapterId"] == chapter_id)
+                    for chapter_id in requested
+                    if chapter_id in available
+                ]
+                self.tasks = preferred + [item for item in self.tasks if item["chapterId"] not in requested_set]
+            order_changed = before_order != [item["chapterId"] for item in self.tasks]
+            if added or window_changed or order_changed:
                 self.save_locked()
         self.wake.set()
         return {**self.status(), "added": added, "rejected": rejected}
@@ -941,7 +955,10 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         chapter_ids = payload.get("chapterIds")
         if not isinstance(chapter_ids, list):
             raise ValueError("chapterIds must be a list")
-        self.send_json(DOWNLOAD_BUFFER_MANAGER.enqueue(chapter_ids))
+        priority = payload.get("priority", "foreground")
+        if priority not in ("foreground", "background"):
+            raise ValueError("priority must be foreground or background")
+        self.send_json(DOWNLOAD_BUFFER_MANAGER.enqueue(chapter_ids, priority=priority))
 
     def do_GET(self):
         parsed = urlparse(self.path)

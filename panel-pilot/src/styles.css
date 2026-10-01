@@ -542,6 +542,66 @@ h2 {
   gap: 0.55rem;
 }
 
+.library-sync-status {
+  min-height: 2rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.38rem;
+  border: 1px solid rgba(201, 208, 203, 0.9);
+  border-radius: 999px;
+  padding: 0.3rem 0.55rem;
+  background: #fff;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 780;
+  white-space: nowrap;
+}
+
+.library-sync-status-dot {
+  width: 0.52rem;
+  height: 0.52rem;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #8d9691;
+  box-shadow: 0 0 0 3px rgba(141, 150, 145, 0.12);
+}
+
+.library-sync-status[data-state="synced"] {
+  border-color: rgba(47, 122, 78, 0.3);
+  color: var(--ok);
+}
+
+.library-sync-status[data-state="synced"] .library-sync-status-dot {
+  background: var(--ok);
+  box-shadow: 0 0 0 3px rgba(47, 122, 78, 0.13);
+}
+
+.library-sync-status[data-state="syncing"],
+.library-sync-status[data-state="queued"] {
+  border-color: rgba(154, 106, 0, 0.3);
+  color: #765200;
+}
+
+.library-sync-status[data-state="syncing"] .library-sync-status-dot,
+.library-sync-status[data-state="queued"] .library-sync-status-dot {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px rgba(154, 106, 0, 0.13);
+}
+
+.library-sync-status[data-state="syncing"] .library-sync-status-dot {
+  animation: download-pulse 1.5s ease-in-out infinite;
+}
+
+.library-sync-status[data-state="error"] {
+  border-color: rgba(182, 77, 67, 0.35);
+  color: var(--danger);
+}
+
+.library-sync-status[data-state="error"] .library-sync-status-dot {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px rgba(182, 77, 67, 0.14);
+}
+
 .test-body {
   background: #ffffff;
 }

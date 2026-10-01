@@ -1,7 +1,26 @@
 # Panels
 
-A static PWA prototype for a Suwayomi-backed manga reader with panel-by-panel
-guided reading.
+Panels is a self-hosted, mobile-first PWA for reading a Suwayomi library with
+panel-by-panel guidance, device-local chapters, offline launch, and resumable
+progress.
+
+## Deploy with an existing Suwayomi
+
+The supported self-hosted path uses Docker Compose. Copy `.env.example` to
+`.env`, add strong Panels credentials and a random session secret, point
+`SUWAYOMI_INTERNAL_URL` at the existing Suwayomi server, then build and start:
+
+```sh
+cp .env.example .env
+docker compose config --quiet
+docker compose build
+docker compose up -d
+```
+
+For network choices, HTTPS, verification, backups, and attaching to Suwayomi,
+follow [the deployment guide](docs/DEPLOYMENT.md). Maintainers should use the
+[release and rollback runbook](docs/RELEASING.md). Do not expose Panels before
+reading the [security policy](SECURITY.md).
 
 ## Run locally
 
@@ -150,8 +169,8 @@ progress path.
 
 ## Sign in
 
-When `PANEL_PILOT_AUTH_USER` and `PANEL_PILOT_AUTH_PASSWORD` are set, Panel
-Pilot shows an HTML sign-in page instead of a browser Basic Auth dialog. The
+When `PANEL_PILOT_AUTH_USER` and `PANEL_PILOT_AUTH_PASSWORD` are set, Panels
+shows an HTML sign-in page instead of a browser Basic Auth dialog. The
 form uses standard `username` and `current-password` autocomplete fields so
 password managers can fill it. Sessions last 30 days by default.
 
@@ -187,9 +206,13 @@ service.
 - The optional trained detector is currently manga-only. Comic and webtoon
   models will remain separate rather than sharing manga weights and thresholds.
 
-## Next steps
+## License
 
-- Follow the [panel performance and Tachimanga migration plan](PERFORMANCE_AND_SYNC_PLAN.md).
-- Add manual split, merge, reorder, and skip controls.
-- Add direct MangaDex and Comick adapters as optional alternatives to Suwayomi.
-- Package as an iOS-friendly standalone PWA or native wrapper.
+Panels is licensed under the [GNU Affero General Public License v3.0](LICENSE).
+Copyright © 2026 Panels contributors.
+The optional manga detector uses separately distributed AGPL-3.0 weights and
+has additional attribution in [`ml/MODEL-NOTICE.md`](ml/MODEL-NOTICE.md).
+Manga, source extensions, Suwayomi, and third-party service data are not part
+of this license or distributed by Panels.
+Notices for code included in the generated PWA are in
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

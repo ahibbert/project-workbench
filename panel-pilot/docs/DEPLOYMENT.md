@@ -1,0 +1,119 @@
+# Deploying Panels with Suwayomi
+
+Panels is a self-hosted PWA. Its Python server serves the built frontend and
+proxies authenticated requests to an existing Suwayomi server. The browser
+never needs direct network access to Suwayomi.
+
+## Prerequisites
+
+- Docker Engine with Docker Compose v2
+- A running Suwayomi Server whose port 4567 is reachable from the Panels
+  container
+- A domain with HTTPS for installation as a PWA on phones and tablets
+
+Panels is intended for a trusted individual or household, not as a public
+multi-tenant service. Read [SECURITY.md](../SECURITY.md) before exposing it to
+a network.
+
+## Configure
+
+Clone the source and enter the `panel-pilot` directory:
+
+```sh
+git clone https://github.com/ahibbert/project-workbench.git
+cd project-workbench/panel-pilot
+```
+
+Create the local configuration:
+
+```sh
+cp .env.example .env
+openssl rand -hex 32
+```
+
+Put the generated value in `PANEL_PILOT_SESSION_SECRET`, then replace every
+placeholder password in `.env`. Keep `.env` private; it is ignored by Git.
+
+The important Suwayomi setting is `SUWAYOMI_INTERNAL_URL`. It is resolved by
+the Panels container, not by the phone:
+
+- If Suwayomi publishes port 4567 on the Docker host, keep
+  `http://host.docker.internal:4567`. The supplied Compose file maps that name
+  to Docker's host gateway on Linux.
+- If Suwayomi is on another reachable machine, use its private HTTP or HTTPS
+  URL.
+- If both services share an external Docker network, attach `panels` to that
+  network with a Compose override and use the Suwayomi service name, such as
+  `http://suwayomi:4567`.
+
+Set `SUWAYOMI_AUTH_USER` and `SUWAYOMI_AUTH_PASSWORD` when Suwayomi uses Basic
+Auth. These credentials stay on the Panels server and are not sent to the
+browser.
+
+`MANGABAKA_API_KEY` is optional. A token entered later in Panels Settings is
+stored in `data/panels/mangabaka-config.json` with restricted file permissions.
+
+## Start and verify
+
+Validate the rendered Compose configuration before building. This catches
+unset required values without displaying them:
+
+```sh
+docker compose config --quiet
+docker compose build
+docker compose up -d
+docker compose ps
+docker compose logs --tail=100 panels
+```
+
+Open `http://127.0.0.1:8013` on the Docker host. A request without a session
+should redirect to `/login`; sign in with the Panels credentials, then use
+**Settings → Suwayomi → Test connection** and **Load sources**.
+
+Panels uses its built-in browser detector by default. To enable the optional
+server-side manga detector, uncomment `COMPOSE_PROFILES` and
+`PANEL_PILOT_MANGA_DETECTOR_URL` in `.env`, then run `docker compose up -d`
+again. The detector stays private to the Compose network, and its model is
+downloaded from the checksum-pinned location documented in
+[`ml/MODEL-NOTICE.md`](../ml/MODEL-NOTICE.md). If it becomes unavailable,
+Panels falls back to the browser detector.
+
+## Put HTTPS in front
+
+Keep the published Panels port on `127.0.0.1` and terminate TLS in a reverse
+proxy. Installed PWAs and service workers require a secure context outside
+localhost. Caddy running directly on the Docker host can use
+[`deploy/Caddyfile.example`](../deploy/Caddyfile.example):
+
+```sh
+PANELS_DOMAIN=panels.example.com PANELS_PORT=8013 caddy run --config deploy/Caddyfile.example
+```
+
+Caddy automatically forwards the original scheme, allowing Panels to mark its
+session cookie `Secure`. If the reverse proxy itself runs in Docker, attach it
+to the same network and proxy to `panels:8013` rather than host loopback.
+
+Do not add a second authentication prompt at the reverse proxy: it interferes
+with the app's login, service-worker update, and API flows. Use Panels' own
+authentication and a long, unique password.
+
+## Persistent and device-local data
+
+Server state is under `data/panels`:
+
+- `library.json` — the Panels library and resumable reading state
+- `download-buffer.json` — Suwayomi server-download queue
+- `panel-reports/` and `detector-cache/` — detector output and cache
+- `mangabaka-config.json` — optional MangaBaka credential
+
+Back up this directory as sensitive data. Device-local chapter downloads,
+browser settings, pending browser outboxes, and the offline shell live in each
+browser profile and are not contained in the server backup or synchronized to
+another device.
+
+## Upgrade
+
+Follow the tested build, backup, rollout, and rollback sequence in
+[`RELEASING.md`](RELEASING.md). After a server upgrade, an installed PWA keeps
+the current worker until the reader chooses **Update ready → Apply update**;
+this preserves the active reading position and queued progress first.

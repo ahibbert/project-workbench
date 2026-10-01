@@ -18,6 +18,7 @@ WORKDIR /app
 ENV PANEL_PILOT_STATIC_ROOT=/app/web
 
 COPY server.py ./server.py
+COPY LICENSE THIRD_PARTY_NOTICES.md ./
 COPY --from=frontend-builder /build/dist ./web
 
 EXPOSE 8013
