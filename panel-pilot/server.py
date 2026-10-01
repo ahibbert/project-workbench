@@ -2116,6 +2116,11 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             report["panels"] = [self.clean_panel(panel) for panel in panels[:80] if self.clean_panel(panel)]
         else:
             report["panels"] = []
+        bubbles = payload.get("bubbles")
+        if isinstance(bubbles, list):
+            report["bubbles"] = [self.clean_panel(bubble) for bubble in bubbles[:120] if self.clean_panel(bubble)]
+        else:
+            report["bubbles"] = []
         return report
 
     def clean_text(self, value, limit):

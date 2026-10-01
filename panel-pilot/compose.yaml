@@ -21,7 +21,7 @@ services:
       PANEL_PILOT_DOWNLOAD_BUFFER_PATH: /app/data/download-buffer.json
       PANEL_PILOT_MANGABAKA_CONFIG_PATH: /app/data/mangabaka-config.json
       PANEL_PILOT_MANGA_DETECTOR_URL: ${PANEL_PILOT_MANGA_DETECTOR_URL:-}
-      PANEL_PILOT_MANGA_DETECTOR_CACHE_VERSION: v1-yolo26n-1024
+      PANEL_PILOT_MANGA_DETECTOR_CACHE_VERSION: v2-yolo26n-1024-bubbles-800
       PANEL_PILOT_MANGA_DETECTOR_CACHE_PATH: /app/data/detector-cache
     extra_hosts:
       - host.docker.internal:host-gateway
@@ -39,3 +39,5 @@ services:
     environment:
       MANGA_SCORE_THRESHOLD: ${MANGA_SCORE_THRESHOLD:-0.25}
       MANGA_INPUT_SIZE: ${MANGA_INPUT_SIZE:-1024}
+      BUBBLE_SCORE_THRESHOLD: ${BUBBLE_SCORE_THRESHOLD:-0.25}
+      BUBBLE_INPUT_SIZE: ${BUBBLE_INPUT_SIZE:-800}

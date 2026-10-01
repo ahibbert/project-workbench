@@ -252,6 +252,8 @@ const el = {
   wakeLockStatus: document.querySelector("#wake-lock-status"),
   panelPadding: document.querySelector("#panel-padding"),
   panelPaddingValue: document.querySelector("#panel-padding-value"),
+  bubbleAwareFraming: document.querySelector("#bubble-aware-framing"),
+  bubbleAwareFramingReader: document.querySelector("#bubble-aware-framing-reader"),
   toggleFit: document.querySelector("#toggle-fit"),
   hideReaderControls: document.querySelector("#hide-reader-controls"),
   toggleReaderMode: document.querySelector("#toggle-reader-mode"),
@@ -439,6 +441,7 @@ const state = {
   fullPage: false,
   panelMode: "manga",
   panelPadding: 8,
+  bubbleAwareFraming: true,
   readingDirection: "rtl",
   readerMotion: "smooth",
   connected: false,
@@ -598,6 +601,7 @@ function loadSettings() {
     if (["smooth", "quick", "instant"].includes(saved.readerMotion)) state.readerMotion = saved.readerMotion;
     if (libraryFilterValues.includes(saved.libraryFilter)) state.libraryFilter = saved.libraryFilter;
     if (Number.isFinite(saved.panelPadding)) state.panelPadding = clamp(saved.panelPadding, 0, 25);
+    if (typeof saved.bubbleAwareFraming === "boolean") state.bubbleAwareFraming = saved.bubbleAwareFraming;
     if (typeof saved.keepScreenAwake === "boolean") state.keepScreenAwake = saved.keepScreenAwake;
   } catch {
     // Ignore malformed local storage.
@@ -614,6 +618,7 @@ function loadSettings() {
   updateCollapsiblePanel(el.browseBody, el.toggleBrowsePanel, state.browseOpen);
   updateSuwayomiLink();
   if (el.panelPadding) el.panelPadding.value = String(state.panelPadding);
+  updateBubbleAwareFramingControls();
   if (el.keepScreenAwake) el.keepScreenAwake.checked = state.keepScreenAwake;
   updatePaddingControl();
   updatePanelModeControls();
@@ -641,6 +646,7 @@ function saveSettings() {
       readerMotion: state.readerMotion,
       libraryFilter: state.libraryFilter,
       panelPadding: state.panelPadding,
+      bubbleAwareFraming: state.bubbleAwareFraming,
       keepScreenAwake: state.keepScreenAwake,
       suwayomiSetupOpen: state.suwayomiSetupOpen,
       showNsfwSources: state.showNsfwSources,
@@ -6656,6 +6662,7 @@ async function preparePageEntry(page, index, totalPages, options = {}) {
   page.naturalWidth = naturalWidth;
   page.naturalHeight = naturalHeight;
   page.panels = sanitizePanels(detectedPanels, naturalWidth, naturalHeight);
+  page.bubbles = mode === "manga" ? sanitizeDetectionBoxes(detectedPanels?.bubbles) : [];
   page.detected = true;
   page.panelMode = mode;
   page.readingDirection = direction;
@@ -7183,6 +7190,32 @@ function sanitizePanels(panels, width, height) {
   return sparseTinyPage ? fallback : cleaned;
 }
 
+function sanitizeDetectionBoxes(boxes) {
+  if (!Array.isArray(boxes)) return [];
+  return boxes
+    .filter((box) => (
+      box
+      && Number.isFinite(Number(box.x))
+      && Number.isFinite(Number(box.y))
+      && Number.isFinite(Number(box.w))
+      && Number.isFinite(Number(box.h))
+      && Number(box.w) > 0
+      && Number(box.h) > 0
+    ))
+    .map((box) => {
+      const x = clamp(Number(box.x), 0, 0.999);
+      const y = clamp(Number(box.y), 0, 0.999);
+      return {
+        x,
+        y,
+        w: clamp(Number(box.w), 0.001, 1 - x),
+        h: clamp(Number(box.h), 0.001, 1 - y),
+        score: Number.isFinite(Number(box.score)) ? Number(box.score) : 1,
+      };
+    })
+    .filter((box) => box.w * box.h <= 0.72);
+}
+
 function makeWebtoonPanels(image) {
   const imageWidth = image.naturalWidth || image.width;
   const imageHeight = image.naturalHeight || image.height;
@@ -7628,7 +7661,10 @@ async function detectMangaPanelsWithModel(image, direction, pageUrl = "") {
   const payload = await response.json();
   if (!Array.isArray(payload.panels)) throw new Error("Manga model returned an invalid response");
   state.mangaModelAvailable = true;
-  if (!payload.panels.length) return [fullPagePanel(image.naturalWidth, image.naturalHeight)];
+  const bubbles = sanitizeDetectionBoxes(payload.bubbles);
+  if (!payload.panels.length) {
+    return attachDetectionBubbles([fullPagePanel(image.naturalWidth, image.naturalHeight)], bubbles);
+  }
   const panels = payload.panels.map((panel) => ({
     ...panel,
     pageWidth: image.naturalWidth,
@@ -7636,9 +7672,15 @@ async function detectMangaPanelsWithModel(image, direction, pageUrl = "") {
   }));
   const consolidated = consolidateMangaPanels(panels);
   const sorted = repairReadingOrder(sortPanels(consolidated, direction), direction);
-  return sorted.length ? sorted.map((panel, index) => ({ ...panel, label: `Panel ${index + 1}` })) : [
+  const detected = sorted.length ? sorted.map((panel, index) => ({ ...panel, label: `Panel ${index + 1}` })) : [
     fullPagePanel(image.naturalWidth, image.naturalHeight),
   ];
+  return attachDetectionBubbles(detected, bubbles);
+}
+
+function attachDetectionBubbles(panels, bubbles) {
+  panels.bubbles = Array.isArray(bubbles) ? bubbles : [];
+  return panels;
 }
 
 async function detectPanelsHeuristic(image, direction) {
@@ -9195,9 +9237,12 @@ function fitStage() {
   const stageRect = el.stage.getBoundingClientRect();
   const imageWidth = page.naturalWidth;
   const imageHeight = page.naturalHeight;
+  const framedRect = !state.fullPage && state.bubbleAwareFraming && state.panelMode === "manga"
+    ? bubbleAwarePanelRect(rect, page.bubbles, page.panels)
+    : rect;
   const target = state.fullPage
     ? fullPagePanel(imageWidth, imageHeight)
-    : expandPanelRect(rect || fullPagePanel(imageWidth, imageHeight), state.panelPadding / 100);
+    : expandPanelRect(framedRect || fullPagePanel(imageWidth, imageHeight), state.panelPadding / 100);
   const margin = state.fullPage ? 0.94 : 1;
   let scale = Math.min(
     stageRect.width / (imageWidth * target.w),
@@ -9331,6 +9376,77 @@ function expandPanelRect(panel, padding) {
   };
 }
 
+function detectionBoxIntersectionArea(one, two) {
+  const x0 = Math.max(one.x, two.x);
+  const y0 = Math.max(one.y, two.y);
+  const x1 = Math.min(one.x + one.w, two.x + two.w);
+  const y1 = Math.min(one.y + one.h, two.y + two.h);
+  return Math.max(0, x1 - x0) * Math.max(0, y1 - y0);
+}
+
+function bubblePanelIndex(bubble, panels) {
+  if (!bubble || !Array.isArray(panels) || !panels.length) return -1;
+  const centerX = bubble.x + bubble.w / 2;
+  const centerY = bubble.y + bubble.h / 2;
+  const bubbleArea = Math.max(0.000001, bubble.w * bubble.h);
+  let bestIndex = -1;
+  let bestScore = 0;
+
+  panels.forEach((panel, index) => {
+    const containsCenter = centerX >= panel.x && centerX <= panel.x + panel.w
+      && centerY >= panel.y && centerY <= panel.y + panel.h;
+    const nearX = Math.max(0.018, Math.min(0.04, panel.w * 0.12));
+    const nearY = Math.max(0.014, Math.min(0.035, panel.h * 0.12));
+    const nearCenter = centerX >= panel.x - nearX && centerX <= panel.x + panel.w + nearX
+      && centerY >= panel.y - nearY && centerY <= panel.y + panel.h + nearY;
+    const overlap = detectionBoxIntersectionArea(bubble, panel) / bubbleArea;
+    if (!containsCenter && !(nearCenter && overlap >= 0.08) && overlap < 0.22) return;
+    const score = (containsCenter ? 4 : nearCenter ? 2 : 0) + overlap - Math.min(0.5, panel.w * panel.h) * 0.01;
+    if (score > bestScore) {
+      bestIndex = index;
+      bestScore = score;
+    }
+  });
+  return bestIndex;
+}
+
+function bubbleAwarePanelRect(panel, bubbles = [], panels = [panel]) {
+  if (!panel || !Array.isArray(bubbles) || !bubbles.length) return panel;
+  const panelIndex = panels.indexOf(panel);
+  if (panelIndex < 0) return panel;
+  const horizontalLimit = Math.min(0.1, Math.max(0.025, panel.w * 0.22));
+  const verticalLimit = Math.min(0.08, Math.max(0.02, panel.h * 0.22));
+  let x0 = panel.x;
+  let y0 = panel.y;
+  let x1 = panel.x + panel.w;
+  let y1 = panel.y + panel.h;
+  let includedBubbles = 0;
+
+  bubbles.forEach((bubble) => {
+    if (bubblePanelIndex(bubble, panels) !== panelIndex) return;
+    const marginX = Math.min(0.012, Math.max(0.003, bubble.w * 0.08));
+    const marginY = Math.min(0.01, Math.max(0.002, bubble.h * 0.08));
+    x0 = Math.min(x0, Math.max(panel.x - horizontalLimit, bubble.x - marginX));
+    y0 = Math.min(y0, Math.max(panel.y - verticalLimit, bubble.y - marginY));
+    x1 = Math.max(x1, Math.min(panel.x + panel.w + horizontalLimit, bubble.x + bubble.w + marginX));
+    y1 = Math.max(y1, Math.min(panel.y + panel.h + verticalLimit, bubble.y + bubble.h + marginY));
+    includedBubbles += 1;
+  });
+
+  const boundedX0 = clamp(x0, 0, 1);
+  const boundedY0 = clamp(y0, 0, 1);
+  const boundedX1 = clamp(x1, boundedX0 + 0.001, 1);
+  const boundedY1 = clamp(y1, boundedY0 + 0.001, 1);
+  return {
+    ...panel,
+    x: boundedX0,
+    y: boundedY0,
+    w: boundedX1 - boundedX0,
+    h: boundedY1 - boundedY0,
+    bubbleCount: includedBubbles,
+  };
+}
+
 function currentPanel() {
   const page = state.pages[state.pageIndex];
   return page?.panels?.[state.panelIndex] || null;
@@ -9339,6 +9455,19 @@ function currentPanel() {
 function updatePaddingControl() {
   if (!el.panelPaddingValue) return;
   el.panelPaddingValue.textContent = `${Math.round(state.panelPadding)}%`;
+}
+
+function updateBubbleAwareFramingControls() {
+  [el.bubbleAwareFraming, el.bubbleAwareFramingReader].forEach((control) => {
+    if (control) control.checked = state.bubbleAwareFraming;
+  });
+}
+
+function setBubbleAwareFraming(enabled) {
+  state.bubbleAwareFraming = Boolean(enabled);
+  updateBubbleAwareFramingControls();
+  saveSettings();
+  if (state.activeView === "reader") scheduleCameraFit();
 }
 
 function updatePanelModeControls() {
@@ -9976,6 +10105,7 @@ async function reportBadPanels() {
       naturalHeight: page.naturalHeight || 0,
       selectedPanel: currentPanel(),
       panels: page.panels || [],
+      bubbles: page.bubbles || [],
       snapshotDataUrl: await makePanelReportSnapshot(page).catch(() => ""),
     };
     const response = await postLocalJson("/api/panel-report", payload);
@@ -10785,6 +10915,8 @@ function wireEvents() {
   el.nextPanel.addEventListener("click", () => movePanel(1));
   el.keepScreenAwake?.addEventListener("change", (event) => setKeepScreenAwake(event.target.checked));
   el.panelPadding.addEventListener("input", (event) => setPanelPadding(event.target.value));
+  el.bubbleAwareFraming?.addEventListener("change", (event) => setBubbleAwareFraming(event.target.checked));
+  el.bubbleAwareFramingReader?.addEventListener("change", (event) => setBubbleAwareFraming(event.target.checked));
   el.toggleFit.addEventListener("click", toggleFullPage);
   el.hideReaderControls?.addEventListener("click", hideReaderControls);
   el.toggleReaderMode?.addEventListener("click", toggleReaderFocus);
@@ -10960,6 +11092,8 @@ function getReaderLifecycleDiagnostics() {
 
 window.PanelPilot = {
   detectorVersion,
+  bubbleAwarePanelRect,
+  bubblePanelIndex,
   consolidateMangaPanels,
   detectPanels,
   fullPagePanel,

@@ -3524,9 +3524,14 @@ body.reader-active .reader-controls > button {
 
 .reader-options-sheet > strong,
 .reader-options-sheet .padding-control,
+.reader-options-sheet .checkbox-field,
 .reader-options-sheet .reader-wake-lock,
 .sheet-handle {
   grid-column: 1 / -1;
+}
+
+.reader-options-sheet .checkbox-field {
+  margin-top: 0;
 }
 
 .sheet-handle {

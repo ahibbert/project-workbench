@@ -3,10 +3,12 @@
 This service is deliberately manga-only. Comic and webtoon detection remains
 separate so those formats can use their own models and thresholds.
 
-The deployed model is the 10 MB ONNX export of
-`leoxs22/manga-panel-detector-yolo26n`. The image build downloads a pinned
-revision and verifies its SHA-256 checksum. It runs with ONNX Runtime on CPU;
-the existing browser detector is retained as an automatic availability
+The deployed panel model is the 10 MB ONNX export of
+`leoxs22/manga-panel-detector-yolo26n`. The same service also runs the 9.9 MB
+Poneglyph speech-bubble detector so the reader can keep balloons that cross a
+predicted panel edge inside the camera crop. The image build downloads pinned
+revisions and verifies both SHA-256 checksums. They run with ONNX Runtime on
+CPU; the existing browser detector is retained as an automatic availability
 fallback. See `MODEL-NOTICE.md` for attribution and licensing.
 
 Compose builds this optional image from the repository root so the image can
@@ -64,10 +66,11 @@ title cards, and splash pages deliberately become a single full-page view.
 - `GET /health`
 - `POST /v1/manga/panels` with raw image bytes and an `image/*` content type
 
-The response contains normalized panel boxes and confidence scores. Keep port
-8091 on the private Docker network. Panels uses the service only in manga
-mode and automatically returns to the browser detector when the service is not
-available.
+The response contains normalized panel and speech-bubble boxes with confidence
+scores. Bubble boxes adjust only the visible camera crop; they do not change
+panel detection or reading order. Keep port 8091 on the private Docker network.
+Panels uses the service only in manga mode and automatically returns to the
+browser detector when the service is not available.
 
 ## Optional future training
 

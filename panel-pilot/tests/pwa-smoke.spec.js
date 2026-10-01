@@ -204,6 +204,36 @@ test("Test Lab preserves and can invoke the window.PanelPilot detector contract"
   expect(errors).toEqual([]);
 });
 
+test("bubble-aware framing expands only the panel that owns a clipped speech bubble", async ({ page }) => {
+  await stubBackend(page);
+  await page.goto("/", { waitUntil: "networkidle" });
+
+  const result = await page.evaluate(() => {
+    const panels = [
+      { x: 0.10, y: 0.10, w: 0.36, h: 0.34 },
+      { x: 0.54, y: 0.10, w: 0.36, h: 0.34 },
+    ];
+    const bubbles = [
+      { x: 0.075, y: 0.16, w: 0.08, h: 0.10, score: 0.92 },
+      { x: 0.73, y: 0.16, w: 0.10, h: 0.10, score: 0.95 },
+    ];
+    return {
+      left: window.PanelPilot.bubbleAwarePanelRect(panels[0], bubbles, panels),
+      right: window.PanelPilot.bubbleAwarePanelRect(panels[1], bubbles, panels),
+      leftOwner: window.PanelPilot.bubblePanelIndex(bubbles[0], panels),
+      rightOwner: window.PanelPilot.bubblePanelIndex(bubbles[1], panels),
+    };
+  });
+
+  expect(result.leftOwner).toBe(0);
+  expect(result.rightOwner).toBe(1);
+  expect(result.left.x).toBeLessThan(0.10);
+  expect(result.left.x + result.left.w).toBeLessThan(0.54);
+  expect(result.left.bubbleCount).toBe(1);
+  expect(result.right.x).toBe(0.54);
+  expect(result.right.bubbleCount).toBe(1);
+});
+
 test("the demo chapter opens and advances to the next panel", async ({ page }) => {
   await stubBackend(page);
   const errors = watchRuntimeErrors(page);

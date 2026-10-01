@@ -77,12 +77,14 @@ should redirect to `/login`; sign in with the Panels credentials, then use
 **Settings → Suwayomi → Test connection** and **Load sources**.
 
 Panels uses its built-in browser detector by default. To enable the optional
-server-side manga detector, uncomment `COMPOSE_PROFILES` and
+server-side manga panel and speech-bubble detectors, uncomment `COMPOSE_PROFILES` and
 `PANEL_PILOT_MANGA_DETECTOR_URL` in `.env`, then run `docker compose up -d`
 again. The detector stays private to the Compose network, and its model is
 downloaded from the checksum-pinned location documented in
 [`ml/MODEL-NOTICE.md`](../ml/MODEL-NOTICE.md). If it becomes unavailable,
-Panels falls back to the browser detector.
+Panels falls back to the browser detector. Bubble-aware framing is an optional
+camera refinement: if the bubble model is unavailable, ordinary panel framing
+continues unchanged.
 
 ## Put HTTPS in front
 

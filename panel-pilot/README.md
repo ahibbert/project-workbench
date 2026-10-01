@@ -149,6 +149,10 @@ still require online authentication.
 
 Panel view fits the active panel crop into the reader by both width and height.
 Use the `Padding` slider to choose how much context is shown around each panel.
+When the optional manga detector is enabled, Panels also detects speech bubbles
+and gently expands a crop when a balloon crosses the model's panel boundary.
+This is enabled by default and can be switched off in Reader controls or
+Settings without changing detection or reading order.
 When you advance past the final panel of a Comick chapter, the reader attempts
 to load the next numbered chapter automatically.
 

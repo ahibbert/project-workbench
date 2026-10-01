@@ -21,3 +21,14 @@ converter's stale metadata.
 - Dataset terms: https://huggingface.co/datasets/hal-utokyo/Manga109-s
 
 Do not redistribute Manga109-s images or annotations with Panels.
+
+## Speech-bubble detector
+
+Bubble-aware panel framing uses the `bubble_detector.onnx` artifact from
+`Remidesbois/Poneglyph-ReaderNet`. The artifact is an AGPL-3.0 YOLO26n export
+and is downloaded from a pinned revision during the detector image build. It
+is not committed to this repository.
+
+- Model: https://huggingface.co/Remidesbois/Poneglyph-ReaderNet
+- Pinned revision: `d97d4cd2903a7ebe49276a5269c4f3b7df608be7`
+- SHA-256: `fa28ece56ba9e5ccf4361fbb4d2533e088906b0a0d1cd187c02422ba7d6f5688`
