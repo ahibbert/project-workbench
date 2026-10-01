@@ -733,6 +733,31 @@ test("a long webtoon caps decoded images and live DOM nodes while its render win
   await expect(page.locator("#panel-stat")).not.toHaveText(panelBefore || "");
 });
 
+test("continuous webtoon scrolling opens the next chapter at the bottom", async ({ page }) => {
+  await seedSettings(page, { panelMode: "webtoon" });
+  await installBackend(page, { chapterIds: [1101, 1102], pageCount: 3, webtoon: true });
+  await gotoApp(page);
+  await openFixtureChapter(page, 1101);
+
+  await expect.poll(() => page.evaluate(() => ({
+    nextSourceIndex: window.PanelPilot.getPerformanceStats().webtoonPreparation?.nextSourceIndex,
+    backgroundPreparing: window.PanelPilot.getReaderLifecycleDiagnostics().backgroundPreparing,
+  })), { timeout: 30_000 }).toEqual({ nextSourceIndex: 3, backgroundPreparing: false });
+
+  await page.locator("#stage-image-wrap").dispatchEvent("pointerdown", { pointerType: "touch" });
+  await page.locator("#stage-image-wrap").evaluate((wrap) => {
+    wrap.scrollTop = wrap.scrollHeight;
+    wrap.dispatchEvent(new Event("scroll"));
+  });
+
+  await expect(page.locator("#chapter-title")).toHaveText("Resilience chapter 1102", { timeout: 20_000 });
+  await expect.poll(() => page.evaluate(() => (
+    document.querySelector(".stage-strip img")?.getAttribute("src") || ""
+  ))).toContain("/1102/");
+  await expect(page.locator("body")).toHaveClass(/\bwebtoon-scroll\b/);
+  await expect(page.locator("#panel-stat")).toHaveText("Continuous scroll");
+});
+
 test("a failed webtoon segment recovers without escaping strip bounds", async ({ page }) => {
   await seedSettings(page, { panelMode: "webtoon" });
   const backend = await installBackend(page, { chapterIds: [1101], pageCount: 4, webtoon: true });

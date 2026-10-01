@@ -476,6 +476,8 @@ const state = {
   viewportFitAt: Number.NEGATIVE_INFINITY,
   viewportFitSignature: "",
   webtoonScrollFrame: 0,
+  webtoonAutoAdvanceTimer: 0,
+  webtoonScrollIntent: false,
   keepScreenAwake: true,
   wakeLockSentinel: null,
   wakeLockRequest: null,
@@ -1041,6 +1043,7 @@ function setActiveView(view, options = {}) {
     state.previousView = previous;
   }
   if (view !== "reader") {
+    clearWebtoonAutoAdvance();
     state.previousView = view;
   }
 
@@ -6589,6 +6592,8 @@ async function loadChapter(pageUrls, title, options = {}) {
   state.pageIndex = 0;
   state.panelIndex = 0;
   state.fullPage = false;
+  clearWebtoonAutoAdvance();
+  state.webtoonScrollIntent = false;
   prepareReadingStatsChapterAttempt();
   updateReaderViewToggle();
   el.chapterTitle.textContent = title;
@@ -10849,6 +10854,7 @@ function scrollContinuousWebtoonToPanel(index = state.panelIndex, behavior = "au
 
 function scrollContinuousWebtoon(delta) {
   if (!continuousWebtoonReading()) return false;
+  state.webtoonScrollIntent = true;
   const direction = Number(delta) >= 0 ? 1 : -1;
   const atEnd = el.stageImageWrap.scrollTop + el.stageImageWrap.clientHeight >= el.stageImageWrap.scrollHeight - 2;
   if (direction > 0 && atEnd) return moveToAdjacentPage(1);
@@ -10857,6 +10863,41 @@ function scrollContinuousWebtoon(delta) {
     behavior: state.readerMotion === "instant" ? "auto" : "smooth",
   });
   return true;
+}
+
+function clearWebtoonAutoAdvance() {
+  window.clearTimeout(state.webtoonAutoAdvanceTimer);
+  state.webtoonAutoAdvanceTimer = 0;
+}
+
+function markWebtoonScrollIntent() {
+  if (continuousWebtoonReading()) state.webtoonScrollIntent = true;
+}
+
+function scheduleWebtoonAutoAdvance(page) {
+  const atEnd = el.stageImageWrap.scrollTop + el.stageImageWrap.clientHeight >= el.stageImageWrap.scrollHeight - 2;
+  if (!atEnd || !page?.complete || !state.webtoonScrollIntent || state.navigationPending) {
+    if (!atEnd) clearWebtoonAutoAdvance();
+    return;
+  }
+  if (state.webtoonAutoAdvanceTimer) return;
+  const generation = state.prepareGeneration;
+  const chapterId = state.activeChapter?.chapterId;
+  state.webtoonAutoAdvanceTimer = window.setTimeout(() => {
+    state.webtoonAutoAdvanceTimer = 0;
+    const activePage = state.pages[0];
+    const stillAtEnd = el.stageImageWrap.scrollTop + el.stageImageWrap.clientHeight >= el.stageImageWrap.scrollHeight - 2;
+    if (
+      generation !== state.prepareGeneration ||
+      chapterId !== state.activeChapter?.chapterId ||
+      !continuousWebtoonReading() ||
+      !activePage?.complete ||
+      !stillAtEnd ||
+      state.navigationPending
+    ) return;
+    state.webtoonScrollIntent = false;
+    void moveToAdjacentPage(1);
+  }, 420);
 }
 
 function handleWebtoonScroll() {
@@ -10872,6 +10913,7 @@ function handleWebtoonScroll() {
     const panelChanged = nextPanelIndex !== state.panelIndex;
     state.panelIndex = nextPanelIndex;
     renderStripPage(page, { refit: false, contentExtended: true });
+    scheduleWebtoonAutoAdvance(page);
     if (panelChanged) {
       updateStats();
       scheduleReadingProgressPersistence();
@@ -11391,6 +11433,9 @@ function wireEvents() {
 
   el.stage.addEventListener("click", handleStageTap);
   el.stageImageWrap?.addEventListener("scroll", handleWebtoonScroll, { passive: true });
+  el.stageImageWrap?.addEventListener("pointerdown", markWebtoonScrollIntent, { passive: true });
+  el.stageImageWrap?.addEventListener("touchstart", markWebtoonScrollIntent, { passive: true });
+  el.stageImageWrap?.addEventListener("wheel", markWebtoonScrollIntent, { passive: true });
 
   el.readerOptions?.addEventListener("toggle", () => {
     if (!el.readerOptions.open) return;
