@@ -1322,7 +1322,7 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             return []
         cleaned = []
         seen = set()
-        text_fields = ("mangaTitle", "sourceId", "sourceLabel", "chapterTitle", "panelMode", "readingDirection", "progressLabel", "updatedAt", "libraryStatus", "mangabakaTitle", "mangabakaMatchSource", "mangabakaAccountKey")
+        text_fields = ("mangaTitle", "sourceId", "sourceLabel", "chapterTitle", "panelMode", "readingDirection", "progressLabel", "updatedAt", "libraryStatus", "mangabakaTitle", "mangabakaMatchSource", "mangabakaAccountKey", "serverUrl")
         number_fields = ("mangaId", "chapterId", "pageIndex", "panelIndex", "mangabakaId")
         bool_fields = ("pinned", "hidden", "isNsfw", "statusExplicit", "suwayomiLibrary", "started")
         for item in items:

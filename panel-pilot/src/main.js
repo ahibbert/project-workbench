@@ -1,3 +1,13 @@
+import {
+  deviceChapterKey,
+  deviceChapterPageUrls,
+  downloadDeviceChapter,
+  initializeDeviceChapters,
+  listDeviceChapters,
+  listDeviceChaptersForManga,
+  removeDeviceChapter,
+} from "./device-chapters.js";
+
 const storeKey = "panel-pilot-settings";
 const panelModeStoreKey = "panel-pilot-panel-mode";
 const libraryStoreKey = "panel-pilot-library";
@@ -408,6 +418,14 @@ const state = {
   downloadStatusSheetOpen: false,
   libraryOfflineWindows: new Map(),
   libraryOfflineReadiness: new Map(),
+  deviceChapters: new Map(),
+  deviceChaptersReady: false,
+  deviceChapterError: "",
+  deviceDownloadControllers: new Map(),
+  deviceChapterWorkerChecked: false,
+  deviceChapterWorkerReady: false,
+  deviceChapterWorkerController: null,
+  deviceChapterWorkerGeneration: 0,
   historyApplying: false,
   viewScrollPositions: { library: 0, browse: 0, settings: 0 },
   browseDiscoveryScroll: 0,
@@ -895,7 +913,9 @@ function updateBrowseAvailability() {
 }
 
 async function graphQL(query, variables = {}, options = {}) {
-  const baseUrl = cleanBaseUrl();
+  const baseUrl = options.baseUrl
+    ? String(options.baseUrl).trim().replace(/\/+$/, "")
+    : cleanBaseUrl();
   const controller = (options.timeoutMs || options.signal) ? new AbortController() : null;
   const cancelFromExternalSignal = () => controller?.abort();
   if (options.signal?.aborted) controller?.abort();
@@ -1438,10 +1458,10 @@ function normalizeUrl(url) {
   return `${base}/${url}`;
 }
 
-function normalizeSuwayomiPageUrl(url) {
+function normalizeSuwayomiPageUrl(url, baseUrlOverride = "") {
   if (!url) return "";
   if (url.startsWith("/api/image")) return appUrl(url);
-  const base = cleanBaseUrl();
+  const base = baseUrlOverride || cleanBaseUrl();
   let target = url;
   if (/^https?:/i.test(url)) {
     const parsed = new URL(url);
@@ -2162,6 +2182,7 @@ function renderMangaResults() {
         mangabakaTitle: accountScopedMangaBaka ? mangaBakaTitle(accountScopedMangaBaka) : undefined,
         mangabakaMatchSource: accountScopedMangaBaka ? "recommendation" : undefined,
         mangabakaAccountKey: accountScopedMangaBaka ? state.mangabakaAccountKey : undefined,
+        serverUrl: currentDeviceServerUrl(),
       };
       if (mangabaka) {
         state.pendingMangaBakaRecommendation = null;
@@ -2662,7 +2683,15 @@ function renderLibrary() {
       eyebrow: item.chapterTitle || item.sourceLabel || "Suwayomi library",
       meta: resumable ? (item.progressLabel || "Resume reading") : "View chapters",
     });
-    cover.addEventListener("click", () => selectLibraryManga(item, resumable));
+    cover.addEventListener("click", () => void selectLibraryManga(item, resumable).catch((error) => {
+      const message = friendlySourceErrorMessage(error);
+      if (resumable) {
+        setActiveView("reader");
+        showReaderError(`Could not resume ${item.mangaTitle}`, message, () => selectLibraryManga(item, true));
+      } else {
+        showToast(`Could not open chapters: ${message}`, "bad");
+      }
+    }));
 
     const badges = document.createElement("div");
     badges.className = "manga-card-badges";
@@ -2690,7 +2719,9 @@ function renderLibrary() {
     const chapters = document.createElement("button");
     chapters.type = "button";
     chapters.textContent = "Chapters";
-    chapters.addEventListener("click", () => selectLibraryManga(item, false));
+    chapters.addEventListener("click", () => void selectLibraryManga(item, false).catch((error) => {
+      showToast(`Could not open chapters: ${friendlySourceErrorMessage(error)}`, "bad");
+    }));
     const pin = document.createElement("button");
     pin.type = "button";
     pin.textContent = item.pinned ? "Unpin" : "Pin";
@@ -2778,10 +2809,13 @@ async function openReaderFromNav() {
     if (state.activeChapter && state.pages.length) setActiveView("reader");
     return;
   }
+  const activeServerUrl = String(state.activeChapter?.serverUrl || currentDeviceServerUrl()).trim().replace(/\/+$/, "");
+  const itemServerUrl = String(item.serverUrl || currentDeviceServerUrl()).trim().replace(/\/+$/, "");
   const activeMatchesItem =
     state.activeChapter?.type === "suwayomi" &&
     Number(state.activeChapter.chapterId) === Number(item.chapterId) &&
-    String(state.currentManga?.id) === String(item.mangaId);
+    String(state.currentManga?.id) === String(item.mangaId) &&
+    activeServerUrl === itemServerUrl;
   if (activeMatchesItem && state.pages.length) {
     setActiveView("reader");
     return;
@@ -2910,6 +2944,7 @@ function isNsfwLibraryItem(item) {
 }
 
 async function selectLibraryManga(item, resume) {
+  const serverUrl = String(item.serverUrl || currentDeviceServerUrl()).trim().replace(/\/+$/, "");
   state.currentManga = {
     id: item.mangaId,
     title: item.mangaTitle,
@@ -2920,6 +2955,7 @@ async function selectLibraryManga(item, resume) {
     mangabakaTitle: item.mangabakaTitle,
     mangabakaMatchSource: item.mangabakaMatchSource,
     mangabakaAccountKey: item.mangabakaAccountKey,
+    serverUrl,
   };
   if (!resume) {
     state.mangaDetailOrigin = "library";
@@ -2933,21 +2969,39 @@ async function selectLibraryManga(item, resume) {
   state.pendingResume = resume ? item : null;
   if (resume) {
     setActiveView("reader");
-    await loadChapterPages({ chapter: item, skipLibraryEnsure: true, fastResume: true });
-    void fetchChapters({ background: true });
+    const findReadyDevicePackage = async () => {
+      const direct = devicePackageForChapter(item.chapterId, serverUrl);
+      if (direct?.status === "ready") return direct;
+      return (await devicePackagesForManga(item.mangaId, serverUrl)).find((entry) => (
+        Number(entry.chapterId) === Number(item.chapterId) && entry.status === "ready"
+      ));
+    };
+    if (!navigator.onLine) {
+      const chapterPackage = await findReadyDevicePackage();
+      if (!chapterPackage || chapterPackage.status !== "ready") {
+        throw new Error("This chapter has not been saved on this device. Reconnect to download it.");
+      }
+      await openDeviceChapter(chapterPackage, item);
+      return;
+    }
+    await loadChapterPages({ chapter: item, serverUrl, skipLibraryEnsure: true, fastResume: true });
+    const liveChapterLoaded = state.activeChapter?.type === "suwayomi"
+      && Number(state.activeChapter.chapterId) === Number(item.chapterId)
+      && String(state.activeChapter.serverUrl || currentDeviceServerUrl()).trim().replace(/\/+$/, "") === serverUrl
+      && state.pages.length > 0;
+    if (!liveChapterLoaded) {
+      const chapterPackage = await findReadyDevicePackage();
+      if (chapterPackage) await openDeviceChapter(chapterPackage, item);
+    }
+    void fetchChapters({ background: true, serverUrl });
     return;
   }
   if (!navigator.onLine) {
     handleBrowserOffline();
-    setActiveView("reader");
-    showReaderError(
-      "This chapter is not available offline yet",
-      "The app shell and local library are available. Reconnect to load this chapter; device-local chapter downloads arrive in Phase 4.",
-      reconnectPanelPilot
-    );
+    await fetchChapters({ serverUrl });
     return;
   }
-  await fetchChapters();
+  await fetchChapters({ serverUrl });
 }
 
 async function ensureCurrentMangaInSuwayomiLibrary() {
@@ -3167,7 +3221,11 @@ function cancelReaderLoading() {
 async function refreshCompletedChapterList() {
   setBusy(el.readerCompleteRefresh, true, "Refreshing");
   try {
-    await fetchChapters({ background: true, liveOnly: true });
+    await fetchChapters({
+      background: true,
+      liveOnly: true,
+      serverUrl: state.activeChapter?.serverUrl || state.currentManga?.serverUrl || currentDeviceServerUrl(),
+    });
     const hasNext = state.activeChapter?.type === "suwayomi" && Boolean(nextSuwayomiChapterAfter(state.activeChapter.chapterId));
     showReaderComplete(hasNext
       ? "A new chapter is ready."
@@ -3183,7 +3241,7 @@ function openCurrentChapterList() {
   if (state.currentManga) {
     showMangaDetail(state.currentManga, state.currentManga.sourceLabel);
     renderChapters();
-    void fetchChapters({ background: true });
+    void fetchChapters({ background: true, serverUrl: state.currentManga.serverUrl || currentDeviceServerUrl() });
   }
 }
 
@@ -3247,6 +3305,7 @@ function rememberReadingProgress() {
     panelIndex: state.panelIndex,
     panelMode: state.panelMode,
     readingDirection: state.readingDirection,
+    serverUrl: state.activeChapter.serverUrl || currentDeviceServerUrl(),
     progressLabel: totalPanels
       ? `Page ${state.pageIndex + 1}, panel ${state.panelIndex + 1}`
       : `Page ${state.pageIndex + 1}`,
@@ -3303,18 +3362,22 @@ async function syncSuwayomiProgress({ completed = false, manual = false } = {}) 
 function enqueueCurrentSuwayomiProgress({ completed = false } = {}) {
   const chapterId = Number(state.activeChapter?.chapterId);
   if (state.activeChapter?.type !== "suwayomi" || !Number.isInteger(chapterId)) return false;
-  const chapter = state.chapters.find((item) => Number(item.id) === chapterId);
+  const serverUrl = String(state.activeChapter.serverUrl || currentDeviceServerUrl()).trim().replace(/\/+$/, "");
+  const chapter = state.activeChapter.chapter
+    || state.chapters.find((item) => Number(item.id) === chapterId);
   const localPage = completed
     ? Math.max(0, state.chapterPageUrls.length - 1)
     : currentSuwayomiPageIndex();
   const lastPageRead = Math.max(localPage, Number(chapter?.lastPageRead) || 0);
-  const existing = state.suwayomiProgressOutbox.find((item) => item.chapterId === chapterId);
+  const existing = state.suwayomiProgressOutbox.find((item) => (
+    item.chapterId === chapterId && item.serverUrl === serverUrl
+  ));
   if (existing) {
     existing.lastPageRead = Math.max(existing.lastPageRead, lastPageRead);
     existing.completed = existing.completed || completed;
     existing.updatedAt = Date.now();
   } else {
-    state.suwayomiProgressOutbox.push({ chapterId, lastPageRead, completed, updatedAt: Date.now() });
+    state.suwayomiProgressOutbox.push({ serverUrl, chapterId, lastPageRead, completed, updatedAt: Date.now() });
   }
   persistSuwayomiProgressOutbox();
   return true;
@@ -3326,6 +3389,7 @@ function loadSuwayomiProgressOutbox() {
     state.suwayomiProgressOutbox = Array.isArray(stored)
       ? stored.filter((item) => Number.isInteger(Number(item.chapterId))).map((item) => ({
           chapterId: Number(item.chapterId),
+          serverUrl: String(item.serverUrl || currentDeviceServerUrl()).trim().replace(/\/+$/, ""),
           lastPageRead: Math.max(0, Number(item.lastPageRead) || 0),
           completed: Boolean(item.completed),
           updatedAt: Number(item.updatedAt) || Date.now(),
@@ -3355,20 +3419,47 @@ async function flushSuwayomiProgressOutbox({ manual = false } = {}) {
   state.suwayomiSyncing = true;
   setSyncStatus("Syncing", `Sending ${state.suwayomiProgressOutbox.length} queued progress update${state.suwayomiProgressOutbox.length === 1 ? "" : "s"}…`);
   const request = (async () => {
-    while (state.suwayomiProgressOutbox.length) {
-      const sent = { ...state.suwayomiProgressOutbox[0] };
+    const queued = state.suwayomiProgressOutbox.map((entry) => ({ ...entry }));
+    const failures = [];
+    const failedKeys = new Set();
+    for (const sent of queued) {
       const patch = sent.completed ? { lastPageRead: sent.lastPageRead, isRead: true } : { lastPageRead: sent.lastPageRead };
-      const data = await graphQL(queries.updateChapter, { input: { id: sent.chapterId, patch } }, { timeoutMs: 10000 });
+      let data;
+      try {
+        data = await graphQL(
+          queries.updateChapter,
+          { input: { id: sent.chapterId, patch } },
+          { timeoutMs: 10000, baseUrl: sent.serverUrl },
+        );
+      } catch (error) {
+        failures.push(error);
+        failedKeys.add(`${sent.serverUrl}:${sent.chapterId}`);
+        continue;
+      }
       const updated = data.updateChapter?.chapter;
-      const chapter = state.chapters.find((item) => Number(item.id) === sent.chapterId);
+      const chapter = sent.serverUrl === currentDeviceServerUrl()
+        ? state.chapters.find((item) => Number(item.id) === sent.chapterId)
+        : null;
       if (chapter && updated) Object.assign(chapter, updated);
-      const current = state.suwayomiProgressOutbox.find((item) => item.chapterId === sent.chapterId);
+      const current = state.suwayomiProgressOutbox.find((item) => (
+        item.chapterId === sent.chapterId && item.serverUrl === sent.serverUrl
+      ));
       if (current && current.lastPageRead <= sent.lastPageRead && (!current.completed || sent.completed)) {
         state.suwayomiProgressOutbox = state.suwayomiProgressOutbox.filter((item) => item !== current);
       }
-      state.lastSuwayomiSyncKey = `${sent.chapterId}:${sent.lastPageRead}:${sent.completed ? "read" : "progress"}`;
+      state.lastSuwayomiSyncKey = `${sent.serverUrl}:${sent.chapterId}:${sent.lastPageRead}:${sent.completed ? "read" : "progress"}`;
       persistSuwayomiProgressOutbox();
     }
+    const followupNeeded = state.suwayomiProgressOutbox.some((entry) => (
+      !failedKeys.has(`${entry.serverUrl}:${entry.chapterId}`)
+    ));
+    if (followupNeeded) {
+      window.clearTimeout(state.suwayomiSyncTimer);
+      state.suwayomiSyncTimer = window.setTimeout(() => {
+        void flushSuwayomiProgressOutbox().catch(() => false);
+      }, 0);
+    }
+    if (failures.length) throw failures[0];
     return true;
   })();
   state.suwayomiSyncPromise = request;
@@ -3586,8 +3677,9 @@ function clearNextChapterPrefetch() {
 }
 
 function scheduleNextChapterPrefetch(generation = state.prepareGeneration, delayMs = 900) {
-  if (state.activeChapter?.type !== "suwayomi") return;
+  if (state.activeChapter?.type !== "suwayomi" || state.activeChapter.deviceLocal || !navigator.onLine) return;
   const fromChapterId = Number(state.activeChapter.chapterId);
+  const serverUrl = state.activeChapter.serverUrl || currentDeviceServerUrl();
   const chapter = nextSuwayomiChapterAfter(fromChapterId);
   if (!chapter) return;
 
@@ -3595,7 +3687,8 @@ function scheduleNextChapterPrefetch(generation = state.prepareGeneration, delay
   if (
     existing?.generation === generation &&
     existing.fromChapterId === fromChapterId &&
-    existing.chapterId === Number(chapter.id)
+    existing.chapterId === Number(chapter.id) &&
+    existing.serverUrl === serverUrl
   ) return existing;
 
   window.clearTimeout(state.nextChapterPrefetchTimer);
@@ -3604,6 +3697,7 @@ function scheduleNextChapterPrefetch(generation = state.prepareGeneration, delay
     generation,
     fromChapterId,
     chapterId: Number(chapter.id),
+    serverUrl,
     chapter,
     promise: null,
     status: "scheduled",
@@ -3639,12 +3733,12 @@ function startNextChapterPrefetch(record) {
 }
 
 async function prefetchSuwayomiChapter(record) {
-  const data = await fetchChapterPagePayload(record.chapterId);
+  const data = await fetchChapterPagePayload(record.chapterId, { baseUrl: record.serverUrl });
   if (state.nextChapterPrefetch !== record || record.generation !== state.prepareGeneration) return null;
   const chapterPayload = data.fetchChapterPages?.chapter;
   const sourcePages = await resolveChapterPages(data.fetchChapterPages, { quiet: true });
   if (!sourcePages.length) throw new Error("Source returned no readable page URLs.");
-  const pageUrls = sourcePages.map(normalizeSuwayomiPageUrl);
+  const pageUrls = sourcePages.map((pageUrl) => normalizeSuwayomiPageUrl(pageUrl, record.serverUrl));
   record.urlsReady = true;
   const entries = makeChapterPageEntries(pageUrls);
   const firstImage = await loadImage(pageUrls[0]);
@@ -3696,12 +3790,291 @@ function libraryItemKey(item) {
   return `${item.sourceId || "source"}:${mangaId}`;
 }
 
+function currentDeviceServerUrl() {
+  return String(el.serverUrl?.value || state.baseUrl || "http://localhost:4567")
+    .trim()
+    .replace(/\/+$/, "");
+}
+
+function currentDeviceChapterKey(chapterId) {
+  try {
+    return deviceChapterKey(currentDeviceServerUrl(), chapterId);
+  } catch {
+    return "";
+  }
+}
+
+function devicePackageForChapter(chapterId, serverUrl = currentDeviceServerUrl()) {
+  let key = "";
+  try {
+    key = deviceChapterKey(serverUrl, chapterId);
+  } catch {
+    key = "";
+  }
+  return key ? state.deviceChapters.get(key) || null : null;
+}
+
+function rememberDevicePackage(chapterPackage) {
+  if (!chapterPackage?.key) return;
+  state.deviceChapters.set(chapterPackage.key, chapterPackage);
+}
+
+async function refreshDeviceChapterWorkerCapability({ render = true } = {}) {
+  const controller = navigator.serviceWorker?.controller;
+  const generation = state.deviceChapterWorkerGeneration + 1;
+  state.deviceChapterWorkerGeneration = generation;
+  state.deviceChapterWorkerChecked = false;
+  state.deviceChapterWorkerReady = false;
+  state.deviceChapterWorkerController = null;
+  let supported = false;
+  if (controller && typeof MessageChannel === "function") {
+    supported = await new Promise((resolveCapability) => {
+      const channel = new MessageChannel();
+      const timeout = window.setTimeout(() => resolveCapability(false), 1500);
+      channel.port1.onmessage = (event) => {
+        window.clearTimeout(timeout);
+        resolveCapability(event.data?.supported === true && Number(event.data?.version) >= 1);
+      };
+      try {
+        controller.postMessage({ type: "DEVICE_CHAPTER_CAPABILITY" }, [channel.port2]);
+      } catch {
+        window.clearTimeout(timeout);
+        resolveCapability(false);
+      }
+    });
+  }
+  if (generation !== state.deviceChapterWorkerGeneration || navigator.serviceWorker?.controller !== controller) {
+    return false;
+  }
+  state.deviceChapterWorkerChecked = true;
+  state.deviceChapterWorkerReady = supported;
+  state.deviceChapterWorkerController = supported ? controller : null;
+  if (render && el.chapterList?.children.length) renderChapters();
+  return supported;
+}
+
+async function requireDeviceChapterWorker() {
+  if (state.deviceChapterWorkerReady && state.deviceChapterWorkerController === navigator.serviceWorker?.controller) return true;
+  if (await refreshDeviceChapterWorkerCapability()) return true;
+  if (panelPilotServiceWorkerRegistration?.waiting) {
+    showAppUpdate();
+  } else {
+    setAppUpdateMessage("Offline chapter support needs a reload after the service worker finishes installing.");
+  }
+  throw new Error("Apply the waiting Panels update, or reload once after installation, before using device chapters.");
+}
+
+async function initializeDeviceChapterState() {
+  try {
+    await initializeDeviceChapters();
+    const chapters = await listDeviceChapters();
+    state.deviceChapters = new Map(chapters.map((chapter) => [chapter.key, chapter]));
+    state.deviceChaptersReady = true;
+    state.deviceChapterError = "";
+  } catch (error) {
+    state.deviceChaptersReady = false;
+    state.deviceChapterError = error?.message || "Device chapter storage is unavailable.";
+    console.warn("Panels device chapter storage is unavailable.", error);
+  }
+  if (el.chapterList?.children.length) renderChapters();
+}
+
+function devicePackageAsChapter(chapterPackage) {
+  return {
+    id: Number(chapterPackage.chapterId),
+    name: chapterPackage.chapterTitle || `Chapter ${chapterPackage.chapterNumber || chapterPackage.chapterId}`,
+    mangaId: Number(chapterPackage.mangaId),
+    scanlator: chapterPackage.scanlator || "",
+    sourceOrder: Number(chapterPackage.chapterOrder ?? chapterPackage.chapterNumber ?? 0),
+    chapterNumber: Number(chapterPackage.chapterNumber ?? chapterPackage.chapterOrder ?? 0),
+    pageCount: Number(chapterPackage.totalPages || chapterPackage.pageUrls?.length || 0),
+    savedChapter: true,
+    deviceLocal: true,
+    serverUrl: chapterPackage.serverUrl,
+  };
+}
+
+async function devicePackagesForManga(mangaId, serverUrl = currentDeviceServerUrl()) {
+  if (!state.deviceChaptersReady) await initializeDeviceChapterState();
+  if (!state.deviceChaptersReady) {
+    throw new Error(state.deviceChapterError || "Device chapter storage is unavailable.");
+  }
+  const chapters = await listDeviceChaptersForManga(serverUrl, mangaId);
+  chapters.forEach(rememberDevicePackage);
+  return chapters;
+}
+
+async function openDeviceChapter(chapterPackage, resumeItem = null) {
+  const pageUrls = deviceChapterPageUrls(chapterPackage);
+  if (!pageUrls.length) throw new Error("This device copy is incomplete. Resume its download while online.");
+  await requireDeviceChapterWorker();
+
+  const chapter = devicePackageAsChapter(chapterPackage);
+  state.currentManga = {
+    id: Number(chapterPackage.mangaId),
+    title: chapterPackage.title,
+    sourceId: chapterPackage.sourceId,
+    sourceLabel: chapterPackage.sourceLabel,
+    thumbnailUrl: chapterPackage.thumbnailUrl,
+    mangabakaId: resumeItem?.mangabakaId,
+    mangabakaTitle: resumeItem?.mangabakaTitle,
+    mangabakaMatchSource: resumeItem?.mangabakaMatchSource,
+    mangabakaAccountKey: resumeItem?.mangabakaAccountKey,
+    serverUrl: chapterPackage.serverUrl,
+  };
+  el.mangaId.value = chapter.mangaId;
+  el.chapterId.value = chapter.id;
+  el.chapterTitle.textContent = chapter.name;
+  state.pendingResume = resumeItem || currentMangaLibraryItem();
+  state.activeChapter = {
+    type: "suwayomi",
+    chapterId: chapter.id,
+    chapter,
+    deviceLocal: true,
+    devicePackageKey: chapterPackage.key,
+    serverUrl: chapterPackage.serverUrl,
+  };
+  await loadChapter(pageUrls.map(appUrl), chapter.name);
+  rememberReadingProgress();
+  setConnection(state.connected, `Opened ${pageUrls.length} pages saved on this device.`, "good");
+}
+
+async function chapterDownloadDescriptor(chapter, signal, serverUrl, manga) {
+  const chapterId = Number(chapter.id);
+  const data = await fetchChapterPagePayload(chapterId, { timeoutMs: 15000, signal, baseUrl: serverUrl });
+  const serverChapter = data.fetchChapterPages?.chapter;
+  const pages = await resolveChapterPages(data.fetchChapterPages);
+  if (!pages.length) throw new Error("Source returned no readable page URLs.");
+  return {
+    serverUrl,
+    chapterId,
+    mangaId: Number(manga?.id || chapter.mangaId),
+    title: manga?.title || "",
+    sourceId: manga?.sourceId,
+    sourceLabel: manga?.sourceLabel || "",
+    thumbnailUrl: manga?.thumbnailUrl || "",
+    chapterTitle: chapter.name || serverChapter?.name || `Chapter ${chapterId}`,
+    chapterNumber: chapter.chapterNumber,
+    chapterOrder: chapter.sourceOrder,
+    scanlator: chapter.scanlator,
+    pageUrls: pages.map((pageUrl) => normalizeSuwayomiPageUrl(pageUrl, serverUrl)),
+  };
+}
+
+async function downloadChapterToDevice(chapter) {
+  if (!navigator.onLine) {
+    showToast("Reconnect to save or resume this chapter.", "bad");
+    return;
+  }
+  const serverUrl = chapter.serverUrl || currentDeviceServerUrl();
+  const manga = state.currentManga ? { ...state.currentManga } : null;
+  const key = deviceChapterKey(serverUrl, chapter.id);
+  if (!key || state.deviceDownloadControllers.has(key)) return;
+  try {
+    await requireDeviceChapterWorker();
+  } catch (error) {
+    showToast(error.message, "bad");
+    return;
+  }
+  const controller = new AbortController();
+  state.deviceDownloadControllers.set(key, controller);
+  const existing = state.deviceChapters.get(key);
+  rememberDevicePackage({
+    ...(existing || {}),
+    key,
+    chapterId: Number(chapter.id),
+    mangaId: Number(manga?.id || chapter.mangaId),
+    chapterTitle: chapter.name,
+    status: "preparing",
+  });
+  renderChapters();
+  let transientFailure = null;
+  try {
+    const descriptor = await chapterDownloadDescriptor(chapter, controller.signal, serverUrl, manga);
+    const downloaded = await downloadDeviceChapter(descriptor, {
+      signal: controller.signal,
+      onProgress(progress) {
+        rememberDevicePackage(progress.chapter);
+        renderChapters();
+      },
+    });
+    rememberDevicePackage(downloaded);
+    showToast(`${downloaded.chapterTitle || "Chapter"} is ready offline.`, "good");
+  } catch (error) {
+    if (controller.signal.aborted || error?.name === "AbortError") {
+      showToast("Chapter download paused.");
+    } else {
+      transientFailure = {
+        ...(state.deviceChapters.get(key) || existing || {}),
+        key,
+        chapterId: Number(chapter.id),
+        mangaId: Number(manga?.id || chapter.mangaId),
+        chapterTitle: chapter.name,
+        status: "failed",
+        error: {
+          code: error?.name === "QuotaExceededError" ? "quota-exceeded" : "download-failed",
+          message: error?.message || "Device download failed.",
+        },
+      };
+      showToast(`Could not save chapter: ${friendlySourceErrorMessage(error)}`, "bad");
+    }
+  } finally {
+    state.deviceDownloadControllers.delete(key);
+    await initializeDeviceChapterState();
+    if (transientFailure && !state.deviceChapters.has(key)) rememberDevicePackage(transientFailure);
+    renderChapters();
+  }
+}
+
+function pauseDeviceChapterDownload(chapterId, packageKey = "") {
+  const controller = state.deviceDownloadControllers.get(packageKey || currentDeviceChapterKey(chapterId));
+  if (controller) controller.abort();
+}
+
+async function removeChapterFromDevice(chapter) {
+  const serverUrl = chapter.serverUrl || currentDeviceServerUrl();
+  const key = deviceChapterKey(serverUrl, chapter.id);
+  const chapterPackage = key ? state.deviceChapters.get(key) : null;
+  if (!chapterPackage) return;
+  rememberDevicePackage({ ...chapterPackage, status: "removing" });
+  renderChapters();
+  try {
+    await removeDeviceChapter(chapterPackage.serverUrl, chapter.id);
+    state.deviceChapters.delete(key);
+    showToast(`${chapterPackage.chapterTitle || "Chapter"} removed from this device.`);
+  } catch (error) {
+    showToast(`Could not remove chapter: ${error.message}`, "bad");
+    await initializeDeviceChapterState();
+  }
+  renderChapters();
+}
+
 async function fetchChapters(options = {}) {
   const background = Boolean(options.background);
   const liveOnly = Boolean(options.liveOnly);
+  const serverUrl = options.serverUrl || "";
+  const sourceServerUrl = serverUrl || currentDeviceServerUrl();
+  const requestOptions = (timeoutMs) => ({ timeoutMs, ...(serverUrl ? { baseUrl: serverUrl } : {}) });
   const mangaId = Number(el.mangaId.value);
   if (!Number.isInteger(mangaId) || mangaId < 1) {
     setConnection(state.connected, "Enter a Suwayomi manga ID first.", "bad");
+    return;
+  }
+
+  if (!navigator.onLine) {
+    try {
+      const devicePackages = await devicePackagesForManga(mangaId, serverUrl || currentDeviceServerUrl());
+      setChapterList(devicePackages.map(devicePackageAsChapter), sourceServerUrl);
+      updateScanlatorOptions();
+      renderChapters();
+      if (devicePackages.length) {
+        setConnection(false, `${devicePackages.length} chapter${devicePackages.length === 1 ? "" : "s"} available from this device.`, "good");
+      } else {
+        renderChapterError("No chapters for this title have been saved on this device yet.");
+      }
+    } catch (error) {
+      renderChapterError(`Device chapters could not be opened: ${error.message}`);
+    }
     return;
   }
 
@@ -3710,24 +4083,24 @@ async function fetchChapters(options = {}) {
     renderChapterSkeletons();
   }
   if (!liveOnly) {
-    const cached = await graphQL(queries.storedChapters, { mangaId }, { timeoutMs: 10000 }).catch(() => null);
+    const cached = await graphQL(queries.storedChapters, { mangaId }, requestOptions(10000)).catch(() => null);
     const savedChapters = cached?.chapters?.nodes || [];
     if (savedChapters.length) {
-      setChapterList(savedChapters.map((chapter) => ({ ...chapter, savedChapter: true })));
+      setChapterList(savedChapters.map((chapter) => ({ ...chapter, savedChapter: true })), sourceServerUrl);
       updateScanlatorOptions();
       renderChapters();
       resumeBackgroundChapterWork();
       setConnection(true, `Opened ${state.chapters.length} saved chapters; refreshing quietly.`, "good");
       if (!background) setBusy(el.fetchChapters, false);
-      void fetchChapters({ background: true, liveOnly: true });
+      void fetchChapters({ background: true, liveOnly: true, serverUrl: sourceServerUrl });
       return;
     }
   }
   try {
-    const data = await graphQL(queries.fetchChapters, { input: { mangaId } });
+    const data = await graphQL(queries.fetchChapters, { input: { mangaId } }, requestOptions(undefined));
     const liveChapters = data.fetchChapters?.chapters || [];
-    const cached = await graphQL(queries.storedChapters, { mangaId }, { timeoutMs: 10000 }).catch(() => null);
-    setChapterList(mergeChapterLists(liveChapters, cached?.chapters?.nodes || []));
+    const cached = await graphQL(queries.storedChapters, { mangaId }, requestOptions(10000)).catch(() => null);
+    setChapterList(mergeChapterLists(liveChapters, cached?.chapters?.nodes || []), sourceServerUrl);
     updateScanlatorOptions();
     renderChapters();
     resumeBackgroundChapterWork();
@@ -3735,14 +4108,28 @@ async function fetchChapters(options = {}) {
   } catch (error) {
     const message = chapterFetchErrorMessage(error);
     try {
-      const cached = await graphQL(queries.storedChapters, { mangaId }, { timeoutMs: 15000 });
-      setChapterList(cached.chapters?.nodes || []);
+      const cached = await graphQL(queries.storedChapters, { mangaId }, requestOptions(15000));
+      setChapterList(cached.chapters?.nodes || [], sourceServerUrl);
       if (!state.chapters.length) throw error;
       updateScanlatorOptions();
       renderChapters();
       resumeBackgroundChapterWork();
       setConnection(true, `Source refresh paused; using ${state.chapters.length} saved chapters.`, "");
     } catch {
+      if (!background) {
+        try {
+          const devicePackages = await devicePackagesForManga(mangaId, serverUrl || currentDeviceServerUrl());
+          if (devicePackages.length) {
+            setChapterList(devicePackages.map(devicePackageAsChapter), sourceServerUrl);
+            updateScanlatorOptions();
+            renderChapters();
+            setConnection(false, `Suwayomi is unavailable; showing ${devicePackages.length} chapter${devicePackages.length === 1 ? "" : "s"} saved on this device.`, "good");
+            return;
+          }
+        } catch (storageError) {
+          console.warn("Panels could not inspect device chapters after a server failure.", storageError);
+        }
+      }
       setConnection(state.connected, `Could not fetch chapters: ${message}`, "bad");
       if (!background) renderChapterError(message);
     }
@@ -3752,13 +4139,18 @@ async function fetchChapters(options = {}) {
 }
 
 function resumeBackgroundChapterWork() {
-  if (state.activeChapter?.type !== "suwayomi") return;
-  void ensureDownloadAhead(state.activeChapter.chapterId);
+  if (state.activeChapter?.type !== "suwayomi" || state.activeChapter.deviceLocal || !navigator.onLine) return;
+  if ((state.activeChapter.serverUrl || currentDeviceServerUrl()) === currentDeviceServerUrl()) {
+    void ensureDownloadAhead(state.activeChapter.chapterId);
+  }
   if (!state.nextChapterPrefetch) scheduleNextChapterPrefetch(state.prepareGeneration, 250);
 }
 
-function setChapterList(chapters) {
-  state.chapters = chapters.slice().sort((a, b) => {
+function setChapterList(chapters, serverUrl = currentDeviceServerUrl()) {
+  state.chapters = chapters.map((chapter) => ({
+    ...chapter,
+    serverUrl: chapter.serverUrl || serverUrl,
+  })).sort((a, b) => {
     const aOrder = Number(a.sourceOrder ?? a.chapterNumber ?? 0);
     const bOrder = Number(b.sourceOrder ?? b.chapterNumber ?? 0);
     return bOrder - aOrder;
@@ -3790,8 +4182,7 @@ function applyNavigationHistory(event) {
         el.mangaId.value = target.manga.id;
       }
       showMangaDetail(state.currentManga, state.currentManga.sourceLabel, { history: false });
-      if (navigator.onLine) void fetchChapters();
-      else renderChapterError("You’re offline. Reconnect to refresh this chapter list.");
+      void fetchChapters();
     } else if (!el.mangaDetail?.hidden) {
       closeMangaDetail({ history: false });
     }
@@ -3816,18 +4207,21 @@ async function restoreInitialRoute() {
   }
 }
 
-function restoreInitialRouteOffline() {
+async function restoreInitialRouteOffline() {
   const route = state.initialRoute;
   if (!route) return;
   if (route.view === "reader") {
     setActiveView("reader", { history: false });
-    showReaderError(
-      "This chapter is not available offline yet",
-      "Reconnect to load the saved chapter. Device-local chapter downloads arrive in Phase 4.",
-      reconnectPanelPilot
-    );
+    await openReaderFromNav();
+    if ((!state.activeChapter || !state.pages.length) && el.readerError?.hidden) {
+      showReaderError(
+        "This chapter is not available offline",
+        "Reconnect to Panels, then download the chapter to this device for offline reading.",
+        reconnectPanelPilot
+      );
+    }
   } else if (route.detail && route.manga) {
-    renderChapterError("You’re offline. Reconnect to refresh this chapter list.");
+    await fetchChapters();
   }
 }
 
@@ -3952,7 +4346,30 @@ function chapterFetchErrorMessage(error) {
   return message;
 }
 
+function deviceChapterStatus(chapterPackage) {
+  if (!chapterPackage && state.deviceChapterError) return { state: "unavailable", label: "Device storage unavailable" };
+  if (!chapterPackage && !state.deviceChaptersReady) return { state: "preparing", label: "Preparing device storage…" };
+  if (!chapterPackage && !state.deviceChapterWorkerChecked) return { state: "none", label: "Preparing offline support…" };
+  if (!chapterPackage && !state.deviceChapterWorkerReady) return { state: "none", label: "Apply app update for device downloads" };
+  if (!chapterPackage) return { state: "none", label: "Not saved to device" };
+  const completed = Number(chapterPackage.downloadedPages) || 0;
+  const total = Number(chapterPackage.totalPages || chapterPackage.pageUrls?.length) || 0;
+  if (chapterPackage.status === "preparing") return { state: "preparing", label: "Preparing download…" };
+  if (chapterPackage.status === "downloading") return { state: "downloading", label: `Saving ${completed}/${total}` };
+  if (chapterPackage.status === "paused") return { state: "paused", label: `Partial ${completed}/${total}` };
+  if (chapterPackage.status === "failed") {
+    const quota = chapterPackage.error?.code === "quota-exceeded";
+    return { state: "failed", label: quota ? "Storage full · retry" : `Incomplete ${completed}/${total} · retry` };
+  }
+  if (chapterPackage.status === "ready") return { state: "ready", label: "On this device" };
+  if (chapterPackage.status === "removing") return { state: "removing", label: "Removing…" };
+  return { state: "none", label: "Not saved to device" };
+}
+
 function renderChapters() {
+  const focusedControl = document.activeElement?.closest?.("#chapter-list [data-chapter-id] button");
+  const focusedChapterId = focusedControl?.closest("[data-chapter-id]")?.dataset.chapterId || "";
+  const focusedAction = focusedControl?.dataset.deviceAction || focusedControl?.dataset.chapterAction || "";
   el.chapterList.replaceChildren();
   state.chapterView = visibleChapters();
   updateMangaDetailActions();
@@ -3969,9 +4386,12 @@ function renderChapters() {
   state.chapterView.forEach((chapter) => {
     const item = document.createElement("div");
     item.className = "result-item";
+    item.dataset.chapterId = String(chapter.id);
     const copy = document.createElement("div");
+    copy.className = "chapter-device-copy";
     const title = document.createElement("strong");
     title.textContent = chapter.name || `Chapter ${chapter.chapterNumber || chapter.sourceOrder || chapter.id}`;
+    title.id = `chapter-title-${chapter.id}`;
     const meta = document.createElement("span");
     const scanlator = scanlatorName(chapter);
     const progress = chapter.isRead
@@ -3982,28 +4402,117 @@ function renderChapters() {
     meta.textContent = [
       scanlator,
       chapter.pageCount ? `${chapter.pageCount} pages` : "",
-      chapter.isDownloaded ? "Downloaded" : "",
+      chapter.isDownloaded ? "On Suwayomi server" : "",
       chapter.savedChapter && !chapter.isDownloaded ? "Saved metadata" : "",
       progress,
     ].filter(Boolean).join(" · ") || "Ready to read";
     copy.append(title, meta);
 
+    const chapterServerUrl = chapter.serverUrl || currentDeviceServerUrl();
+    const chapterPackage = devicePackageForChapter(chapter.id, chapterServerUrl);
+    const deviceStatus = deviceChapterStatus(chapterPackage);
+    const actions = document.createElement("div");
+    actions.className = "chapter-actions";
+    const status = document.createElement("span");
+    status.className = "device-chapter-status";
+    status.dataset.deviceChapterState = deviceStatus.state;
+    status.textContent = deviceStatus.label;
+    status.id = `device-chapter-status-${chapter.id}`;
+    actions.append(status);
+
     const button = document.createElement("button");
     button.type = "button";
-    button.textContent = chapter.isRead ? "Read again" : Number(chapter.lastPageRead) > 0 ? "Resume" : "Read";
-    button.addEventListener("click", () => {
+    const deviceReady = chapterPackage?.status === "ready";
+    const deviceReadable = deviceReady && state.deviceChapterWorkerReady;
+    button.dataset.chapterAction = "read";
+    if (deviceReadable) button.dataset.deviceAction = "open";
+    button.textContent = deviceReadable
+      ? "Read offline"
+      : chapter.isRead
+        ? "Read again"
+        : Number(chapter.lastPageRead) > 0
+          ? "Resume"
+          : "Read";
+    button.setAttribute("aria-label", `${button.textContent} ${title.textContent}`);
+    button.setAttribute("aria-describedby", status.id);
+    button.disabled = !navigator.onLine && !deviceReadable;
+    button.addEventListener("click", async () => {
       el.chapterId.value = chapter.id;
       el.chapterTitle.textContent = title.textContent;
-      loadChapterPages();
+      if (chapterPackage?.status === "ready" && state.deviceChapterWorkerReady) {
+        await openDeviceChapter(chapterPackage, currentMangaLibraryItem()).catch((error) => {
+          showToast(`Could not open device chapter: ${error.message}`, "bad");
+        });
+      } else if (navigator.onLine) {
+        await loadChapterPages({
+          serverUrl: chapterServerUrl,
+          skipLibraryEnsure: chapterServerUrl !== currentDeviceServerUrl(),
+        });
+      } else {
+        showToast("This chapter has not been saved on this device.", "bad");
+      }
     });
+    actions.append(button);
 
-    item.append(copy, button);
+    if (["none", "paused", "failed"].includes(deviceStatus.state)) {
+      const download = document.createElement("button");
+      download.type = "button";
+      download.dataset.deviceAction = "download";
+      download.textContent = !state.deviceChapterWorkerChecked
+        ? "Preparing…"
+        : !state.deviceChapterWorkerReady
+          ? "Update app first"
+          : deviceStatus.state === "none"
+            ? "Download"
+            : "Resume download";
+      download.setAttribute("aria-label", `${download.textContent} ${title.textContent}`);
+      download.setAttribute("aria-describedby", status.id);
+      download.disabled = !navigator.onLine || !state.deviceChaptersReady || !state.deviceChapterWorkerReady;
+      download.addEventListener("click", () => void downloadChapterToDevice(chapter));
+      actions.append(download);
+    } else if (["preparing", "downloading"].includes(deviceStatus.state)) {
+      const pause = document.createElement("button");
+      pause.type = "button";
+      pause.dataset.deviceAction = "pause";
+      pause.textContent = "Pause";
+      pause.setAttribute("aria-label", `Pause download ${title.textContent}`);
+      pause.setAttribute("aria-describedby", status.id);
+      pause.addEventListener("click", () => pauseDeviceChapterDownload(chapter.id, chapterPackage?.key));
+      actions.append(pause);
+    }
+
+    if (deviceStatus.state === "ready") {
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.dataset.deviceAction = "remove";
+      remove.textContent = "Remove";
+      remove.setAttribute("aria-label", `Remove ${title.textContent} from this device`);
+      remove.setAttribute("aria-describedby", status.id);
+      remove.addEventListener("click", () => {
+        if (window.confirm(`Remove ${title.textContent} from this device?`)) {
+          void removeChapterFromDevice(chapter);
+        }
+      });
+      actions.append(remove);
+    }
+
+    item.append(copy, actions);
     el.chapterList.append(item);
   });
+
+  if (focusedChapterId && focusedAction) {
+    const row = [...el.chapterList.querySelectorAll("[data-chapter-id]")]
+      .find((candidate) => candidate.dataset.chapterId === focusedChapterId);
+    let replacement = row?.querySelector(`[data-device-action="${focusedAction}"], [data-chapter-action="${focusedAction}"]`);
+    if (!replacement && focusedAction === "download") replacement = row?.querySelector('[data-device-action="pause"]');
+    if (!replacement && focusedAction === "pause") replacement = row?.querySelector('[data-device-action="download"]');
+    replacement?.focus({ preventScroll: true });
+  }
 }
 
 async function loadChapterPages(options = {}) {
   const chapterId = Number(el.chapterId.value);
+  const serverUrl = options.serverUrl || currentDeviceServerUrl();
   if (!Number.isInteger(chapterId) || chapterId < 1) {
     setConnection(state.connected, "Enter a Suwayomi chapter ID first.", "bad");
     return;
@@ -4029,6 +4538,7 @@ async function loadChapterPages(options = {}) {
     const data = await fetchChapterPagePayload(chapterId, {
       ...(options.fastResume ? { retries: false, timeoutMs: 12000 } : {}),
       signal: loadController.signal,
+      baseUrl: serverUrl,
     });
     if (!loadIsCurrent()) return;
     const chapter = data.fetchChapterPages?.chapter;
@@ -4048,15 +4558,16 @@ async function loadChapterPages(options = {}) {
       type: "suwayomi",
       chapterId,
       chapter: listedChapter || chapter || null,
+      serverUrl,
     };
     await loadChapter(
-      pages.map(normalizeSuwayomiPageUrl),
+      pages.map((pageUrl) => normalizeSuwayomiPageUrl(pageUrl, serverUrl)),
       el.chapterTitle.textContent || listedChapter?.name || chapter?.name || `Chapter ${chapterId}`,
       { requestIsCurrent: loadIsCurrent }
     );
     if (!loadIsCurrent()) return;
     rememberReadingProgress();
-    void ensureDownloadAhead(chapterId);
+    if (serverUrl === currentDeviceServerUrl()) void ensureDownloadAhead(chapterId);
     setConnection(true, `Loaded ${pages.length} pages. Panel detection is running locally.`, "good");
   } catch (error) {
     if (error?.name === "ReaderLoadCancelled" || !loadIsCurrent()) return;
@@ -4072,10 +4583,10 @@ async function loadChapterPages(options = {}) {
   }
 }
 
-function fetchChapterPagePayload(chapterId, { retries = true, timeoutMs = 6000, signal = null } = {}) {
+function fetchChapterPagePayload(chapterId, { retries = true, timeoutMs = 6000, signal = null, baseUrl = "" } = {}) {
   const delays = retries ? chapterFetchRetryDelaysMs : [0];
   return withRetry(
-    () => graphQL(queries.fetchPages, { input: { chapterId } }, { timeoutMs, signal }),
+    () => graphQL(queries.fetchPages, { input: { chapterId } }, { timeoutMs, signal, ...(baseUrl ? { baseUrl } : {}) }),
     delays,
     { shouldRetry: isRetryableReaderError }
   );
@@ -6984,14 +7495,34 @@ async function loadNextComickChapter() {
 
 async function loadNextSuwayomiChapter() {
   const currentChapterId = Number(state.activeChapter.chapterId);
-  const chapter = nextSuwayomiChapterAfter(currentChapterId);
+  const sourceServerUrl = state.activeChapter.serverUrl || currentDeviceServerUrl();
+  let chapter = nextSuwayomiChapterAfter(currentChapterId);
+  if (!chapter && navigator.onLine) {
+    await fetchChapters({ background: true, liveOnly: true, serverUrl: sourceServerUrl });
+    chapter = nextSuwayomiChapterAfter(currentChapterId);
+  }
   if (!chapter) {
     setConnection(state.connected, "No next Suwayomi chapter is loaded in the chapter list.", "bad");
     return;
   }
 
+  if (state.activeChapter.deviceLocal) {
+    const chapterPackage = devicePackageForChapter(chapter.id, sourceServerUrl);
+    if (chapterPackage?.status === "ready") {
+      await openDeviceChapter(chapterPackage, null);
+      return;
+    }
+    if (!navigator.onLine) {
+      setConnection(state.connected, "The next chapter is not saved on this device.", "bad");
+      return;
+    }
+  } else if (!navigator.onLine) {
+    setConnection(state.connected, "The next chapter is not saved on this device.", "bad");
+    return;
+  }
+
   const prefetch = state.nextChapterPrefetch;
-  if (prefetch?.fromChapterId === currentChapterId && prefetch.chapterId === Number(chapter.id)) {
+  if (!state.activeChapter.deviceLocal && prefetch?.fromChapterId === currentChapterId && prefetch.chapterId === Number(chapter.id)) {
     window.clearTimeout(state.nextChapterPrefetchTimer);
     if (prefetch.status === "failed" || prefetch.status === "stale") prefetch.promise = null;
     const prepared = await startNextChapterPrefetch(prefetch);
@@ -6999,7 +7530,12 @@ async function loadNextSuwayomiChapter() {
       el.chapterId.value = chapter.id;
       el.chapterTitle.textContent = chapter.name || `Chapter ${chapter.chapterNumber || chapter.sourceOrder || chapter.id}`;
       state.pendingResume = null;
-      state.activeChapter = { type: "suwayomi", chapterId: Number(chapter.id), chapter };
+      state.activeChapter = {
+        type: "suwayomi",
+        chapterId: Number(chapter.id),
+        chapter,
+        serverUrl: sourceServerUrl,
+      };
       if (isPanelMode(prepared.mode)) {
         state.panelMode = prepared.mode;
         updatePanelModeControls();
@@ -7009,7 +7545,7 @@ async function loadNextSuwayomiChapter() {
         firstImage: prepared.firstImage,
       });
       rememberReadingProgress();
-      void ensureDownloadAhead(chapter.id);
+      if (sourceServerUrl === currentDeviceServerUrl()) void ensureDownloadAhead(chapter.id);
       setConnection(true, `Loaded ${prepared.pageUrls.length} pages. The next pages are preparing in the background.`, "good");
       return;
     }
@@ -7017,7 +7553,10 @@ async function loadNextSuwayomiChapter() {
 
   el.chapterId.value = chapter.id;
   el.chapterTitle.textContent = chapter.name || `Chapter ${chapter.chapterNumber || chapter.sourceOrder || chapter.id}`;
-  await loadChapterPages();
+  await loadChapterPages({
+    serverUrl: sourceServerUrl,
+    skipLibraryEnsure: state.activeChapter.deviceLocal || sourceServerUrl !== currentDeviceServerUrl(),
+  });
 }
 
 function updateAfterNavigation() {
@@ -7518,6 +8057,12 @@ async function registerPanelPilotServiceWorker() {
   setAppUpdateMessage(`Preparing update checks for Panels ${appVersion}…`);
 
   navigator.serviceWorker.addEventListener("controllerchange", () => {
+    state.deviceChapterWorkerGeneration += 1;
+    state.deviceChapterWorkerChecked = false;
+    state.deviceChapterWorkerReady = false;
+    state.deviceChapterWorkerController = null;
+    if (el.chapterList?.children.length) renderChapters();
+    void refreshDeviceChapterWorkerCapability();
     if (!serviceWorkerReloadPending || serviceWorkerReloaded) return;
     serviceWorkerReloaded = true;
     location.reload();
@@ -7551,7 +8096,13 @@ async function registerPanelPilotServiceWorker() {
 
     const registration = await navigator.serviceWorker.getRegistration("/");
     if (registration) observeServiceWorkerRegistration(registration);
+    await refreshDeviceChapterWorkerCapability();
   } catch (error) {
+    state.deviceChapterWorkerGeneration += 1;
+    state.deviceChapterWorkerChecked = true;
+    state.deviceChapterWorkerReady = false;
+    state.deviceChapterWorkerController = null;
+    if (el.chapterList?.children.length) renderChapters();
     console.warn("Panels service worker registration failed; continuing online.", error);
     setAppUpdateMessage(`Update checks are unavailable: ${error.message}. Online reading still works.`);
   }
@@ -7714,6 +8265,13 @@ async function recoverSuwayomiConnection() {
     if (!wasConnected || !state.sources.length) {
       await loadSources();
       await syncSuwayomiLibrary().catch(() => 0);
+    }
+    if (state.activeChapter?.type === "suwayomi" && state.activeChapter.deviceLocal && state.currentManga?.id) {
+      await fetchChapters({
+        background: true,
+        liveOnly: true,
+        serverUrl: state.activeChapter.serverUrl || currentDeviceServerUrl(),
+      }).catch(() => {});
     }
     await flushSuwayomiProgressOutbox().catch(() => false);
     await refreshDownloadStatus().catch(() => null);
@@ -8083,6 +8641,7 @@ if (el.stage) {
   renderVersionNote();
   initializeInstallExperience();
   loadSettings();
+  const deviceChapterInitialization = initializeDeviceChapterState();
   state.initialRoute = routeFromLocation();
   if (state.initialRoute.detail && state.initialRoute.manga) {
     state.currentManga = { ...state.initialRoute.manga };
@@ -8110,14 +8669,17 @@ if (el.stage) {
     void refreshMangaBakaStatus();
     void loadMangaBakaRecommendations();
     setTimeout(() => {
-      initializeSuwayomi().then(() => restoreInitialRoute()).catch((error) => {
+      initializeSuwayomi().then(async () => {
+        await deviceChapterInitialization;
+        return restoreInitialRoute();
+      }).catch((error) => {
         setConnection(false, `Could not initialize Suwayomi: ${error.message}`, "bad");
         showServerUnavailableStatus();
-        void restoreInitialRoute();
+        void deviceChapterInitialization.then(() => restoreInitialRoute());
       });
     }, 250);
   } else {
     handleBrowserOffline();
-    restoreInitialRouteOffline();
+    void deviceChapterInitialization.then(() => restoreInitialRouteOffline());
   }
 }

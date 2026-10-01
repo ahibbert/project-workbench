@@ -2200,6 +2200,112 @@ body.has-network-status.reader-focus .reader-view {
   color: #205e60;
 }
 
+.chapter-device-copy {
+  min-width: 0;
+}
+
+.chapter-device-copy strong,
+.chapter-device-copy > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chapter-actions {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.35rem;
+}
+
+#chapter-list .device-chapter-status {
+  --device-state-color: var(--muted);
+  --device-state-background: #f0f2ef;
+  min-height: 1.65rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.34rem;
+  margin: 0 0.08rem 0 0;
+  border-radius: 999px;
+  padding: 0.25rem 0.48rem;
+  background: var(--device-state-background);
+  color: var(--device-state-color);
+  font-size: 0.62rem;
+  font-weight: 780;
+  line-height: 1.05;
+  white-space: nowrap;
+}
+
+#chapter-list .device-chapter-status::before {
+  width: 0.45rem;
+  height: 0.45rem;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: currentColor;
+  content: "";
+}
+
+#chapter-list .device-chapter-status[data-device-chapter-state="none"] {
+  --device-state-color: var(--muted);
+  --device-state-background: #f0f2ef;
+}
+
+#chapter-list .device-chapter-status[data-device-chapter-state="preparing"],
+#chapter-list .device-chapter-status[data-device-chapter-state="downloading"] {
+  --device-state-color: var(--accent-2);
+  --device-state-background: #e5f1f0;
+}
+
+#chapter-list .device-chapter-status[data-device-chapter-state="paused"] {
+  --device-state-color: var(--accent);
+  --device-state-background: #fff7df;
+}
+
+#chapter-list .device-chapter-status[data-device-chapter-state="failed"] {
+  --device-state-color: var(--danger);
+  --device-state-background: #fff1ef;
+}
+
+#chapter-list .device-chapter-status[data-device-chapter-state="ready"] {
+  --device-state-color: var(--ok);
+  --device-state-background: #e5f2e9;
+}
+
+#chapter-list .device-chapter-status[data-device-chapter-state="removing"] {
+  --device-state-color: #8d3e36;
+  --device-state-background: #f7ecea;
+}
+
+#chapter-list .device-chapter-status[data-device-chapter-state="preparing"]::before,
+#chapter-list .device-chapter-status[data-device-chapter-state="downloading"]::before,
+#chapter-list .device-chapter-status[data-device-chapter-state="removing"]::before {
+  animation: download-pulse 1.5s ease-in-out infinite;
+}
+
+#chapter-list .chapter-actions button {
+  min-width: 4.4rem;
+  margin: 0;
+  padding-inline: 0.65rem;
+  white-space: nowrap;
+}
+
+#chapter-list .chapter-actions [data-device-action] {
+  border: 1px solid rgba(35, 108, 110, 0.24);
+  background: #f5f8f6;
+  color: #205e60;
+}
+
+#chapter-list .chapter-actions [data-device-action="open"] {
+  border-color: transparent;
+  background: #e5f1f0;
+}
+
+#chapter-list .chapter-actions [data-device-action="remove"] {
+  border-color: rgba(182, 77, 67, 0.24);
+  background: #fff8f7;
+  color: #943f37;
+}
+
 .technical-tools {
   margin-top: 1rem;
   border-top: 1px solid var(--line);
@@ -2920,11 +3026,48 @@ body.has-reading-miniplayer .app-toast {
     font-size: 0.66rem;
   }
 
+  #chapter-list .result-item {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.55rem;
+  }
+
+  .chapter-actions {
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  #chapter-list .device-chapter-status {
+    margin-right: auto;
+  }
+
+  #chapter-list .chapter-actions button {
+    flex: 1 1 6.5rem;
+  }
+
   .reader-topbar {
     align-items: center;
   }
 
   .reader-controls .text-button {
+    min-width: 0;
+  }
+}
+
+@media (max-width: 420px) {
+  .chapter-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  #chapter-list .device-chapter-status {
+    grid-column: 1 / -1;
+    width: fit-content;
+    margin-right: 0;
+  }
+
+  #chapter-list .chapter-actions button {
+    width: 100%;
     min-width: 0;
   }
 }

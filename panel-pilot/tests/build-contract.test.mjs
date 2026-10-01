@@ -7,6 +7,10 @@ import { fileURLToPath } from "node:url";
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const distRoot = join(projectRoot, "dist");
 
+function readSource(path) {
+  return readFileSync(join(projectRoot, path), "utf8");
+}
+
 function readDist(path) {
   return readFileSync(join(distRoot, path), "utf8");
 }
@@ -132,6 +136,112 @@ test("the injected worker precaches only the application shell", () => {
     assert.doesNotMatch(url, /(?:^|\/)api(?:\/|$)/i, `API resource ${url} must not be precached`);
     assert.doesNotMatch(url, /(?:^|\/)(?:data|chapters?|user-content)(?:\/|$)/i, `user content ${url} must not be precached`);
   }
+});
+
+test("the worker keeps device chapter media cache-only and isolated from app cleanup", () => {
+  const source = readSource("src/sw.js");
+  const builtWorker = readDist("sw.js");
+  const cacheName = "panels-device-chapters-v1";
+  const pathPrefix = "/__panels_device_chapters/v1/";
+
+  assert.match(
+    source,
+    /const deviceChapterCacheName\s*=\s*["']panels-device-chapters-v1["']\s*;/,
+    "the device chapter cache name changed",
+  );
+  assert.match(
+    source,
+    /const deviceChapterPathPrefix\s*=\s*["']\/__panels_device_chapters\/v1\/["']\s*;/,
+    "the device chapter virtual path changed",
+  );
+  assert.ok(builtWorker.includes(cacheName), "the built worker is missing the device chapter cache name");
+  assert.ok(builtWorker.includes(pathPrefix), "the built worker is missing the device chapter path prefix");
+
+  const deviceResponderStart = source.indexOf("async function deviceChapterResponse");
+  const messageHandlerStart = source.indexOf('self.addEventListener("message"');
+  assert.ok(deviceResponderStart >= 0 && messageHandlerStart > deviceResponderStart, "device chapter responder is missing");
+  const deviceResponder = source.slice(deviceResponderStart, messageHandlerStart);
+  assert.match(deviceResponder, /caches\.open\(deviceChapterCacheName\)/, "device media must use its dedicated cache");
+  assert.match(
+    deviceResponder,
+    /\.match\(request,\s*\{\s*ignoreSearch:\s*true\s*\}\)/,
+    "device media lookups must ignore the query string",
+  );
+  assert.match(deviceResponder, /status:\s*404/, "a cache miss must return an explicit 404");
+  assert.doesNotMatch(deviceResponder, /\bfetch\s*\(/, "device chapter media must never fall through to the network");
+
+  const deviceRouteStart = source.indexOf("url.pathname.startsWith(deviceChapterPathPrefix)");
+  const onlineOnlyRouteStart = source.indexOf("isOnlineOnlyPath(url.pathname)");
+  const genericAssetHandlingStart = source.lastIndexOf("const precachedResponse = await matchPrecache(request)");
+  assert.ok(deviceRouteStart >= 0, "the device chapter route is missing");
+  assert.ok(
+    deviceRouteStart < onlineOnlyRouteStart && deviceRouteStart < genericAssetHandlingStart,
+    "the device chapter route must run before online-only and generic asset handling",
+  );
+  const deviceRoute = source.slice(deviceRouteStart, onlineOnlyRouteStart);
+  assert.match(deviceRoute, /event\.respondWith\(deviceChapterResponse\(request\)\)/);
+  assert.match(deviceRoute, /return\s*;/, "the cache-only device route must terminate fetch handling");
+  assert.doesNotMatch(deviceRoute, /\bfetch\s*\(/, "the cache-only route must not perform a network request");
+
+  assert.match(
+    source,
+    /function isObsoleteLegacyAppCache\(cacheKey\)\s*\{[\s\S]*?cacheKey !== deviceChapterCacheName[\s\S]*?legacyAppCachePattern\.test\(cacheKey\)[\s\S]*?\}/,
+    "legacy cache cleanup must explicitly exclude the device chapter cache",
+  );
+  assert.match(source, /\.filter\(isObsoleteLegacyAppCache\)/, "activation must use the protected cleanup predicate");
+  assert.doesNotMatch(
+    source,
+    /caches\.delete\(deviceChapterCacheName\)/,
+    "activation must never delete the device chapter cache",
+  );
+});
+
+test("the app negotiates device chapter support with the controlling worker", () => {
+  const workerSource = readSource("src/sw.js");
+  const appSource = readSource("src/main.js");
+  const builtWorker = readDist("sw.js");
+
+  assert.match(
+    workerSource,
+    /event\.data\?\.type\s*===\s*["']DEVICE_CHAPTER_CAPABILITY["']/,
+    "the worker capability request type is missing",
+  );
+  assert.match(
+    workerSource,
+    /event\.ports\?\.\[0\]\?\.postMessage\(\{\s*supported:\s*true,\s*version:\s*1\s*\}\)/,
+    "the worker must answer capability requests through the provided MessagePort",
+  );
+  assert.ok(
+    builtWorker.includes("DEVICE_CHAPTER_CAPABILITY"),
+    "the built worker is missing the device chapter capability protocol",
+  );
+
+  assert.match(appSource, /const channel = new MessageChannel\(\)/, "the app must use a private capability reply channel");
+  assert.match(
+    appSource,
+    /controller\.postMessage\(\{\s*type:\s*["']DEVICE_CHAPTER_CAPABILITY["']\s*\},\s*\[channel\.port2\]\)/,
+    "the app must ask the active controller for device chapter support",
+  );
+  assert.match(
+    appSource,
+    /event\.data\?\.supported\s*===\s*true\s*&&\s*Number\(event\.data\?\.version\)\s*>=\s*1/,
+    "the app must validate both support and protocol version",
+  );
+  assert.match(
+    appSource,
+    /async function requireDeviceChapterWorker\(\)[\s\S]*?refreshDeviceChapterWorkerCapability\(\)[\s\S]*?showAppUpdate\(\)[\s\S]*?throw new Error/,
+    "device chapter operations must fail closed and reveal the update action when capability is absent",
+  );
+  assert.match(
+    appSource,
+    /async function openDeviceChapter\([^)]*\)\s*\{[\s\S]*?await requireDeviceChapterWorker\(\)/,
+    "opening device chapters must require the capable worker",
+  );
+  assert.match(
+    appSource,
+    /async function downloadChapterToDevice\([^)]*\)\s*\{[\s\S]*?await requireDeviceChapterWorker\(\)/,
+    "downloading device chapters must require the capable worker",
+  );
 });
 
 test("dist is isolated from application source and server data", () => {

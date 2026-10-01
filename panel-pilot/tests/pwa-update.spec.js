@@ -169,7 +169,13 @@ test("a v103 worker waits for consent, preserves state, and reloads exactly once
     }));
     expect(migratedState).toEqual({
       loads: loadsBeforeActivation + 1,
-      outbox: [{ chapterId: 103, lastPageRead: 7, completed: false, updatedAt: 1 }],
+      outbox: [{
+        chapterId: 103,
+        lastPageRead: 7,
+        completed: false,
+        updatedAt: 1,
+        serverUrl: "http://localhost:4567",
+      }],
       sessionCookiePresent: true,
       legacyCachePresent: false,
       controllerPresent: true,

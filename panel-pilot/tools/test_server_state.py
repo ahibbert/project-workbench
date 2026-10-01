@@ -53,7 +53,7 @@ class LibraryMergeTests(unittest.TestCase):
         self.assertEqual(merged[0]["pageIndex"], 9)
         self.assertTrue(merged[0]["pinned"])
 
-    def test_library_cleaner_keeps_status_and_mangabaka_link(self):
+    def test_library_cleaner_keeps_status_mangabaka_link_and_server_identity(self):
         cleaned = self.handler.clean_library_items([{
             "sourceId": "source",
             "mangaId": 7,
@@ -66,6 +66,7 @@ class LibraryMergeTests(unittest.TestCase):
             "mangabakaMatchSource": "exact-title",
             "mangabakaAccountKey": "user-123",
             "completedChapter": 486.5,
+            "serverUrl": "http://suwayomi-a:4567",
         }])
 
         self.assertEqual(cleaned[0]["libraryStatus"], "reading")
@@ -75,6 +76,7 @@ class LibraryMergeTests(unittest.TestCase):
         self.assertEqual(cleaned[0]["mangabakaMatchSource"], "exact-title")
         self.assertEqual(cleaned[0]["mangabakaAccountKey"], "user-123")
         self.assertEqual(cleaned[0]["completedChapter"], 486.5)
+        self.assertEqual(cleaned[0]["serverUrl"], "http://suwayomi-a:4567")
 
 
 class MangaBakaSyncTests(unittest.TestCase):

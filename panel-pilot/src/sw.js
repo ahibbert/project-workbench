@@ -5,6 +5,8 @@ import {
 } from "workbox-precaching";
 
 const legacyAppCachePattern = /^panel-pilot-v\d+$/;
+const deviceChapterCacheName = "panels-device-chapters-v1";
+const deviceChapterPathPrefix = "/__panels_device_chapters/v1/";
 
 cleanupOutdatedCaches();
 precache(self.__WB_MANIFEST);
@@ -23,8 +25,28 @@ function isAppShellNavigation(request, pathname) {
     && (pathname === "/" || pathname === "/index.html");
 }
 
+function isObsoleteLegacyAppCache(cacheKey) {
+  return cacheKey !== deviceChapterCacheName && legacyAppCachePattern.test(cacheKey);
+}
+
+async function deviceChapterResponse(request) {
+  const chapterCache = await caches.open(deviceChapterCacheName);
+  const cachedResponse = await chapterCache.match(request, { ignoreSearch: true });
+  if (cachedResponse) return cachedResponse;
+  return new Response("Device chapter media not found", {
+    status: 404,
+    headers: {
+      "Cache-Control": "no-store",
+      "Content-Type": "text/plain; charset=utf-8",
+    },
+  });
+}
+
 self.addEventListener("message", (event) => {
   if (event.data?.type === "SKIP_WAITING") self.skipWaiting();
+  if (event.data?.type === "DEVICE_CHAPTER_CAPABILITY") {
+    event.ports?.[0]?.postMessage({ supported: true, version: 1 });
+  }
 });
 
 self.addEventListener("activate", (event) => {
@@ -32,7 +54,7 @@ self.addEventListener("activate", (event) => {
     const cacheKeys = await caches.keys();
     await Promise.all(
       cacheKeys
-        .filter((cacheKey) => legacyAppCachePattern.test(cacheKey))
+        .filter(isObsoleteLegacyAppCache)
         .map((cacheKey) => caches.delete(cacheKey)),
     );
     await self.clients.claim();
@@ -45,6 +67,11 @@ self.addEventListener("fetch", (event) => {
 
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
+
+  if (url.pathname.startsWith(deviceChapterPathPrefix)) {
+    event.respondWith(deviceChapterResponse(request));
+    return;
+  }
 
   if (isOnlineOnlyPath(url.pathname)) {
     event.respondWith(fetch(request));
