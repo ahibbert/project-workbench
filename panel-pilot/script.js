@@ -5,7 +5,7 @@ const sourceIndexStoreKey = "panel-pilot-source-index";
 const sourceIndexTtlMs = 24 * 60 * 60 * 1000;
 const sourceIndexPageLimit = 6;
 const sourceIndexRequestTimeoutMs = 12000;
-const appVersion = "v101";
+const appVersion = "v102";
 const appBuildTime = "2026-10-01";
 const detectorVersion = "detector v18-ml-manga";
 const pageImageRetryDelaysMs = [0, 350];
@@ -175,6 +175,23 @@ const el = {
   navReaderImage: document.querySelector("#nav-reader-image"),
   navReaderLabel: document.querySelector("#nav-reader-label"),
   navReaderTitle: document.querySelector("#nav-reader-title"),
+  downloadStatusButton: document.querySelector("#download-status-button"),
+  downloadStatusLabel: document.querySelector("#download-status-label"),
+  downloadStatusCount: document.querySelector("#download-status-count"),
+  downloadStatusSheet: document.querySelector("#download-status-sheet"),
+  downloadStatusBackdrop: document.querySelector("#download-status-backdrop"),
+  downloadStatusClose: document.querySelector("#download-status-close"),
+  downloadStatusTitle: document.querySelector("#download-status-title"),
+  downloadStatusSummary: document.querySelector("#download-status-summary"),
+  downloadProgressTrack: document.querySelector("#download-progress-track"),
+  downloadProgressBar: document.querySelector("#download-progress-bar"),
+  downloadStatDownloaded: document.querySelector("#download-stat-downloaded"),
+  downloadStatQueued: document.querySelector("#download-stat-queued"),
+  downloadStatRetrying: document.querySelector("#download-stat-retrying"),
+  downloadStatFailed: document.querySelector("#download-stat-failed"),
+  downloadChapterList: document.querySelector("#download-chapter-list"),
+  downloadStatusIssue: document.querySelector("#download-status-issue"),
+  downloadStatusRetry: document.querySelector("#download-status-retry"),
   readerBack: document.querySelector("#reader-back"),
   stageImage: document.querySelector("#stage-image"),
   stageImageWrap: document.querySelector("#stage-image-wrap"),
@@ -375,6 +392,8 @@ const state = {
   suwayomiProgressOutbox: [],
   reconnectTimer: null,
   downloadStatusTimer: null,
+  downloadStatus: null,
+  downloadStatusSheetOpen: false,
   historyApplying: false,
   viewScrollPositions: { library: 0, browse: 0, settings: 0 },
   browseDiscoveryScroll: 0,
@@ -552,6 +571,7 @@ function setActiveView(view, options = {}) {
     button.setAttribute("aria-current", isActive ? "page" : "false");
   });
   document.body.classList.toggle("reader-active", view === "reader");
+  if (view === "reader") setDownloadStatusSheet(false);
 
   if (view === "reader") {
     setReaderFocus(isReaderFocusAvailable());
@@ -640,6 +660,7 @@ function updateSuwayomiSetupState() {
   if (!state.connected) {
     if (el.offlineNote) el.offlineNote.textContent = "Chapter buffering starts after Suwayomi is connected.";
     if (el.retryDownloads) el.retryDownloads.hidden = true;
+    renderDownloadStatus(null);
   }
 }
 
@@ -3216,6 +3237,111 @@ function downloadBufferStatusText(status) {
   return `Server chapter buffer: ${parts.join(" · ")}.`;
 }
 
+function setDownloadStatusSheet(open) {
+  const nextOpen = Boolean(open && el.downloadStatusButton && !el.downloadStatusButton.hidden);
+  state.downloadStatusSheetOpen = nextOpen;
+  if (el.downloadStatusSheet) el.downloadStatusSheet.hidden = !nextOpen;
+  if (el.downloadStatusBackdrop) el.downloadStatusBackdrop.hidden = !nextOpen;
+  if (el.downloadStatusButton) el.downloadStatusButton.setAttribute("aria-expanded", nextOpen ? "true" : "false");
+  document.body.classList.toggle("download-sheet-open", nextOpen);
+  if (nextOpen) {
+    void refreshDownloadStatus().catch(() => null);
+    requestAnimationFrame(() => el.downloadStatusClose?.focus({ preventScroll: true }));
+  }
+}
+
+function downloadChapterLabel(chapter) {
+  if (chapter?.name) return chapter.name;
+  const number = Number(chapter?.chapterNumber);
+  if (Number.isFinite(number)) return `Chapter ${number}`;
+  return "Chapter";
+}
+
+function downloadChapterStateLabel(chapter) {
+  if (chapter?.state === "downloaded") return chapter.panelReady ? "Ready" : "Preparing panels";
+  if (chapter?.state === "downloading") return "Downloading";
+  if (chapter?.state === "retrying") return "Retrying";
+  if (chapter?.state === "failed") return "Failed";
+  if (chapter?.state === "queued") return "Queued";
+  return "Pending";
+}
+
+function renderDownloadStatus(status) {
+  state.downloadStatus = status || null;
+  if (!el.downloadStatusButton) return;
+  const total = Number(status?.windowSize) || 0;
+  const downloaded = Number(status?.downloaded) || 0;
+  const queued = Number(status?.queuedFresh) || 0;
+  const retrying = Number(status?.retrying) || 0;
+  const failed = Number(status?.failedInWindow ?? status?.failed) || 0;
+  const globalFailed = Number(status?.failed) || 0;
+  const active = Number(status?.activeChapterId) || 0;
+  const visible = Boolean(status && (total || globalFailed || Number(status?.queued) || active));
+  const working = Boolean(active || queued || retrying);
+  const tone = failed || globalFailed ? "bad" : (working ? "working" : "good");
+
+  el.downloadStatusButton.hidden = !visible;
+  document.body.classList.toggle("has-download-status", visible);
+  if (!visible) {
+    setDownloadStatusSheet(false);
+    return;
+  }
+
+  el.downloadStatusButton.dataset.tone = tone;
+  el.downloadStatusLabel.textContent = tone === "bad"
+    ? "Downloads need attention"
+    : (working ? "Preparing offline chapters" : "Offline chapters ready");
+  el.downloadStatusCount.textContent = total ? `${downloaded}/${total} ready` : (globalFailed ? `${globalFailed} failed` : "Checking…");
+  el.downloadStatusButton.setAttribute("aria-label", `${el.downloadStatusLabel.textContent}, ${el.downloadStatusCount.textContent}. Open details.`);
+
+  const chapters = Array.isArray(status?.windowChapters) ? status.windowChapters : [];
+  const mangaTitle = chapters.find((chapter) => chapter.mangaTitle)?.mangaTitle || "";
+  if (el.downloadStatusTitle) el.downloadStatusTitle.textContent = mangaTitle ? `${mangaTitle} downloads` : "Chapter downloads";
+  if (el.downloadStatusSummary) {
+    el.downloadStatusSummary.textContent = downloadBufferStatusText(status).replace(/^Server chapter buffer:\s*/i, "");
+  }
+  if (el.downloadProgressTrack) {
+    el.downloadProgressTrack.setAttribute("aria-valuemax", String(Math.max(1, total)));
+    el.downloadProgressTrack.setAttribute("aria-valuenow", String(downloaded));
+  }
+  if (el.downloadProgressBar) el.downloadProgressBar.style.width = `${total ? Math.min(100, (downloaded / total) * 100) : 0}%`;
+  if (el.downloadStatDownloaded) el.downloadStatDownloaded.textContent = String(downloaded);
+  if (el.downloadStatQueued) el.downloadStatQueued.textContent = String(queued + (active ? 1 : 0));
+  if (el.downloadStatRetrying) el.downloadStatRetrying.textContent = String(retrying);
+  if (el.downloadStatFailed) el.downloadStatFailed.textContent = String(failed || globalFailed);
+
+  if (el.downloadChapterList) {
+    el.downloadChapterList.replaceChildren();
+    chapters.forEach((chapter) => {
+      const row = document.createElement("div");
+      row.className = "download-chapter-row";
+      row.dataset.state = chapter.state || "pending";
+      const marker = document.createElement("span");
+      marker.className = "download-chapter-state";
+      marker.setAttribute("aria-hidden", "true");
+      const copy = document.createElement("span");
+      copy.className = "download-chapter-copy";
+      const title = document.createElement("strong");
+      title.textContent = downloadChapterLabel(chapter);
+      const source = document.createElement("small");
+      source.textContent = [chapter.mangaTitle, chapter.sourceLabel].filter(Boolean).join(" · ") || "Suwayomi";
+      const badge = document.createElement("span");
+      badge.className = "download-chapter-badge";
+      badge.textContent = downloadChapterStateLabel(chapter);
+      copy.append(title, source);
+      row.append(marker, copy, badge);
+      el.downloadChapterList.append(row);
+    });
+  }
+
+  const issue = chapters.find((chapter) => chapter.lastError)?.lastError || status?.statusError || "";
+  if (el.downloadStatusIssue) {
+    el.downloadStatusIssue.hidden = !issue;
+    el.downloadStatusIssue.textContent = issue ? `Latest issue: ${friendlySourceErrorMessage(issue)}` : "";
+  }
+  if (el.downloadStatusRetry) el.downloadStatusRetry.hidden = globalFailed < 1;
+}
+
 async function ensureDownloadAhead(chapterId) {
   const candidates = downloadAheadChapters(chapterId);
   const chapters = candidates;
@@ -3228,6 +3354,7 @@ async function ensureDownloadAhead(chapterId) {
   if (el.offlineNote) el.offlineNote.textContent = `Server chapter buffer: sending ${ids.length} chapter${ids.length === 1 ? "" : "s"} to the background queue…`;
   try {
     const status = await postLocalJson("/api/download-buffer", { chapterIds: ids });
+    renderDownloadStatus(status);
     if (el.offlineNote) el.offlineNote.textContent = downloadBufferStatusText(status);
   } catch (error) {
     if (el.offlineNote) el.offlineNote.textContent = `Server chapter buffer will retry when this title is opened again: ${friendlySourceErrorMessage(error)}`;
@@ -7070,25 +7197,30 @@ async function refreshDownloadStatus() {
   if (!state.connected) {
     el.offlineNote.textContent = "Chapter buffering starts after Suwayomi is connected.";
     if (el.retryDownloads) el.retryDownloads.hidden = true;
+    renderDownloadStatus(null);
     return null;
   }
   const status = await localJson("/api/download-buffer/status");
   const failed = Number(status.failed) || 0;
   if (el.retryDownloads) el.retryDownloads.hidden = failed < 1;
   el.offlineNote.textContent = downloadBufferStatusText(status);
+  renderDownloadStatus(status);
   return status;
 }
 
 async function retryFailedDownloads() {
   setBusy(el.retryDownloads, true, "Retrying");
+  setBusy(el.downloadStatusRetry, true, "Retrying");
   try {
     const status = await postLocalJson("/api/download-buffer", { retryFailed: true });
+    renderDownloadStatus(status);
     showToast(`${status.restored || 0} failed chapter${status.restored === 1 ? "" : "s"} returned to the queue.`, "good");
     await refreshDownloadStatus();
   } catch (error) {
     showToast(`Could not retry downloads: ${friendlySourceErrorMessage(error)}`, "bad");
   } finally {
     setBusy(el.retryDownloads, false);
+    setBusy(el.downloadStatusRetry, false);
   }
 }
 
@@ -7148,6 +7280,7 @@ function readerTapAction(xRatio, yRatio) {
 function wireEvents() {
   el.appNavButtons.forEach((button) => {
     button.addEventListener("click", () => {
+      setDownloadStatusSheet(false);
       if (button.dataset.targetView === "reader") {
         openReaderFromNav();
         return;
@@ -7156,6 +7289,13 @@ function wireEvents() {
     });
   });
   el.navReader?.addEventListener("click", openReaderFromNav);
+  el.downloadStatusButton?.addEventListener("click", () => setDownloadStatusSheet(!state.downloadStatusSheetOpen));
+  el.downloadStatusBackdrop?.addEventListener("click", () => setDownloadStatusSheet(false));
+  el.downloadStatusClose?.addEventListener("click", () => setDownloadStatusSheet(false));
+  el.downloadStatusRetry?.addEventListener("click", retryFailedDownloads);
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && state.downloadStatusSheetOpen) setDownloadStatusSheet(false);
+  });
   el.readerBack?.addEventListener("click", leaveReaderView);
   el.readerLoadingCancel?.addEventListener("click", cancelReaderLoading);
   el.readerErrorRetry?.addEventListener("click", retryReaderError);

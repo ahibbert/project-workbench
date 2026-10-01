@@ -13,7 +13,7 @@
     <title>Panel Pilot</title>
     <link rel="manifest" href="manifest.webmanifest">
     <link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png">
-    <link rel="stylesheet" href="styles.css?v=51">
+    <link rel="stylesheet" href="styles.css?v=52">
   </head>
   <body>
     <main class="app-shell">
@@ -356,6 +356,42 @@
       </section>
     </main>
 
+    <button class="download-status-button" id="download-status-button" type="button" aria-expanded="false" aria-controls="download-status-sheet" hidden>
+      <span class="download-status-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M12 3v11m0 0 4-4m-4 4-4-4"/><path d="M5 18.5h14"/></svg>
+      </span>
+      <span class="download-status-copy">
+        <strong id="download-status-label">Downloads</strong>
+        <small id="download-status-count">Checking…</small>
+      </span>
+      <span class="download-status-dot" id="download-status-dot" aria-hidden="true"></span>
+    </button>
+
+    <button class="download-status-backdrop" id="download-status-backdrop" type="button" aria-label="Close download details" hidden></button>
+    <section class="download-status-sheet" id="download-status-sheet" role="dialog" aria-modal="false" aria-labelledby="download-status-title" hidden>
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="download-status-heading">
+        <div>
+          <span class="download-status-eyebrow">Offline reading</span>
+          <h2 id="download-status-title">Chapter downloads</h2>
+        </div>
+        <button class="sheet-close" id="download-status-close" type="button" aria-label="Close download details">×</button>
+      </div>
+      <p class="download-status-summary" id="download-status-summary">Checking the server chapter buffer…</p>
+      <div class="download-progress-track" role="progressbar" id="download-progress-track" aria-label="Chapter download progress" aria-valuemin="0" aria-valuemax="10" aria-valuenow="0">
+        <span id="download-progress-bar"></span>
+      </div>
+      <div class="download-status-stats" aria-label="Download totals">
+        <span><strong id="download-stat-downloaded">0</strong>Downloaded</span>
+        <span><strong id="download-stat-queued">0</strong>Queued</span>
+        <span><strong id="download-stat-retrying">0</strong>Retrying</span>
+        <span><strong id="download-stat-failed">0</strong>Failed</span>
+      </div>
+      <div class="download-chapter-list" id="download-chapter-list" aria-live="polite"></div>
+      <p class="download-status-issue" id="download-status-issue" hidden></p>
+      <button class="wide-button" id="download-status-retry" type="button" hidden>Retry failed downloads</button>
+    </section>
+
     <button class="reading-miniplayer" id="nav-reader" type="button" aria-label="Resume reading" hidden>
       <span class="reader-resume-cover" id="nav-reader-cover" aria-hidden="true">
         <span class="reader-resume-fallback" id="nav-reader-fallback">PP</span>
@@ -387,6 +423,6 @@
     <div class="app-toast" id="app-toast" role="status" aria-live="polite" hidden></div>
     <button class="app-update" id="app-update" type="button" hidden>Update ready · Restart app</button>
 
-    <script src="script.js?v=101.1"></script>
+    <script src="script.js?v=102"></script>
   </body>
 </html>

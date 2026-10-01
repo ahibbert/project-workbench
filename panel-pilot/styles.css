@@ -1684,6 +1684,14 @@ body.has-reading-miniplayer {
   padding-bottom: calc(9.4rem + env(safe-area-inset-bottom));
 }
 
+body.has-download-status {
+  padding-bottom: calc(7.6rem + env(safe-area-inset-bottom));
+}
+
+body.has-download-status.has-reading-miniplayer {
+  padding-bottom: calc(12.2rem + env(safe-area-inset-bottom));
+}
+
 /* The reader owns the full viewport; app-shell/miniplayer spacing must not leak in. */
 body.reader-active,
 body.reader-focus {
@@ -2270,6 +2278,276 @@ body.reader-focus .reading-miniplayer {
   flex-wrap: nowrap;
   gap: 0.5rem;
   padding: 0.55rem max(0.75rem, env(safe-area-inset-right)) max(0.65rem, env(safe-area-inset-bottom)) max(0.75rem, env(safe-area-inset-left));
+}
+
+.download-status-button {
+  position: fixed;
+  right: max(0.75rem, calc((100vw - 50rem) / 2 + 0.75rem));
+  bottom: calc(4.9rem + env(safe-area-inset-bottom));
+  z-index: 20;
+  min-height: 2.45rem;
+  max-width: min(19rem, calc(100vw - 1.5rem));
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  border: 1px solid rgba(39, 111, 113, 0.26);
+  border-radius: 999px;
+  padding: 0.35rem 0.65rem 0.35rem 0.48rem;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 8px 24px rgba(35, 42, 37, 0.14);
+  text-align: left;
+  backdrop-filter: blur(18px);
+}
+
+body.has-reading-miniplayer .download-status-button {
+  bottom: calc(9.15rem + env(safe-area-inset-bottom));
+}
+
+.download-status-icon {
+  width: 1.65rem;
+  height: 1.65rem;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: #edf6f5;
+  color: var(--accent-2);
+}
+
+.download-status-icon svg {
+  width: 1rem;
+  height: 1rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.download-status-copy {
+  min-width: 0;
+  display: grid;
+  line-height: 1.1;
+}
+
+.download-status-copy strong,
+.download-status-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.download-status-copy strong {
+  font-size: 0.7rem;
+}
+
+.download-status-copy small {
+  margin-top: 0.12rem;
+  color: var(--muted);
+  font-size: 0.61rem;
+  font-weight: 680;
+}
+
+.download-status-dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--ok);
+  box-shadow: 0 0 0 3px rgba(47, 122, 78, 0.12);
+}
+
+.download-status-button[data-tone="working"] .download-status-dot {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px rgba(154, 106, 0, 0.13);
+  animation: download-pulse 1.5s ease-in-out infinite;
+}
+
+.download-status-button[data-tone="bad"] {
+  border-color: rgba(182, 77, 67, 0.42);
+}
+
+.download-status-button[data-tone="bad"] .download-status-dot {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px rgba(182, 77, 67, 0.14);
+}
+
+@keyframes download-pulse {
+  50% { opacity: 0.45; }
+}
+
+.download-status-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 69;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: rgba(22, 27, 24, 0.32);
+  backdrop-filter: blur(3px);
+}
+
+.download-status-sheet {
+  position: fixed;
+  right: max(0.5rem, calc((100vw - 34rem) / 2));
+  bottom: max(0.5rem, env(safe-area-inset-bottom));
+  left: max(0.5rem, calc((100vw - 34rem) / 2));
+  z-index: 70;
+  max-height: min(78vh, 42rem);
+  overflow-y: auto;
+  border: 1px solid rgba(210, 216, 211, 0.96);
+  border-radius: 20px;
+  padding: 0.5rem 1rem max(1rem, env(safe-area-inset-bottom));
+  background: #fff;
+  box-shadow: 0 24px 70px rgba(24, 31, 27, 0.28);
+}
+
+.download-status-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.download-status-eyebrow {
+  color: var(--accent-2);
+  font-size: 0.64rem;
+  font-weight: 820;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.download-status-heading h2 {
+  margin: 0.15rem 0 0;
+  font-size: 1.1rem;
+}
+
+.sheet-close {
+  width: 2.5rem;
+  min-height: 2.5rem;
+  border: 0;
+  border-radius: 999px;
+  padding: 0;
+  background: var(--panel-strong);
+  font-size: 1.3rem;
+}
+
+.download-status-summary {
+  margin: 0.75rem 0 0.65rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.download-progress-track {
+  height: 0.5rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e7eae6;
+}
+
+.download-progress-track span {
+  width: 0;
+  height: 100%;
+  display: block;
+  border-radius: inherit;
+  background: var(--accent-2);
+  transition: width 240ms ease;
+}
+
+.download-status-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.4rem;
+  margin-top: 0.7rem;
+}
+
+.download-status-stats span {
+  min-width: 0;
+  display: grid;
+  gap: 0.08rem;
+  border-radius: 10px;
+  padding: 0.48rem 0.25rem;
+  background: var(--panel-strong);
+  color: var(--muted);
+  font-size: 0.58rem;
+  text-align: center;
+}
+
+.download-status-stats strong {
+  color: var(--ink);
+  font-size: 0.88rem;
+}
+
+.download-chapter-list {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 0.8rem;
+}
+
+.download-chapter-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.55rem;
+  border-bottom: 1px solid #eef0ed;
+  padding: 0.46rem 0.1rem;
+}
+
+.download-chapter-row:last-child {
+  border-bottom: 0;
+}
+
+.download-chapter-state {
+  width: 0.56rem;
+  height: 0.56rem;
+  border-radius: 999px;
+  background: #aeb5b0;
+}
+
+.download-chapter-row[data-state="downloaded"] .download-chapter-state { background: var(--ok); }
+.download-chapter-row[data-state="downloading"] .download-chapter-state,
+.download-chapter-row[data-state="retrying"] .download-chapter-state { background: var(--accent); }
+.download-chapter-row[data-state="failed"] .download-chapter-state { background: var(--danger); }
+
+.download-chapter-copy {
+  min-width: 0;
+  display: grid;
+}
+
+.download-chapter-copy strong,
+.download-chapter-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.download-chapter-copy strong { font-size: 0.72rem; }
+.download-chapter-copy small { color: var(--muted); font-size: 0.61rem; }
+
+.download-chapter-badge {
+  border-radius: 999px;
+  padding: 0.2rem 0.42rem;
+  background: var(--panel-strong);
+  color: var(--muted);
+  font-size: 0.58rem;
+  font-weight: 780;
+  text-transform: capitalize;
+}
+
+.download-status-issue {
+  margin: 0.7rem 0;
+  border-radius: 10px;
+  padding: 0.62rem 0.7rem;
+  background: #fff1ef;
+  color: #8d3e36;
+  font-size: 0.7rem;
+}
+
+body.reader-active .download-status-button,
+body.reader-focus .download-status-button {
+  display: none;
 }
 
 .detail-actions {

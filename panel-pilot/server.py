@@ -353,7 +353,7 @@ class DownloadBufferManager:
             requested = list(self.requested_chapter_ids)
             requested_set = set(requested)
             task_by_id = {item["chapterId"]: dict(item) for item in self.tasks if item["chapterId"] in requested_set}
-            failed_ids = {item["chapterId"] for item in self.failures}
+            failure_by_id = {item["chapterId"]: dict(item) for item in self.failures if item["chapterId"] in requested_set}
             prepared_chapters = set(self.prepared_chapters)
         status.update({
             "windowSize": len(requested),
@@ -361,13 +361,38 @@ class DownloadBufferManager:
             "downloadStateKnown": not requested,
             "queuedFresh": sum(1 for chapter_id in requested if chapter_id != status["activeChapterId"] and task_by_id.get(chapter_id, {}).get("attempts", 0) == 0 and chapter_id in task_by_id),
             "retrying": sum(1 for chapter_id in requested if chapter_id != status["activeChapterId"] and task_by_id.get(chapter_id, {}).get("attempts", 0) > 0),
-            "failedInWindow": len(requested_set & failed_ids),
+            "failedInWindow": len(failure_by_id),
             "panelReady": len(requested_set & prepared_chapters),
+            "windowChapters": [],
         })
         if requested:
             try:
-                states = self.chapter_download_states(requested)
-                status["downloaded"] = sum(1 for chapter_id in requested if states.get(chapter_id))
+                details = self.chapter_download_details(requested)
+                status["windowChapters"] = []
+                for chapter_id in requested:
+                    detail = details.get(chapter_id, {"chapterId": chapter_id})
+                    task = task_by_id.get(chapter_id, {})
+                    failure = failure_by_id.get(chapter_id, {})
+                    if detail.get("isDownloaded"):
+                        state = "downloaded"
+                    elif chapter_id == status["activeChapterId"]:
+                        state = "downloading"
+                    elif failure:
+                        state = "failed"
+                    elif task.get("attempts", 0) > 0:
+                        state = "retrying"
+                    elif task:
+                        state = "queued"
+                    else:
+                        state = "pending"
+                    status["windowChapters"].append({
+                        **detail,
+                        "state": state,
+                        "attempts": max(task.get("attempts", 0), failure.get("attempts", 0)),
+                        "lastError": str(task.get("lastError") or failure.get("lastError") or "")[:500],
+                        "panelReady": chapter_id in prepared_chapters,
+                    })
+                status["downloaded"] = sum(1 for detail in status["windowChapters"] if detail.get("isDownloaded"))
                 status["downloadStateKnown"] = True
             except Exception as error:
                 status["statusError"] = str(error)[:300]
@@ -431,7 +456,7 @@ class DownloadBufferManager:
         )
         return bool(data.get("chapter", {}).get("isDownloaded")), data.get("downloadStatus", {}).get("state")
 
-    def chapter_download_states(self, chapter_ids):
+    def chapter_download_details(self, chapter_ids):
         ids = []
         for chapter_id in chapter_ids[:25]:
             chapter_id = int(chapter_id)
@@ -440,14 +465,24 @@ class DownloadBufferManager:
         if not ids:
             return {}
         fields = " ".join(
-            f"chapter{index}:chapter(id:{chapter_id}){{id isDownloaded}}"
+            f"chapter{index}:chapter(id:{chapter_id}){{id name chapterNumber isDownloaded manga{{title source{{displayName}}}}}}"
             for index, chapter_id in enumerate(ids)
         )
         data = self.graphql(f"query{{{fields}}}", timeout=10)
-        return {
-            chapter_id: bool((data.get(f"chapter{index}") or {}).get("isDownloaded"))
-            for index, chapter_id in enumerate(ids)
-        }
+        output = {}
+        for index, chapter_id in enumerate(ids):
+            chapter = data.get(f"chapter{index}") or {}
+            manga = chapter.get("manga") or {}
+            source = manga.get("source") or {}
+            output[chapter_id] = {
+                "chapterId": chapter_id,
+                "name": str(chapter.get("name") or ""),
+                "chapterNumber": chapter.get("chapterNumber"),
+                "isDownloaded": bool(chapter.get("isDownloaded")),
+                "mangaTitle": str(manga.get("title") or ""),
+                "sourceLabel": str(source.get("displayName") or ""),
+            }
+        return output
 
     def library_chapter_ids(self, chapter_ids):
         ids = []
