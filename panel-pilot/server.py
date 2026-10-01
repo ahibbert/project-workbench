@@ -360,8 +360,8 @@ class DownloadBufferManager:
             "windowSize": len(requested),
             "downloaded": 0,
             "downloadStateKnown": not requested,
-            "queuedFresh": sum(1 for chapter_id in requested if task_by_id.get(chapter_id, {}).get("attempts", 0) == 0 and chapter_id in task_by_id),
-            "retrying": sum(1 for chapter_id in requested if task_by_id.get(chapter_id, {}).get("attempts", 0) > 0),
+            "queuedFresh": sum(1 for chapter_id in requested if chapter_id != status["activeChapterId"] and task_by_id.get(chapter_id, {}).get("attempts", 0) == 0 and chapter_id in task_by_id),
+            "retrying": sum(1 for chapter_id in requested if chapter_id != status["activeChapterId"] and task_by_id.get(chapter_id, {}).get("attempts", 0) > 0),
             "failedInWindow": len(requested_set & failed_ids),
             "panelReady": len(requested_set & prepared_chapters),
         })

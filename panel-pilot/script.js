@@ -3189,7 +3189,7 @@ function downloadBufferStatusText(status) {
   const queued = Number(status?.queued) || 0;
   const failed = Number(status?.failedInWindow ?? status?.failed) || 0;
   const retrying = Number(status?.retrying) || 0;
-  const queuedFresh = Number(status?.queuedFresh) || Math.max(0, queued - retrying);
+  const queuedFresh = Number(status?.queuedFresh ?? Math.max(0, queued - retrying));
   const total = Number(status?.windowSize) || 0;
   const downloaded = Number(status?.downloaded) || 0;
   const panelReady = Number(status?.panelReady) || 0;
