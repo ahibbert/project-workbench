@@ -223,6 +223,67 @@ test("a v103 worker waits for consent, preserves state, and reloads exactly once
   }
 });
 
+test("the global Update ready control activates a waiting worker and reloads exactly once", async ({ page }) => {
+  const fixture = await startMigrationServer();
+  try {
+    await page.addInitScript(() => {
+      const count = Number(sessionStorage.getItem("panel-pilot-global-update-loads") || 0);
+      sessionStorage.setItem("panel-pilot-global-update-loads", String(count + 1));
+    });
+    await page.goto(`${fixture.origin}/legacy.html`);
+    await page.evaluate(async () => {
+      await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+      await navigator.serviceWorker.ready;
+      if (!navigator.serviceWorker.controller) {
+        await new Promise((resolveController) => {
+          navigator.serviceWorker.addEventListener("controllerchange", resolveController, { once: true });
+        });
+      }
+      await fetch("/__switch-to-phase-one", { method: "POST" });
+      const registration = await navigator.serviceWorker.getRegistration("/");
+      await registration.update();
+      await new Promise((resolveWaiting, rejectWaiting) => {
+        const deadline = Date.now() + 10_000;
+        const check = () => {
+          if (registration.waiting) return resolveWaiting();
+          if (Date.now() > deadline) return rejectWaiting(new Error("Updated worker did not enter waiting state"));
+          setTimeout(check, 50);
+        };
+        check();
+      });
+    });
+
+    await page.goto(`${fixture.origin}/`, { waitUntil: "networkidle" });
+    const updateReady = page.locator("#app-update");
+    await expect(updateReady).toBeVisible();
+    const loadsBeforeActivation = await page.evaluate(
+      () => Number(sessionStorage.getItem("panel-pilot-global-update-loads")),
+    );
+
+    await updateReady.click();
+    await expect.poll(
+      () => page.evaluate(() => Number(sessionStorage.getItem("panel-pilot-global-update-loads"))),
+      { timeout: 15_000 },
+    ).toBe(loadsBeforeActivation + 1);
+    await page.waitForTimeout(500);
+
+    expect(await page.evaluate(async () => {
+      const registration = await navigator.serviceWorker.getRegistration("/");
+      return {
+        loads: Number(sessionStorage.getItem("panel-pilot-global-update-loads")),
+        hasWaitingWorker: Boolean(registration?.waiting),
+        controllerPresent: Boolean(navigator.serviceWorker.controller),
+      };
+    })).toEqual({
+      loads: loadsBeforeActivation + 1,
+      hasWaitingWorker: false,
+      controllerPresent: true,
+    });
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("a registration failure does not prevent the online application or Test Lab from working", async ({ page, context }) => {
   const fixture = await startMigrationServer({ failWorker: true });
   const pageErrors = [];

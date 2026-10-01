@@ -17,6 +17,15 @@ const contentTypes = {
 
 function startOfflineFixture({ healthySuwayomi = false } = {}) {
   let apiProbeRequests = 0;
+  let suwayomiProbeRequests = 0;
+  let delayFailedSuwayomiProbes = false;
+  const delayedFailedSuwayomiResponses = [];
+
+  const failSuwayomiProbe = (response) => {
+    response.writeHead(503, { "Content-Type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify({ error: "Suwayomi intentionally unavailable in offline fixture" }));
+  };
+
   const server = createServer((request, response) => {
     const url = new URL(request.url, "http://127.0.0.1");
     response.setHeader("Cache-Control", "no-store");
@@ -28,13 +37,20 @@ function startOfflineFixture({ healthySuwayomi = false } = {}) {
       return;
     }
 
-    if (healthySuwayomi && url.pathname === "/api/suwayomi/graphql") {
-      response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-      response.end(JSON.stringify({ data: {
-        __schema: { queryType: { name: "Query" }, mutationType: { name: "Mutation" } },
-        sources: { nodes: [] },
-        mangas: { totalCount: 0, nodes: [] },
-      } }));
+    if (url.pathname === "/api/suwayomi/graphql") {
+      suwayomiProbeRequests += 1;
+      if (healthySuwayomi) {
+        response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+        response.end(JSON.stringify({ data: {
+          __schema: { queryType: { name: "Query" }, mutationType: { name: "Mutation" } },
+          sources: { nodes: [] },
+          mangas: { totalCount: 0, nodes: [] },
+        } }));
+      } else if (delayFailedSuwayomiProbes) {
+        delayedFailedSuwayomiResponses.push(response);
+      } else {
+        failSuwayomiProbe(response);
+      }
       return;
     }
 
@@ -93,6 +109,17 @@ function startOfflineFixture({ healthySuwayomi = false } = {}) {
       const address = server.address();
       resolveServer({
         origin: `http://127.0.0.1:${address.port}`,
+        beginDelayedFailedSuwayomiProbe() {
+          suwayomiProbeRequests = 0;
+          delayFailedSuwayomiProbes = true;
+        },
+        suwayomiProbeRequestCount: () => suwayomiProbeRequests,
+        releaseDelayedFailedSuwayomiProbe() {
+          delayFailedSuwayomiProbes = false;
+          for (const response of delayedFailedSuwayomiResponses.splice(0)) {
+            if (!response.destroyed) failSuwayomiProbe(response);
+          }
+        },
         close: () => new Promise((done, fail) => server.close((error) => error ? fail(error) : done())),
       });
     });
@@ -243,7 +270,7 @@ test("online-only and excluded routes never receive the offline app shell", asyn
   }
 });
 
-test("network state is announced and recovers without reloading the app", async ({ page, context }) => {
+test("reconnect stays single-flight and reports server failure without reloading", async ({ page, context }) => {
   const fixture = await startOfflineFixture();
   try {
     await page.addInitScript(() => {
@@ -261,16 +288,30 @@ test("network state is announced and recovers without reloading the app", async 
     await expect(page.locator("#network-status-note")).toContainText(/local|offline|connection/i);
     await expect(page.locator("#retry-network")).toBeVisible();
 
+    fixture.beginDelayedFailedSuwayomiProbe();
     await context.setOffline(false);
-    await expect.poll(async () => {
-      const title = await page.locator("#network-status-title").textContent();
-      const note = await page.locator("#network-status-note").textContent();
-      return `${title || ""} ${note || ""}`;
-    }).toMatch(/reconnecting|restored|back online|server.+unavailable|could not reach/i);
+    await expect.poll(() => fixture.suwayomiProbeRequestCount()).toBe(1);
+    await expect(page.locator("#network-status-banner")).toHaveAttribute("data-state", "reconnecting");
+
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event("online"));
+      document.querySelector("#retry-network")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await page.waitForTimeout(250);
+    expect(fixture.suwayomiProbeRequestCount()).toBe(1);
+
+    fixture.releaseDelayedFailedSuwayomiProbe();
+    await expect(page.locator("#network-status-banner")).toHaveAttribute("data-state", "server-unavailable");
+    await expect(page.locator("#network-status-title")).toContainText(/suwayomi unavailable/i);
+    await expect(page.locator("#network-status-note")).toContainText(/did not respond/i);
+    await expect(page.locator("#retry-network")).toBeVisible();
+    await expect(page.locator("#retry-network")).toBeEnabled();
+    expect(fixture.suwayomiProbeRequestCount()).toBe(1);
     expect(await page.evaluate(() => Number(sessionStorage.getItem("panel-pilot-offline-loads"))))
       .toBe(loadsBeforeTransition);
     await expect.poll(() => page.evaluate(() => typeof window.PanelPilot?.detectPanels)).toBe("function");
   } finally {
+    fixture.releaseDelayedFailedSuwayomiProbe();
     await context.setOffline(false);
     await fixture.close();
   }

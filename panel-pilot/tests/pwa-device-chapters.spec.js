@@ -580,6 +580,94 @@ async function devicePackageIntegrity(page, chapterId) {
   }, chapterId);
 }
 
+async function seedReadyDeviceChapter(page, chapterId) {
+  const chapter = chapters.find((entry) => entry.id === Number(chapterId));
+  if (!chapter) throw new Error(`Unknown device chapter fixture ${chapterId}`);
+  return page.evaluate(async ({ chapterFixture, mangaFixture, sourceUrls }) => {
+    const serverUrl = "http://localhost:4567";
+    const key = JSON.stringify([serverUrl, String(chapterFixture.id)]);
+    const cache = await caches.open("panels-device-chapters-v1");
+    const timestamp = new Date().toISOString();
+    const pages = [];
+
+    for (let index = 0; index < sourceUrls.length; index += 1) {
+      const sourceUrl = sourceUrls[index];
+      const response = await fetch(sourceUrl, { cache: "no-store" });
+      if (!response.ok) throw new Error(`Could not seed fixture page ${index + 1}`);
+      const blob = await response.blob();
+      const cacheUrl = `/__panels_device_chapters/v1/${encodeURIComponent(key)}/seed/${index}`;
+      const contentType = response.headers.get("content-type") || blob.type || "image/svg+xml";
+      await cache.put(
+        new Request(new URL(cacheUrl, location.origin)),
+        new Response(blob, {
+          status: 200,
+          headers: {
+            "Cache-Control": "private, no-store",
+            "Content-Length": String(blob.size),
+            "Content-Type": contentType,
+          },
+        }),
+      );
+      pages.push({
+        index,
+        sourceUrl,
+        cacheUrl,
+        contentType,
+        size: blob.size,
+        completedAt: timestamp,
+      });
+    }
+
+    const database = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("panels-device-library", 1);
+      request.addEventListener("upgradeneeded", () => {
+        if (!request.result.objectStoreNames.contains("chapters")) {
+          request.result.createObjectStore("chapters", { keyPath: "key" });
+        }
+      });
+      request.addEventListener("success", () => resolve(request.result), { once: true });
+      request.addEventListener("error", () => reject(request.error), { once: true });
+    });
+    const storedBytes = pages.reduce((total, item) => total + item.size, 0);
+    await new Promise((resolve, reject) => {
+      const transaction = database.transaction("chapters", "readwrite");
+      transaction.objectStore("chapters").put({
+        key,
+        serverUrl,
+        chapterId: chapterFixture.id,
+        mangaId: mangaFixture.mangaId,
+        title: mangaFixture.mangaTitle,
+        chapterTitle: chapterFixture.name,
+        chapterNumber: chapterFixture.chapterNumber,
+        chapterOrder: chapterFixture.sourceOrder,
+        sourceId: mangaFixture.sourceId,
+        sourceLabel: mangaFixture.sourceLabel,
+        scanlator: chapterFixture.scanlator,
+        thumbnailUrl: "",
+        pageUrls: sourceUrls,
+        pages,
+        status: "ready",
+        totalPages: pages.length,
+        downloadedPages: pages.length,
+        storedBytes,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        readyAt: timestamp,
+        error: null,
+      });
+      transaction.addEventListener("complete", resolve, { once: true });
+      transaction.addEventListener("abort", () => reject(transaction.error), { once: true });
+      transaction.addEventListener("error", () => reject(transaction.error), { once: true });
+    });
+    database.close();
+    return { key, storedBytes, cachePaths: pages.map((item) => item.cacheUrl) };
+  }, {
+    chapterFixture: chapter,
+    mangaFixture: manga,
+    sourceUrls: fixturePages(chapter.id),
+  });
+}
+
 async function installQuotaFailureShim(page) {
   await page.evaluate(() => {
     window.__failDeviceChapterStorage = true;
@@ -1183,6 +1271,58 @@ test("offline bulk removal preserves progress and server state while the survivi
   }
 });
 
+test("bulk removal excludes the active offline reader while another package remains removable", async ({ page, context }) => {
+  const fixture = await startDeviceChapterFixture();
+  try {
+    await prepareApp(page, context, fixture, { controlled: true });
+    await openChapterList(page);
+    await downloadChapter(page, 1101);
+    await expectDeviceReady(page, 1101);
+    await downloadChapter(page, 1102);
+    await expectDeviceReady(page, 1102);
+
+    await context.setOffline(true);
+    await chapterAction(page, 1101, "open").click();
+    await expect(page.locator("#reader-view")).toHaveClass(/\bactive\b/);
+    await expect(page.locator("#chapter-title")).toContainText("Device chapter one");
+
+    // Refreshing from the hidden Settings surface preserves the active reader
+    // while forcing the package manager to evaluate its current exclusion set.
+    await page.locator("#device-storage-refresh").evaluate((button) => button.click());
+    const activeRow = deviceStorageRow(page, "Device chapter one");
+    const removableRow = deviceStorageRow(page, "Device chapter two");
+    await expect(activeRow).toContainText(/open in reader.*close it before removing/i);
+    await expect(activeRow.locator("[data-device-storage-select]")).toBeDisabled();
+    await expect(activeRow.locator("[data-device-storage-remove]")).toBeDisabled();
+    await expect(removableRow.locator("[data-device-storage-select]")).toBeEnabled();
+    await expect(removableRow.locator("[data-device-storage-remove]")).toBeEnabled();
+
+    await page.locator("#device-storage-select-all").evaluate((checkbox) => checkbox.click());
+    await expect(activeRow.locator("[data-device-storage-select]")).not.toBeChecked();
+    await expect(removableRow.locator("[data-device-storage-select]")).toBeChecked();
+    await expect(page.locator("#device-storage-selected-count")).toHaveText("1 selected");
+
+    await page.locator("#device-storage-remove-selected").evaluate((button) => button.click());
+    await expect(page.locator("#device-storage-dialog")).toHaveAttribute("open", "");
+    await expect(page.locator("#device-storage-dialog-description")).toContainText(/remove 1 chapter/i);
+    await page.locator("#device-storage-confirm").evaluate((button) => button.click());
+
+    await expect(removableRow).toHaveCount(0);
+    await expect.poll(() => devicePackageIntegrity(page, 1101)).toMatchObject({
+      status: "ready",
+      downloadedPages: 3,
+      cachedPages: 3,
+    });
+    expect(await devicePackageIntegrity(page, 1102)).toBeNull();
+    await expect(page.locator("#reader-view")).toHaveClass(/\bactive\b/);
+    await expect(page.locator("#chapter-title")).toContainText("Device chapter one");
+    await advanceReaderToNextPage(page);
+  } finally {
+    await context.setOffline(false);
+    await fixture.close();
+  }
+});
+
 test("offline reading coalesces latest progress and one reconnect mutation clears the outbox", async ({ page, context }) => {
   const fixture = await startDeviceChapterFixture();
   try {
@@ -1301,6 +1441,72 @@ test("an older controller blocks device actions until the capability update is a
     await downloadChapter(page, 1101);
     await expectDeviceReady(page, 1101);
   } finally {
+    await fixture.close();
+  }
+});
+
+test("an approved waiting-worker update preserves a ready device chapter package", async ({ page, context }) => {
+  const fixture = await startDeviceChapterFixture({ phaseThreeController: true });
+  try {
+    await page.addInitScript(() => {
+      const loads = Number(sessionStorage.getItem("panels-device-update-loads") || 0);
+      sessionStorage.setItem("panels-device-update-loads", String(loads + 1));
+    });
+    await prepareApp(page, context, fixture, { controlled: true });
+    await openChapterList(page);
+    await expect(chapterAction(page, 1101, "download")).toBeDisabled();
+
+    const seeded = await seedReadyDeviceChapter(page, 1101);
+    const beforeUpdate = await devicePackageIntegrity(page, 1101);
+    expect(beforeUpdate).toMatchObject({
+      status: "ready",
+      totalPages: 3,
+      downloadedPages: 3,
+      storedBytes: seeded.storedBytes,
+      cachedPages: 3,
+      cachePaths: seeded.cachePaths,
+    });
+    const loadsBeforeActivation = await page.evaluate(
+      () => Number(sessionStorage.getItem("panels-device-update-loads")),
+    );
+
+    await page.evaluate(() => fetch("/__switch-device-worker", { method: "POST" }));
+    await page.evaluate(async () => {
+      const registration = await navigator.serviceWorker.getRegistration("/");
+      if (!registration) throw new Error("No fixture service-worker registration found");
+      await registration.update();
+      for (let attempt = 0; attempt < 100 && !registration.waiting; attempt += 1) {
+        await new Promise((resolvePoll) => setTimeout(resolvePoll, 100));
+      }
+      if (!registration.waiting) throw new Error("Updated worker did not enter the waiting state");
+    });
+    await expect(page.locator("#app-update")).toBeVisible({ timeout: 10_000 });
+
+    await Promise.all([
+      page.waitForEvent("load", { timeout: 15_000 }),
+      page.locator("#app-update").click(),
+    ]);
+    await expect.poll(
+      () => page.evaluate(() => Number(sessionStorage.getItem("panels-device-update-loads"))),
+    ).toBe(loadsBeforeActivation + 1);
+    await openChapterList(page);
+    await expectDeviceReady(page, 1101);
+
+    const afterUpdate = await devicePackageIntegrity(page, 1101);
+    expect(afterUpdate).toEqual(beforeUpdate);
+    const sourceRequestsBeforeOfflineOpen = [1, 2, 3].map(
+      (pageNumber) => fixture.imageRequestCount(1101, pageNumber),
+    );
+
+    await context.setOffline(true);
+    await chapterAction(page, 1101, "open").click();
+    await expect(page.locator("#reader-view")).toHaveClass(/\bactive\b/);
+    await expect(page.locator("#chapter-title")).toContainText("Device chapter one");
+    await advanceReaderToNextPage(page);
+    expect([1, 2, 3].map((pageNumber) => fixture.imageRequestCount(1101, pageNumber)))
+      .toEqual(sourceRequestsBeforeOfflineOpen);
+  } finally {
+    await context.setOffline(false);
     await fixture.close();
   }
 });
