@@ -283,6 +283,35 @@ body.reader-full-page .stage-strip {
   height: auto;
 }
 
+body.webtoon-scroll .stage {
+  touch-action: pan-y;
+}
+
+body.webtoon-scroll .stage-image-wrap {
+  display: block;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+
+body.webtoon-scroll .stage-image-wrap::-webkit-scrollbar {
+  display: none;
+}
+
+body.webtoon-scroll .stage-strip {
+  position: relative;
+  top: auto;
+  left: auto;
+  margin: 0 auto;
+  overflow: visible;
+  transform: none !important;
+  transition: none;
+  will-change: auto;
+  box-shadow: none;
+}
+
 #stage-image.camera-jump,
 .stage-strip.camera-jump {
   transition: none !important;

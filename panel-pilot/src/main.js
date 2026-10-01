@@ -475,6 +475,7 @@ const state = {
   // Do not suppress the first viewport event during a fast startup.
   viewportFitAt: Number.NEGATIVE_INFINITY,
   viewportFitSignature: "",
+  webtoonScrollFrame: 0,
   keepScreenAwake: true,
   wakeLockSentinel: null,
   wakeLockRequest: null,
@@ -1056,7 +1057,7 @@ function setActiveView(view, options = {}) {
     button.setAttribute("aria-current", isActive ? "page" : "false");
   });
   document.body.classList.toggle("reader-active", view === "reader");
-  document.body.classList.toggle("reader-full-page", view === "reader" && state.fullPage);
+  syncReaderPresentationClasses();
   if (view === "reader") setDownloadStatusSheet(false);
   if (view === "settings") void refreshDeviceStorage();
   if (view === "stats") void refreshReadingStats();
@@ -1861,7 +1862,7 @@ function persistMangaBakaOutbox() {
 }
 
 function mangaBakaEligibleLibraryItem(item) {
-  return inferredMediaFormat(item) !== "comic";
+  return inferredMediaFormat(item) === "manga";
 }
 
 function enqueueMangaBakaLibraryItem(item, completedChapter = null) {
@@ -2975,6 +2976,12 @@ function renderMangaResults() {
         mangabakaAccountKey: accountScopedMangaBaka ? state.mangabakaAccountKey : undefined,
         serverUrl: currentDeviceServerUrl(),
       };
+      const existingLibraryItem = currentMangaLibraryItem();
+      state.currentManga = taggedMediaItem(
+        { ...state.currentManga, ...existingLibraryItem },
+        existingLibraryItem?.mediaFormat || automaticMediaFormat(state.currentManga),
+        existingLibraryItem?.mediaFormatSource || (existingLibraryItem?.mediaFormat ? "" : "automatic")
+      );
       if (mangabaka) {
         state.pendingMangaBakaRecommendation = null;
         updateRecommendationContext();
@@ -3097,13 +3104,15 @@ async function addCurrentMangaToLibrary() {
   setBusy(el.detailLibrary, true, "Adding");
   try {
     await ensureCurrentMangaInSuwayomiLibrary();
-    state.libraryItems = [{
+    const mediaFormat = inferredMediaFormat(state.currentManga);
+    const addedItem = normalizeLibraryItem({
       mangaId: Number(state.currentManga.id),
       mangaTitle: state.currentManga.title,
       sourceId: state.currentManga.sourceId,
       sourceLabel: state.currentManga.sourceLabel,
       thumbnailUrl: state.currentManga.thumbnailUrl,
-      ...(state.currentManga.mediaFormat ? { mediaFormat: state.currentManga.mediaFormat } : {}),
+      mediaFormat,
+      mediaFormatSource: state.currentManga.mediaFormatSource || "automatic",
       mangabakaId: state.currentManga.mangabakaId,
       mangabakaTitle: state.currentManga.mangabakaTitle,
       mangabakaMatchSource: state.currentManga.mangabakaMatchSource,
@@ -3114,7 +3123,8 @@ async function addCurrentMangaToLibrary() {
       hidden: false,
       pinned: false,
       updatedAt: new Date().toISOString(),
-    }, ...state.libraryItems];
+    });
+    state.libraryItems = [addedItem, ...state.libraryItems];
     saveLibraryItems();
     renderLibrary();
     updateMangaDetailActions();
@@ -3339,15 +3349,94 @@ function normalizedLibraryStatus(item) {
 
 function inferredMediaFormat(item) {
   if (mediaFormats.includes(item?.mediaFormat)) return item.mediaFormat;
-  const label = `${item?.sourceLabel || ""} ${item?.sourceId || ""}`.toLowerCase();
-  if (/read\s*comic\s*online|readcomiconline/.test(label)) return "comic";
+  return detectedMediaFormatFromMetadata(item) || "manga";
+}
+
+function detectedMediaFormatFromMetadata(item) {
   if (item?.panelMode === "webtoon") return "webtoon";
   if (item?.panelMode === "comic") return "comic";
-  return "manga";
+  const label = [
+    item?.sourceLabel,
+    item?.sourceId,
+    item?.sourceName,
+    item?.source?.name,
+    item?.source?.displayName,
+    item?.realUrl,
+  ].filter(Boolean).join(" ").toLowerCase();
+  if (/\bwebtoons?\b|webtoon\.com|toonily/.test(label)) return "webtoon";
+  if (/read\s*comics?\s*online|readcomiconline|xoxo\s*comics?|comic\s*extra|read\s*all\s*comics/.test(label)) return "comic";
+  return "";
+}
+
+function removeMangaBakaMapping(item) {
+  const cleaned = { ...item };
+  delete cleaned.mangabakaId;
+  delete cleaned.mangabakaTitle;
+  delete cleaned.mangabakaMatchSource;
+  delete cleaned.mangabakaAccountKey;
+  return cleaned;
+}
+
+function taggedMediaItem(item, mediaFormat, mediaFormatSource = item?.mediaFormatSource) {
+  const tagged = {
+    ...item,
+    mediaFormat,
+    panelMode: mediaFormat,
+    readingDirection: mediaFormat === "comic" ? "ltr" : "rtl",
+  };
+  if (mediaFormatSource) tagged.mediaFormatSource = mediaFormatSource;
+  return mediaFormat === "manga" ? tagged : removeMangaBakaMapping(tagged);
+}
+
+function removeMangaBakaOutboxEntry(seriesId) {
+  if (!Number(seriesId)) return;
+  const remaining = state.mangabakaOutbox.filter((entry) => Number(entry.series_id) !== Number(seriesId));
+  if (remaining.length === state.mangabakaOutbox.length) return;
+  state.mangabakaOutbox = remaining;
+  persistMangaBakaOutbox();
+}
+
+function persistCurrentMangaMediaFormat(mediaFormat, mediaFormatSource = "automatic") {
+  if (!state.currentManga || !mediaFormats.includes(mediaFormat)) return;
+  const key = libraryItemKey(state.currentManga);
+  const previousCurrent = state.currentManga;
+  state.currentManga = taggedMediaItem(previousCurrent, mediaFormat, mediaFormatSource);
+  let libraryChanged = false;
+  state.libraryItems = state.libraryItems.map((existing) => {
+    if (libraryItemKey(existing) !== key) return existing;
+    const updated = taggedMediaItem(existing, mediaFormat, mediaFormatSource);
+    libraryChanged = JSON.stringify(updated) !== JSON.stringify(existing);
+    return libraryChanged ? { ...updated, updatedAt: new Date().toISOString() } : existing;
+  });
+  if (mediaFormat !== "manga") {
+    removeMangaBakaOutboxEntry(previousCurrent.mangabakaId);
+  }
+  if (libraryChanged) saveLibraryItems();
 }
 
 function normalizeLibraryItem(item) {
-  return item ? { ...item, libraryStatus: normalizedLibraryStatus(item) } : item;
+  if (!item) return item;
+  const alreadyTagged = mediaFormats.includes(item.mediaFormat);
+  const mediaFormat = inferredMediaFormat(item);
+  const tagged = { ...item, mediaFormat };
+  const mediaFormatSource = item.mediaFormatSource || (alreadyTagged ? "" : "automatic");
+  if (mediaFormatSource) tagged.mediaFormatSource = mediaFormatSource;
+  if (mediaFormat !== "manga") removeMangaBakaOutboxEntry(item.mangabakaId);
+  const normalized = mediaFormat === "manga" ? tagged : removeMangaBakaMapping(tagged);
+  normalized.libraryStatus = normalizedLibraryStatus(normalized);
+  return normalized;
+}
+
+function automaticMediaFormat(item) {
+  return detectedMediaFormatFromMetadata(item) || "manga";
+}
+
+function formatCanBeAutomaticallyRefined(item) {
+  return !mediaFormats.includes(item?.mediaFormat) || item?.mediaFormatSource === "automatic";
+}
+
+function detectedMediaFormatForPage(item, image, sourceLabelText = "") {
+  return detectedMediaFormatFromMetadata(item) || detectPanelModeFromImage(image, sourceLabelText);
 }
 
 function setLibraryFilter(filter) {
@@ -3892,25 +3981,12 @@ function setLibraryItemFormat(item, mediaFormat) {
   const previousMangaBakaId = Number(previous?.mangabakaId);
   state.libraryItems = state.libraryItems.map((existing) => {
     if (libraryItemKey(existing) !== key) return existing;
-    const updated = {
-      ...existing,
-      mediaFormat,
-      panelMode: mediaFormat,
-      readingDirection: mediaFormat === "comic" ? "ltr" : "rtl",
+    return {
+      ...taggedMediaItem(existing, mediaFormat, "manual"),
       updatedAt: new Date().toISOString(),
     };
-    if (mediaFormat === "comic") {
-      delete updated.mangabakaId;
-      delete updated.mangabakaTitle;
-      delete updated.mangabakaMatchSource;
-      delete updated.mangabakaAccountKey;
-    }
-    return updated;
   });
-  if (mediaFormat === "comic" && previousMangaBakaId) {
-    state.mangabakaOutbox = state.mangabakaOutbox.filter((entry) => Number(entry.series_id) !== previousMangaBakaId);
-    persistMangaBakaOutbox();
-  }
+  if (mediaFormat !== "manga") removeMangaBakaOutboxEntry(previousMangaBakaId);
   saveLibraryItems();
   renderLibrary({ preserveInteractions: false });
   showToast(`Marked as ${mediaFormatLabels[mediaFormat].toLowerCase()}.`, "good");
@@ -3962,6 +4038,7 @@ async function selectLibraryManga(item, resume, returnFocusTarget = null) {
     sourceLabel: item.sourceLabel,
     thumbnailUrl: item.thumbnailUrl,
     mediaFormat: item.mediaFormat,
+    mediaFormatSource: item.mediaFormatSource,
     mangabakaId: item.mangabakaId,
     mangabakaTitle: item.mangabakaTitle,
     mangabakaMatchSource: item.mangabakaMatchSource,
@@ -4045,17 +4122,17 @@ async function syncSuwayomiLibrary({ announce = false, progressMangaIds = null }
     const key = libraryItemKey({ id: manga.id, sourceId: manga.sourceId });
     const existing = existingByKey.get(key) || {};
     const source = manga.source || state.sources.find((item) => String(item.id) === String(manga.sourceId));
-    return {
+    const merged = {
       ...existing,
       mangaId: Number(manga.id),
       mangaTitle: manga.title,
       sourceId: manga.sourceId,
       sourceLabel: source ? sourceLabel(source) : (existing.sourceLabel || "Suwayomi"),
       thumbnailUrl: manga.thumbnailUrl || existing.thumbnailUrl,
-      mediaFormat: existing.mediaFormat,
       suwayomiLibrary: true,
       updatedAt: existing.updatedAt || "1970-01-01T00:00:00.000Z",
     };
+    return normalizeLibraryItem(merged);
   });
   state.libraryItems = mergeLibraryItems(serverItems, state.libraryItems);
   await hydrateImportedReadingProgress(mangas, { mangaIds: progressMangaIds });
@@ -4385,7 +4462,7 @@ function rememberReadingProgress() {
   const totalPanels = page?.panels.length || 0;
   const existing = state.libraryItems.find((item) => libraryItemKey(item) === libraryItemKey(state.currentManga));
   const source = state.sources.find((item) => String(item.id) === String(state.currentManga.sourceId));
-  const item = {
+  const item = normalizeLibraryItem({
     ...existing,
     mangaId: Number(state.currentManga.id),
     mangaTitle: state.currentManga.title,
@@ -4393,6 +4470,7 @@ function rememberReadingProgress() {
     sourceLabel: state.currentManga.sourceLabel,
     thumbnailUrl: state.currentManga.thumbnailUrl || existing?.thumbnailUrl,
     mediaFormat: state.currentManga.mediaFormat || existing?.mediaFormat || inferredMediaFormat(state.currentManga || existing),
+    mediaFormatSource: state.currentManga.mediaFormatSource || existing?.mediaFormatSource || "automatic",
     mangabakaId: state.currentManga.mangabakaId || existing?.mangabakaId,
     mangabakaTitle: state.currentManga.mangabakaTitle || existing?.mangabakaTitle,
     mangabakaMatchSource: state.currentManga.mangabakaMatchSource || existing?.mangabakaMatchSource,
@@ -4414,7 +4492,7 @@ function rememberReadingProgress() {
       ? `Page ${state.pageIndex + 1}, panel ${state.panelIndex + 1}`
       : `Page ${state.pageIndex + 1}`,
     updatedAt: new Date().toISOString(),
-  };
+  });
   const key = libraryItemKey(item);
   state.libraryItems = [item, ...state.libraryItems.filter((existing) => libraryItemKey(existing) !== key)];
   saveLibraryItems();
@@ -4427,6 +4505,11 @@ function currentSuwayomiPageIndex() {
   const pageCount = state.chapterPageUrls.length;
   if (!pageCount) return 0;
   if (state.panelMode !== "webtoon") return clamp(state.pageIndex, 0, pageCount - 1);
+  if (continuousWebtoonReading()) {
+    const scrollRange = Math.max(1, el.stageImageWrap.scrollHeight - el.stageImageWrap.clientHeight);
+    const progress = clamp(el.stageImageWrap.scrollTop / scrollRange, 0, 1);
+    return clamp(Math.floor(progress * pageCount), 0, pageCount - 1);
+  }
   const panels = state.pages[0]?.panels || [];
   if (!panels.length) return 0;
   const progress = clamp((state.panelIndex + 1) / panels.length, 0, 1);
@@ -5776,6 +5859,7 @@ async function openDeviceChapter(chapterPackage, resumeItem = null) {
     sourceLabel: chapterPackage.sourceLabel,
     thumbnailUrl: chapterPackage.thumbnailUrl,
     mediaFormat: resumeItem?.mediaFormat || chapterPackage.mediaFormat,
+    mediaFormatSource: resumeItem?.mediaFormatSource || chapterPackage.mediaFormatSource || "automatic",
     mangabakaId: resumeItem?.mangabakaId,
     mangabakaTitle: resumeItem?.mangabakaTitle,
     mangabakaMatchSource: resumeItem?.mangabakaMatchSource,
@@ -6561,11 +6645,16 @@ async function loadChapter(pageUrls, title, options = {}) {
     }
     await applyPendingResume(generation, requestIsCurrent);
     if (!loadIsCurrent()) return;
+    if (state.panelMode === "webtoon") state.fullPage = true;
+    updateReaderViewToggle();
     setReaderLoading(true, "Rendering reader...", 92);
     if (!loadIsCurrent()) return;
     renderCurrentPage();
     renderPanelStrip();
     updateStats();
+    if (continuousWebtoonReading()) {
+      requestAnimationFrame(() => scrollContinuousWebtoonToPanel(state.panelIndex));
+    }
     if (state.panelMode === "webtoon") {
       startReaderBackgroundPreparation(generation);
     } else {
@@ -6604,19 +6693,20 @@ async function applyPendingResume(generation, requestIsCurrent = () => true) {
   }
   const page = state.pages[state.pageIndex];
   state.panelIndex = clamp(Number(resume.panelIndex) || 0, 0, Math.max(0, (page?.panels.length || 1) - 1));
-  state.fullPage = false;
+  state.fullPage = resumeMode === "webtoon";
   state.pendingResume = null;
 }
 
 function autoSelectPanelMode(image) {
   const savedFormat = state.currentManga?.mediaFormat;
+  const detectedFormat = detectedMediaFormatForPage(state.currentManga, image, activeChapterSourceLabel());
   const detectedMode = state.panelModeUserOverride
     ? state.panelMode
-    : savedFormat
+    : savedFormat && !formatCanBeAutomaticallyRefined(state.currentManga)
       ? savedFormat
-      : detectPanelModeFromImage(image, activeChapterSourceLabel());
-  if (detectedMode && state.currentManga && !savedFormat) {
-    state.currentManga.mediaFormat = detectedMode;
+      : detectedFormat || savedFormat || automaticMediaFormat(state.currentManga);
+  if (detectedMode && state.currentManga && (savedFormat !== detectedMode || formatCanBeAutomaticallyRefined(state.currentManga))) {
+    persistCurrentMangaMediaFormat(detectedMode, "automatic");
   }
   if (!detectedMode || detectedMode === state.panelMode) {
     updatePanelModeControls();
@@ -9291,11 +9381,37 @@ function ensureStageStrip() {
   return el.stageStrip;
 }
 
+function continuousWebtoonReading() {
+  return state.activeView === "reader" && state.panelMode === "webtoon" && state.fullPage;
+}
+
+function layoutContinuousWebtoon(page, { scrollTop = null } = {}) {
+  if (!continuousWebtoonReading() || !page?.stripImages?.length) return false;
+  const strip = ensureStageStrip();
+  const availableWidth = Math.max(1, el.stageImageWrap.clientWidth || el.stage.clientWidth);
+  const scale = availableWidth / Math.max(1, page.naturalWidth);
+  strip.style.width = `${availableWidth}px`;
+  strip.style.height = `${page.naturalHeight * scale}px`;
+  strip.style.transform = "none";
+  strip.style.transformOrigin = "0 0";
+  strip.querySelectorAll("[data-segment-placeholder]").forEach((placeholder) => {
+    const segment = page.stripImages[Number(placeholder.dataset.segmentPlaceholder)];
+    if (segment) placeholder.style.height = `${segment.height * scale}px`;
+  });
+  if (Number.isFinite(scrollTop)) el.stageImageWrap.scrollTop = scrollTop;
+  return true;
+}
+
 function renderStripPage(page, { refit = true, contentExtended = false } = {}) {
   const strip = ensureStageStrip();
   const signature = page.stripImages.map((item) => `${item.url}:${Math.round(item.height)}`).join("|");
   const current = currentPanel();
-  const currentY = current ? (current.y + current.h / 2) * page.naturalHeight : 0;
+  const continuous = continuousWebtoonReading();
+  const continuousScale = (parseFloat(strip.style.width) || el.stageImageWrap.clientWidth || page.naturalWidth)
+    / Math.max(1, page.naturalWidth);
+  const currentY = continuous
+    ? (el.stageImageWrap.scrollTop + el.stageImageWrap.clientHeight / 2) / Math.max(0.0001, continuousScale)
+    : current ? (current.y + current.h / 2) * page.naturalHeight : 0;
   const activeSegment = Math.max(0, page.stripImages.findIndex((item) => currentY >= item.y && currentY <= item.y + item.height));
   const liveCount = Math.min(webtoonLiveImageCap, page.stripImages.length);
   const liveStart = clamp(activeSegment - Math.floor(liveCount / 2), 0, Math.max(0, page.stripImages.length - liveCount));
@@ -9308,6 +9424,7 @@ function renderStripPage(page, { refit = true, contentExtended = false } = {}) {
   strip.hidden = false;
 
   if (strip.dataset.signature !== signature || strip.dataset.windowSignature !== windowSignature) {
+    const preservedScrollTop = continuous ? el.stageImageWrap.scrollTop : null;
     state.cameraPageChanged = !contentExtended;
     const fragment = document.createDocumentFragment();
     page.stripImages.forEach((item, index) => {
@@ -9333,6 +9450,12 @@ function renderStripPage(page, { refit = true, contentExtended = false } = {}) {
     state.performanceStats.panelStripRebuilds += 1;
     strip.dataset.signature = signature;
     strip.dataset.windowSignature = windowSignature;
+    if (continuous) layoutContinuousWebtoon(page, { scrollTop: preservedScrollTop });
+  }
+
+  if (continuous) {
+    layoutContinuousWebtoon(page);
+    return;
   }
 
   if (refit) {
@@ -9380,6 +9503,10 @@ function fitStage() {
 
   const rect = state.fullPage ? fullPagePanel(page.naturalWidth, page.naturalHeight) : currentPanel();
   const stageRect = el.stage.getBoundingClientRect();
+  if (continuousWebtoonReading()) {
+    layoutContinuousWebtoon(page);
+    return;
+  }
   const imageWidth = page.naturalWidth;
   const imageHeight = page.naturalHeight;
   const framedRect = !state.fullPage && state.bubbleAwareFraming && state.panelMode === "manga"
@@ -9623,6 +9750,7 @@ function updatePanelModeControls() {
   el.comicMode?.setAttribute("aria-pressed", state.panelMode === "comic" ? "true" : "false");
   el.webtoonMode?.setAttribute("aria-pressed", state.panelMode === "webtoon" ? "true" : "false");
   if (el.redetect) el.redetect.textContent = "Detect panels";
+  updateReaderViewToggle();
 }
 
 function renderVersionNote() {
@@ -9632,7 +9760,10 @@ function renderVersionNote() {
 
 async function setPanelMode(mode) {
   if (!isPanelMode(mode)) return;
-  if (state.currentManga) state.panelModeUserOverride = true;
+  if (state.currentManga) {
+    state.panelModeUserOverride = true;
+    persistCurrentMangaMediaFormat(mode, "manual");
+  }
   if (state.panelMode === mode) return;
 
   cancelReaderNavigation();
@@ -9664,7 +9795,8 @@ async function setPanelMode(mode) {
     }
     state.pageIndex = 0;
     state.panelIndex = 0;
-    state.fullPage = false;
+    state.fullPage = mode === "webtoon";
+    if (mode === "webtoon") exitReaderFullscreen();
     renderCurrentPage();
     updateAfterNavigation();
     if (previousPages !== state.pages) releaseReaderPageImages(previousPages);
@@ -9789,6 +9921,7 @@ async function drainPanelMoveQueue() {
 
 async function performPanelMove(delta) {
   if (state.navigationPending || !state.pages.length) return false;
+  if (continuousWebtoonReading()) return scrollContinuousWebtoon(delta);
   if (state.fullPage) return moveToAdjacentPage(delta);
   const page = state.pages[state.pageIndex];
   if (!Array.isArray(page?.panels) || !page.panels.length) {
@@ -10080,29 +10213,33 @@ function updateStats() {
   const totalPanels = page?.panels.length || 0;
   const unit = "Panel";
   el.pageStat.textContent = totalPages ? `Page ${state.pageIndex + 1} / ${totalPages}` : "Page 0";
-  el.panelStat.textContent = state.fullPage
-    ? "Full page"
+  const continuousWebtoon = continuousWebtoonReading();
+  el.panelStat.textContent = continuousWebtoon
+    ? "Continuous scroll"
+    : state.fullPage ? "Full page"
     : totalPanels ? `${unit} ${state.panelIndex + 1} / ${totalPanels}` : `${unit} 0`;
   const detectedPages = state.pages.filter((item) => item.detected).length;
   const detectedPanels = state.pages.reduce((sum, item) => sum + item.panels.length, 0);
   el.panelCount.textContent = `${detectedPanels} ${unit.toLowerCase()}s on ${detectedPages} pages`;
   if (el.nextPanel) {
-    const label = state.fullPage
-      ? `Next page. Current page ${state.pageIndex + 1} of ${totalPages}`
+    const label = continuousWebtoon
+      ? "Scroll down through the webtoon"
+      : state.fullPage ? `Next page. Current page ${state.pageIndex + 1} of ${totalPages}`
       : totalPanels
         ? `Next panel. Current panel ${state.panelIndex + 1} of ${totalPanels}`
         : "Next panel";
     el.nextPanel.setAttribute("aria-label", label);
-    el.nextPanel.title = state.fullPage ? "Next page" : "Next panel";
+    el.nextPanel.title = continuousWebtoon ? "Scroll down" : state.fullPage ? "Next page" : "Next panel";
   }
   if (el.prevPanel) {
-    const label = state.fullPage
-      ? `Previous page. Current page ${state.pageIndex + 1} of ${totalPages}`
+    const label = continuousWebtoon
+      ? "Scroll up through the webtoon"
+      : state.fullPage ? `Previous page. Current page ${state.pageIndex + 1} of ${totalPages}`
       : totalPanels
         ? `Previous panel. Current panel ${state.panelIndex + 1} of ${totalPanels}`
         : "Previous panel";
     el.prevPanel.setAttribute("aria-label", label);
-    el.prevPanel.title = state.fullPage ? "Previous page" : "Previous panel";
+    el.prevPanel.title = continuousWebtoon ? "Scroll up" : state.fullPage ? "Previous page" : "Previous panel";
   }
 }
 
@@ -10199,7 +10336,7 @@ async function redetectChapterPanels() {
   const previousPages = state.pages;
   state.pageIndex = 0;
   state.panelIndex = 0;
-  state.fullPage = false;
+  state.fullPage = state.panelMode === "webtoon";
 
   try {
     if (state.panelMode === "webtoon") {
@@ -10675,13 +10812,71 @@ async function resortAndDetect(direction) {
 }
 
 function updateReaderViewToggle() {
-  document.body.classList.toggle("reader-full-page", state.activeView === "reader" && state.fullPage);
+  syncReaderPresentationClasses();
   if (!el.toggleFit) return;
-  el.toggleFit.textContent = state.fullPage ? "Panel view" : "Full page";
+  const webtoon = state.panelMode === "webtoon";
+  el.toggleFit.textContent = webtoon
+    ? state.fullPage ? "Guided taps" : "Continuous scroll"
+    : state.fullPage ? "Panel view" : "Full page";
   el.toggleFit.setAttribute("aria-pressed", state.fullPage ? "true" : "false");
-  el.toggleFit.title = state.fullPage
-    ? "Switch to panel-by-panel reading"
-    : "Switch to full-page reading";
+  el.toggleFit.title = webtoon
+    ? state.fullPage ? "Switch to tap-through webtoon panels" : "Switch to continuous webtoon scrolling"
+    : state.fullPage ? "Switch to panel-by-panel reading" : "Switch to full-page reading";
+}
+
+function syncReaderPresentationClasses() {
+  const readerActive = state.activeView === "reader";
+  const webtoonScroll = readerActive && state.panelMode === "webtoon" && state.fullPage;
+  document.body.classList.toggle("webtoon-scroll", webtoonScroll);
+  document.body.classList.toggle("reader-full-page", readerActive && state.fullPage && !webtoonScroll);
+}
+
+function scrollContinuousWebtoonToPanel(index = state.panelIndex, behavior = "auto") {
+  if (!continuousWebtoonReading()) return false;
+  const page = state.pages[0];
+  const panel = page?.panels?.[clamp(Number(index) || 0, 0, Math.max(0, (page?.panels?.length || 1) - 1))];
+  if (!panel || !layoutContinuousWebtoon(page)) return false;
+  const scale = (parseFloat(ensureStageStrip().style.width) || page.naturalWidth) / Math.max(1, page.naturalWidth);
+  const panelCenter = (panel.y + panel.h / 2) * page.naturalHeight * scale;
+  const top = clamp(
+    panelCenter - el.stageImageWrap.clientHeight / 2,
+    0,
+    Math.max(0, el.stageImageWrap.scrollHeight - el.stageImageWrap.clientHeight)
+  );
+  el.stageImageWrap.scrollTo({ top, behavior });
+  return true;
+}
+
+function scrollContinuousWebtoon(delta) {
+  if (!continuousWebtoonReading()) return false;
+  const direction = Number(delta) >= 0 ? 1 : -1;
+  const atEnd = el.stageImageWrap.scrollTop + el.stageImageWrap.clientHeight >= el.stageImageWrap.scrollHeight - 2;
+  if (direction > 0 && atEnd) return moveToAdjacentPage(1);
+  el.stageImageWrap.scrollBy({
+    top: direction * el.stageImageWrap.clientHeight * 0.86,
+    behavior: state.readerMotion === "instant" ? "auto" : "smooth",
+  });
+  return true;
+}
+
+function handleWebtoonScroll() {
+  if (!continuousWebtoonReading() || state.webtoonScrollFrame) return;
+  state.webtoonScrollFrame = requestAnimationFrame(() => {
+    state.webtoonScrollFrame = 0;
+    const page = state.pages[0];
+    if (!page?.stripImages?.length || !continuousWebtoonReading()) return;
+    const strip = ensureStageStrip();
+    const scale = (parseFloat(strip.style.width) || page.naturalWidth) / Math.max(1, page.naturalWidth);
+    const centerY = (el.stageImageWrap.scrollTop + el.stageImageWrap.clientHeight / 2) / Math.max(0.0001, scale);
+    const nextPanelIndex = nearestPanelIndexByY(page, centerY);
+    const panelChanged = nextPanelIndex !== state.panelIndex;
+    state.panelIndex = nextPanelIndex;
+    renderStripPage(page, { refit: false, contentExtended: true });
+    if (panelChanged) {
+      updateStats();
+      scheduleReadingProgressPersistence();
+    }
+  });
 }
 
 function readerFullscreenElement() {
@@ -10723,8 +10918,16 @@ function handleReaderFullscreenChange() {
 
 function toggleFullPage() {
   if (!state.pages.length) return;
+  const webtoon = state.panelMode === "webtoon";
+  const selectedPanel = state.panelIndex;
   state.fullPage = !state.fullPage;
   if (el.readerOptions?.open) el.readerOptions.open = false;
+  if (webtoon) {
+    exitReaderFullscreen();
+    updateAfterNavigation();
+    if (state.fullPage) requestAnimationFrame(() => scrollContinuousWebtoonToPanel(selectedPanel));
+    return;
+  }
   if (state.fullPage) {
     setReaderChromeVisible(false, { refit: false });
     requestReaderFullscreen();
@@ -11187,6 +11390,7 @@ function wireEvents() {
   });
 
   el.stage.addEventListener("click", handleStageTap);
+  el.stageImageWrap?.addEventListener("scroll", handleWebtoonScroll, { passive: true });
 
   el.readerOptions?.addEventListener("toggle", () => {
     if (!el.readerOptions.open) return;
@@ -11292,6 +11496,7 @@ window.PanelPilot = {
   detectComicPanelsWithModel,
   detectPanels,
   fullPagePanel,
+  inferredMediaFormat,
   loadImage,
   mangaBakaEligibleLibraryItem,
   readerTapAction,

@@ -432,7 +432,12 @@ test("library formats filter titles, persist corrections, and detach comics from
     comic: window.PanelPilot.mangaBakaEligibleLibraryItem({ mediaFormat: "comic" }),
     manga: window.PanelPilot.mangaBakaEligibleLibraryItem({ mediaFormat: "manga" }),
     webtoon: window.PanelPilot.mangaBakaEligibleLibraryItem({ mediaFormat: "webtoon" }),
-  }))).toEqual({ comic: false, manga: true, webtoon: true });
+  }))).toEqual({ comic: false, manga: true, webtoon: false });
+  expect(await page.evaluate(() => ({
+    comic: window.PanelPilot.inferredMediaFormat({ sourceLabel: "ReadComicOnline (en)" }),
+    manga: window.PanelPilot.inferredMediaFormat({ sourceLabel: "MangaDex (en)" }),
+    webtoon: window.PanelPilot.inferredMediaFormat({ sourceLabel: "WEBTOON (en)" }),
+  }))).toEqual({ comic: "comic", manga: "manga", webtoon: "webtoon" });
   await expect(allFormats).toHaveAttribute("aria-pressed", "false");
   await expect(page.locator("#library-format-filters")).toHaveAccessibleName(/library.*format/i);
 });

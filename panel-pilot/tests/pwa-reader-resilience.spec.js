@@ -661,6 +661,9 @@ test("a long webtoon caps decoded images and live DOM nodes while its render win
     nextSourceIndex: window.PanelPilot.getPerformanceStats().webtoonPreparation?.nextSourceIndex,
     backgroundPreparing: window.PanelPilot.getReaderLifecycleDiagnostics().backgroundPreparing,
   })), { timeout: 30_000 }).toEqual({ nextSourceIndex: pageCount, backgroundPreparing: false });
+  await expect(page.locator("body")).toHaveClass(/\bwebtoon-scroll\b/);
+  await expect(page.locator("#panel-stat")).toHaveText("Continuous scroll");
+  await expect(page.locator("#toggle-fit")).toHaveText("Guided taps");
 
   const initial = await page.evaluate(() => {
     const diagnostics = window.PanelPilot.getReaderLifecycleDiagnostics();
@@ -681,13 +684,15 @@ test("a long webtoon caps decoded images and live DOM nodes while its render win
   expect(initial.children).toBe(pageCount);
   expect(initial.images + initial.placeholders).toBe(pageCount);
 
+  await page.locator("#stage-image-wrap").evaluate((wrap) => {
+    wrap.scrollTop = wrap.scrollHeight * 0.82;
+    wrap.dispatchEvent(new Event("scroll"));
+  });
   await expect.poll(async () => {
     const indexes = await page.locator(".stage-strip img[data-segment-index]").evaluateAll((images) => (
       images.map((image) => Number(image.dataset.segmentIndex))
     ));
-    if (Math.max(...indexes) >= 10) return true;
-    await page.locator("#next-panel").click();
-    return false;
+    return Math.max(...indexes) >= 10;
   }, { timeout: 20_000, intervals: [20, 30, 50] }).toBe(true);
 
   const advanced = await page.evaluate(() => {
@@ -710,6 +715,22 @@ test("a long webtoon caps decoded images and live DOM nodes while its render win
   expect(advanced.minLiveIndex).toBeGreaterThan(0);
   expect(advanced.maxLiveIndex).toBeGreaterThanOrEqual(10);
   expect(advanced.children).toBe(pageCount);
+
+  const stage = await page.locator("#stage").boundingBox();
+  await page.locator("#stage").click({
+    position: {
+      x: Math.round((stage?.width || 820) / 2),
+      y: Math.round((stage?.height || 1180) / 2),
+    },
+  });
+  await page.locator(".reader-options > summary").click();
+  await page.locator("#toggle-fit").click();
+  await expect(page.locator("body")).not.toHaveClass(/\bwebtoon-scroll\b/);
+  await expect(page.locator("#toggle-fit")).toHaveText("Continuous scroll");
+  await expect(page.locator("#panel-stat")).toHaveText(/^Panel \d+ \/ \d+$/);
+  const panelBefore = await page.locator("#panel-stat").textContent();
+  await page.locator("#next-panel").click();
+  await expect(page.locator("#panel-stat")).not.toHaveText(panelBefore || "");
 });
 
 test("a failed webtoon segment recovers without escaping strip bounds", async ({ page }) => {

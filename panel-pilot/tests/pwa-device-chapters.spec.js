@@ -947,10 +947,17 @@ for (const scenario of [
         scenario.mode === "webtoon" ? /^Page 1 \/ 1$/ : new RegExp(`^Page ${scenario.pageIndex + 1} \\/ 3$`),
       );
       await expect(page.locator("#panel-stat")).toHaveText(
-        new RegExp(`^Panel ${scenario.panelIndex + 1} \\/ \\d+$`),
+        scenario.mode === "webtoon"
+          ? "Continuous scroll"
+          : new RegExp(`^Panel ${scenario.panelIndex + 1} \\/ \\d+$`),
       );
-      const panelTotal = Number((await page.locator("#panel-stat").textContent())?.split("/")[1]);
-      expect(panelTotal).toBeGreaterThan(scenario.panelIndex);
+      if (scenario.mode === "webtoon") {
+        await expect(page.locator("body")).toHaveClass(/\bwebtoon-scroll\b/);
+        await expect.poll(() => page.locator("#stage-image-wrap").evaluate((wrap) => wrap.scrollTop)).toBeGreaterThan(0);
+      } else {
+        const panelTotal = Number((await page.locator("#panel-stat").textContent())?.split("/")[1]);
+        expect(panelTotal).toBeGreaterThan(scenario.panelIndex);
+      }
       expect([1, 2, 3].map((pageNumber) => fixture.imageRequestCount(1101, pageNumber)))
         .toEqual(imageRequestsBeforeOfflineOpen);
     } finally {
