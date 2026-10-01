@@ -193,6 +193,7 @@ const el = {
   stage: document.querySelector("#stage"),
   appViews: [...document.querySelectorAll(".app-view")],
   appNavButtons: [...document.querySelectorAll("[data-target-view]")],
+  navLibrary: document.querySelector("#nav-library"),
   navReader: document.querySelector("#nav-reader"),
   navReaderCover: document.querySelector("#nav-reader-cover"),
   navReaderFallback: document.querySelector("#nav-reader-fallback"),
@@ -376,6 +377,7 @@ const el = {
 };
 
 const readerIsolationPrevious = new Map();
+const downloadSheetIsolationPrevious = new Map();
 
 const state = {
   baseUrl: defaultSuwayomiUrl,
@@ -477,8 +479,10 @@ const state = {
   downloadStatusTimer: null,
   downloadStatus: null,
   downloadStatusSheetOpen: false,
+  downloadStatusReturnFocus: null,
   libraryOfflineWindows: new Map(),
   libraryOfflineReadiness: new Map(),
+  libraryDeferredRenderPending: false,
   deviceChapters: new Map(),
   deviceChaptersReady: false,
   deviceChapterError: "",
@@ -501,6 +505,9 @@ const state = {
   viewScrollPositions: { library: 0, browse: 0, settings: 0 },
   browseDiscoveryScroll: 0,
   mangaDetailOrigin: "browse",
+  mangaDetailReturnFocus: null,
+  searchRequestGeneration: 0,
+  searchAbortController: null,
   mangabakaRecommendations: [],
   mangabakaConnected: false,
   mangabakaConfigured: false,
@@ -2279,18 +2286,33 @@ function renderSources() {
 }
 
 async function searchSource() {
+  state.searchRequestGeneration += 1;
+  const requestGeneration = state.searchRequestGeneration;
+  state.searchAbortController?.abort();
+  state.searchAbortController = null;
+  setBusy(el.searchSource, false);
   const selectedSource = el.sourceSelect.value;
   const query = el.searchQuery.value.trim();
   if (!state.connected || !state.visibleSources.length || !selectedSource) {
+    renderMangaResults();
     setConnection(false, "Connect Suwayomi and load at least one source before searching.", "bad");
     openSuwayomiSetup({ recommendation: state.pendingMangaBakaRecommendation });
     showToast("Set up a Suwayomi source to continue.", "bad");
     return;
   }
   if (!query) {
+    renderMangaResults();
     showToast("Enter a manga title first.", "bad");
     return;
   }
+
+  const searchController = new AbortController();
+  state.searchAbortController = searchController;
+  const isCurrentSearch = () => (
+    requestGeneration === state.searchRequestGeneration &&
+    state.searchAbortController === searchController &&
+    !searchController.signal.aborted
+  );
 
   if (el.browsePrompt) el.browsePrompt.hidden = true;
   renderMangaSkeletons();
@@ -2303,7 +2325,7 @@ async function searchSource() {
         : state.visibleSources.filter((source) => String(source.id) === String(selectedSource));
     const indexedResults = searchIndexedMangas(query, sources);
     hadIndexedResults = indexedResults.length > 0;
-    if (hadIndexedResults) {
+    if (hadIndexedResults && isCurrentSearch()) {
       state.mangas = sortMangaResults(indexedResults, query);
       renderMangaResults();
       setConnection(true, `Showing ${state.mangas.length} indexed result${state.mangas.length === 1 ? "" : "s"}. Refreshing live search...`, "good");
@@ -2316,17 +2338,21 @@ async function searchSource() {
       try {
         const data = await graphQL(queries.searchSource, {
           input: { source: source.id, query, page: 1, type: "SEARCH" },
-        }, { timeoutMs: 12000 });
+        }, { timeoutMs: 12000, signal: searchController.signal });
         (data.fetchSourceManga?.mangas || []).forEach((manga) => {
           results.push({ ...manga, sourceId: manga.sourceId || source.id });
         });
       } catch (error) {
+        if (!isCurrentSearch() || error?.name === "ReaderLoadCancelled") return;
         failures.push(sourceLabel(source));
       } finally {
         searched += 1;
-        setConnection(true, `Searched ${searched} of ${sources.length} sources…`, "");
+        if (isCurrentSearch()) {
+          setConnection(true, `Searched ${searched} of ${sources.length} sources…`, "");
+        }
       }
     });
+    if (!isCurrentSearch()) return;
     addMangasToSourceIndex(results);
     const liveResults = uniqueMangaResults(results);
     state.mangas = sortMangaResults(
@@ -2347,13 +2373,17 @@ async function searchSource() {
       setConnection(true, `Found ${state.mangas.length} manga results across ${sources.length} source${sources.length === 1 ? "" : "s"}.${suffix}`, failures.length ? "" : "good");
     }
   } catch (error) {
+    if (!isCurrentSearch() || error?.name === "ReaderLoadCancelled") return;
     if (hadIndexedResults) {
       setConnection(true, `Showing indexed results. Live search failed: ${friendlySourceErrorMessage(error)}`, "good");
     } else {
       setConnection(state.connected, `Search failed: ${friendlySourceErrorMessage(error)}`, "bad");
     }
   } finally {
-    setBusy(el.searchSource, false);
+    if (requestGeneration === state.searchRequestGeneration && state.searchAbortController === searchController) {
+      state.searchAbortController = null;
+      setBusy(el.searchSource, false);
+    }
   }
 }
 
@@ -2563,7 +2593,7 @@ function renderMangaResults() {
           ? "Alternative source result"
           : "View chapters",
     });
-    button.addEventListener("click", async () => {
+    button.addEventListener("click", async (event) => {
       const mangabaka = mangaBakaMatchForManga(manga);
       const accountScopedMangaBaka = mangabaka && state.mangabakaConnected && state.mangabakaAccountKey
         ? mangabaka
@@ -2587,7 +2617,7 @@ function renderMangaResults() {
         updateRecommendationContext();
       }
       state.mangaDetailOrigin = "browse";
-      showMangaDetail(manga, sourceText, { origin: "browse" });
+      showMangaDetail(manga, sourceText, { origin: "browse", returnFocusTarget: event.currentTarget });
       await fetchChapters();
     });
     card.append(button);
@@ -2613,6 +2643,10 @@ function showMangaDetail(manga, sourceText = "", options = {}) {
   const title = manga?.title || manga?.mangaTitle || "Selected manga";
   const source = sourceText || manga?.sourceLabel || "Suwayomi source";
   state.mangaDetailOrigin = options.origin || state.mangaDetailOrigin || "browse";
+  const returnFocusTarget = options.returnFocusTarget;
+  if (returnFocusTarget?.isConnected && typeof returnFocusTarget.focus === "function") {
+    state.mangaDetailReturnFocus = returnFocusTarget;
+  }
   el.browseView?.setAttribute("aria-label", `Manga details: ${title}`);
   state.browseDiscoveryScroll = window.scrollY;
   el.mangaDetail.closest(".browse-view")?.classList.add("detail-open");
@@ -2739,7 +2773,19 @@ function closeMangaDetail(options = {}) {
   el.browseBody.hidden = false;
   requestAnimationFrame(() => {
     window.scrollTo({ top: state.browseDiscoveryScroll || 0 });
-    el.searchQuery?.focus({ preventScroll: true });
+    const returnFocusTarget = state.mangaDetailReturnFocus;
+    state.mangaDetailReturnFocus = null;
+    if (
+      returnFocusTarget?.isConnected &&
+      returnFocusTarget.getClientRects?.().length &&
+      !returnFocusTarget.closest?.("[hidden], [inert]")
+    ) {
+      returnFocusTarget.focus({ preventScroll: true });
+    } else if (state.mangaDetailOrigin === "library") {
+      el.navLibrary?.focus({ preventScroll: true });
+    } else {
+      el.searchQuery?.focus({ preventScroll: true });
+    }
   });
 }
 
@@ -3017,7 +3063,7 @@ function createLibraryOfflineBadge(item) {
   const complete = readiness.downloaded === readiness.total && readiness.panelReady === readiness.total;
   const badge = document.createElement("span");
   badge.className = `manga-card-badge offline-readiness-badge${complete ? " ready" : readiness.failed ? " failed" : " pending"}`;
-  badge.textContent = `${complete ? "✓" : "↓"} ${readiness.panelReady}/${readiness.total}`;
+  badge.textContent = `Server ${readiness.panelReady}/${readiness.total}`;
   const title = item.mangaTitle || "This title";
   badge.setAttribute("aria-label", complete
     ? `${title}: ${readiness.total} of ${readiness.total} buffered chapters are downloaded to the server and panel-ready.`
@@ -3026,9 +3072,36 @@ function createLibraryOfflineBadge(item) {
   return badge;
 }
 
-function renderLibrary() {
+function refreshLibraryOfflineBadges() {
+  if (!el.libraryList) return;
+  el.libraryList.querySelectorAll(".library-card[data-library-key]").forEach((card) => {
+    const item = state.libraryItems.find((candidate) => libraryItemKey(candidate) === card.dataset.libraryKey);
+    const badges = card.querySelector("[data-library-badges]");
+    if (!item || !badges) return;
+    const existingBadge = badges.querySelector(".offline-readiness-badge");
+    const offlineBadge = createLibraryOfflineBadge(item);
+    if (!offlineBadge) {
+      existingBadge?.remove();
+    } else if (!existingBadge) {
+      badges.prepend(offlineBadge);
+    } else if (existingBadge.outerHTML !== offlineBadge.outerHTML) {
+      existingBadge.replaceWith(offlineBadge);
+    }
+  });
+}
+
+function renderLibrary({ preserveInteractions = true } = {}) {
   if (!el.libraryList || !el.libraryCount) return;
-  el.libraryList.replaceChildren();
+  const renderSignature = libraryRenderSignature();
+  if (el.libraryList.dataset.renderSignature === renderSignature) {
+    refreshLibraryOfflineBadges();
+    updateReaderNav();
+    return;
+  }
+  const existingCards = new Map(
+    [...el.libraryList.querySelectorAll(":scope > .library-card[data-library-key]")]
+      .map((card) => [card.dataset.libraryKey, card])
+  );
   const allowedItems = libraryItemsAllowedByNsfw();
   const visibleItems = visibleLibraryItems();
   const hiddenCount = allowedItems.filter((item) => item.hidden).length;
@@ -3040,7 +3113,7 @@ function renderLibrary() {
   el.libraryFilters.forEach((button) => {
     const active = button.dataset.libraryFilter === state.libraryFilter;
     button.classList.toggle("active", active);
-    button.setAttribute("aria-selected", active ? "true" : "false");
+    button.setAttribute("aria-pressed", active ? "true" : "false");
   });
   el.libraryFilterCounts.forEach((count) => {
     const filter = count.dataset.libraryCount;
@@ -3076,13 +3149,29 @@ function renderLibrary() {
     action.textContent = showHiddenAction ? "Show hidden titles" : "Browse manga";
     action.addEventListener("click", () => showHiddenAction ? setShowHiddenLibrary(true) : setActiveView("browse"));
     empty.append(art, heading, copy, action);
-    el.libraryList.append(empty);
+    el.libraryList.replaceChildren(empty);
+    el.libraryList.dataset.renderSignature = renderSignature;
     return;
   }
 
+  const renderedCards = [];
+  let deferredCardUpdate = false;
   visibleItems.forEach((item) => {
+    const itemSignature = libraryCardSignature(item);
+    const existingCard = existingCards.get(libraryItemKey(item));
+    const cardIsInUse = Boolean(preserveInteractions && existingCard && (
+      existingCard.contains(document.activeElement) ||
+      existingCard.querySelector("details[open]")
+    ));
+    if (existingCard && (existingCard.dataset.libraryCardSignature === itemSignature || cardIsInUse)) {
+      if (cardIsInUse && existingCard.dataset.libraryCardSignature !== itemSignature) deferredCardUpdate = true;
+      renderedCards.push(existingCard);
+      return;
+    }
     const card = document.createElement("article");
     card.className = `manga-card library-card${item.pinned ? " pinned-item" : ""}${item.hidden ? " hidden-item" : ""}`;
+    card.dataset.libraryKey = libraryItemKey(item);
+    card.dataset.libraryCardSignature = itemSignature;
     const resumable = Number.isInteger(Number(item.chapterId)) && Number(item.chapterId) > 0;
     const cover = createCoverButton(item, {
       title: item.mangaTitle || "Untitled",
@@ -3101,6 +3190,7 @@ function renderLibrary() {
 
     const badges = document.createElement("div");
     badges.className = "manga-card-badges";
+    badges.dataset.libraryBadges = "";
     const offlineBadge = createLibraryOfflineBadge(item);
     if (offlineBadge) badges.append(offlineBadge);
     if (item.pinned) {
@@ -3125,7 +3215,8 @@ function renderLibrary() {
     const chapters = document.createElement("button");
     chapters.type = "button";
     chapters.textContent = "Chapters";
-    chapters.addEventListener("click", () => void selectLibraryManga(item, false).catch((error) => {
+    chapters.dataset.libraryAction = "chapters";
+    chapters.addEventListener("click", (event) => void selectLibraryManga(item, false, event.currentTarget).catch((error) => {
       showToast(`Could not open chapters: ${friendlySourceErrorMessage(error)}`, "bad");
     }));
     const pin = document.createElement("button");
@@ -3161,7 +3252,44 @@ function renderLibrary() {
     actions.append(chapters, more);
 
     card.append(cover, badges, actions);
-    el.libraryList.append(card);
+    renderedCards.push(card);
+  });
+  renderedCards.forEach((card, index) => {
+    const current = el.libraryList.children[index];
+    if (current !== card) el.libraryList.insertBefore(card, current || null);
+  });
+  const renderedSet = new Set(renderedCards);
+  [...el.libraryList.children].forEach((child) => {
+    if (!renderedSet.has(child)) child.remove();
+  });
+  state.libraryDeferredRenderPending = deferredCardUpdate;
+  if (!deferredCardUpdate) el.libraryList.dataset.renderSignature = renderSignature;
+  refreshLibraryOfflineBadges();
+}
+
+function flushDeferredLibraryRender() {
+  if (!state.libraryDeferredRenderPending || !el.libraryList) return;
+  window.setTimeout(() => {
+    if (!state.libraryDeferredRenderPending) return;
+    const activeCard = document.activeElement?.closest?.(".library-card");
+    if (activeCard || el.libraryList.querySelector("details[open]")) return;
+    state.libraryDeferredRenderPending = false;
+    renderLibrary({ preserveInteractions: false });
+  }, 0);
+}
+
+function libraryCardSignature(item) {
+  return JSON.stringify({
+    key: libraryItemKey(item),
+    mangaTitle: item.mangaTitle || "",
+    sourceLabel: item.sourceLabel || "",
+    thumbnailUrl: item.thumbnailUrl || "",
+    chapterId: Number(item.chapterId) || 0,
+    chapterTitle: item.chapterTitle || "",
+    progressLabel: item.progressLabel || "",
+    pinned: Boolean(item.pinned),
+    hidden: Boolean(item.hidden),
+    status: normalizedLibraryStatus(item),
   });
 }
 
@@ -3286,6 +3414,25 @@ function visibleLibraryItems() {
   );
 }
 
+function libraryRenderSignature(items = state.libraryItems) {
+  return JSON.stringify({
+    filter: state.libraryFilter,
+    showHidden: state.showHiddenLibrary,
+    items: sortLibraryItems(items).map((item) => ({
+      key: libraryItemKey(item),
+      mangaTitle: item.mangaTitle || "",
+      sourceLabel: item.sourceLabel || "",
+      thumbnailUrl: item.thumbnailUrl || "",
+      chapterId: Number(item.chapterId) || 0,
+      chapterTitle: item.chapterTitle || "",
+      progressLabel: item.progressLabel || "",
+      pinned: Boolean(item.pinned),
+      hidden: Boolean(item.hidden),
+      status: normalizedLibraryStatus(item),
+    })),
+  });
+}
+
 function libraryItemsAllowedByNsfw() {
   // A title explicitly present in the user's library should remain visible.
   // The NSFW preference only limits discovery/search results.
@@ -3324,7 +3471,7 @@ function setLibraryItemFlag(item, field, value) {
     libraryItemKey(existing) === key ? { ...existing, [field]: value, updatedAt: new Date().toISOString() } : existing
   );
   saveLibraryItems();
-  renderLibrary();
+  renderLibrary({ preserveInteractions: false });
   showToast(field === "pinned" ? (value ? "Pinned to the top." : "Unpinned.") : (value ? "Hidden from Library." : "Restored to Library."));
 }
 
@@ -3339,7 +3486,7 @@ function setLibraryItemStatus(item, status, { sync = true } = {}) {
   );
   const updated = state.libraryItems.find((entry) => libraryItemKey(entry) === key);
   saveLibraryItems();
-  renderLibrary();
+  renderLibrary({ preserveInteractions: false });
   if (sync) enqueueMangaBakaLibraryItem(updated);
   if (status === "plan_to_read" && previousStatus !== "plan_to_read") {
     void enqueuePlanToReadServerBuffer(updated);
@@ -3375,7 +3522,10 @@ async function selectLibraryManga(item, resume, returnFocusTarget = null) {
   if (!resume) {
     state.mangaDetailOrigin = "library";
     setActiveView("browse", { history: false });
-    showMangaDetail(state.currentManga, item.sourceLabel, { origin: "library" });
+    showMangaDetail(state.currentManga, item.sourceLabel, {
+      origin: "library",
+      returnFocusTarget,
+    });
   }
   updateReaderNav();
   el.mangaId.value = item.mangaId;
@@ -3432,6 +3582,7 @@ async function ensureCurrentMangaInSuwayomiLibrary() {
 }
 
 async function syncSuwayomiLibrary({ announce = false, progressMangaIds = null } = {}) {
+  const previousRenderSignature = libraryRenderSignature();
   const data = await graphQL(queries.libraryMangas, {}, { timeoutMs: 15000 });
   const mangas = data.mangas?.nodes || [];
   const existingByKey = new Map(state.libraryItems.map((item) => [libraryItemKey(item), item]));
@@ -3453,7 +3604,12 @@ async function syncSuwayomiLibrary({ announce = false, progressMangaIds = null }
   state.libraryItems = mergeLibraryItems(serverItems, state.libraryItems);
   await hydrateImportedReadingProgress(mangas, { mangaIds: progressMangaIds });
   saveLibraryItems();
-  renderLibrary();
+  if (libraryRenderSignature() === previousRenderSignature) {
+    refreshLibraryOfflineBadges();
+    updateReaderNav();
+  } else {
+    renderLibrary();
+  }
   if (announce) {
     setSyncStatus("Synced", `${mangas.length} Suwayomi library title${mangas.length === 1 ? "" : "s"} available in Panels.`, "good");
     showToast("Library refreshed from Suwayomi.");
@@ -3805,7 +3961,7 @@ function rememberReadingProgress() {
   const key = libraryItemKey(item);
   state.libraryItems = [item, ...state.libraryItems.filter((existing) => libraryItemKey(existing) !== key)];
   saveLibraryItems();
-  renderLibrary();
+  renderLibrary({ preserveInteractions: false });
   scheduleSuwayomiProgressSync();
   enqueueMangaBakaLibraryItem(item);
 }
@@ -4123,16 +4279,59 @@ function downloadBufferStatusText(status) {
   return `Server chapter buffer: ${parts.join(" · ")}.`;
 }
 
-function setDownloadStatusSheet(open) {
+function syncDownloadStatusSheetIsolation(open) {
+  if (!open) {
+    downloadSheetIsolationPrevious.forEach((wasInert, item) => {
+      item.inert = wasInert;
+    });
+    downloadSheetIsolationPrevious.clear();
+    return;
+  }
+  [...document.body.children].forEach((item) => {
+    if (
+      item === el.downloadStatusSheet ||
+      item === el.downloadStatusBackdrop ||
+      item.tagName === "SCRIPT"
+    ) return;
+    if (!downloadSheetIsolationPrevious.has(item)) {
+      downloadSheetIsolationPrevious.set(item, item.inert);
+    }
+    item.inert = true;
+  });
+}
+
+function setDownloadStatusSheet(open, returnFocusTarget = null) {
   const nextOpen = Boolean(open && el.downloadStatusButton && !el.downloadStatusButton.hidden);
+  const wasOpen = state.downloadStatusSheetOpen;
+  if (nextOpen && !wasOpen) {
+    const activeElement = document.activeElement;
+    const trigger = returnFocusTarget || (
+      activeElement && activeElement !== document.body && activeElement !== document.documentElement
+        ? activeElement
+        : el.downloadStatusButton
+    );
+    state.downloadStatusReturnFocus = trigger?.isConnected && typeof trigger.focus === "function"
+      ? trigger
+      : el.downloadStatusButton;
+  }
   state.downloadStatusSheetOpen = nextOpen;
   if (el.downloadStatusSheet) el.downloadStatusSheet.hidden = !nextOpen;
   if (el.downloadStatusBackdrop) el.downloadStatusBackdrop.hidden = !nextOpen;
   if (el.downloadStatusButton) el.downloadStatusButton.setAttribute("aria-expanded", nextOpen ? "true" : "false");
   document.body.classList.toggle("download-sheet-open", nextOpen);
+  syncDownloadStatusSheetIsolation(nextOpen);
   if (nextOpen) {
     void refreshDownloadStatus().catch(() => null);
     requestAnimationFrame(() => el.downloadStatusClose?.focus({ preventScroll: true }));
+  } else if (wasOpen) {
+    const returnFocusTarget = state.downloadStatusReturnFocus;
+    state.downloadStatusReturnFocus = null;
+    requestAnimationFrame(() => {
+      const target = returnFocusTarget?.isConnected && returnFocusTarget.getClientRects?.().length
+        ? returnFocusTarget
+        : (!el.downloadStatusButton?.hidden ? el.downloadStatusButton : null);
+      target?.focus({ preventScroll: true });
+    });
   }
 }
 
@@ -4155,7 +4354,7 @@ function downloadChapterStateLabel(chapter) {
 function renderDownloadStatus(status) {
   state.downloadStatus = status || null;
   updateLibraryOfflineReadiness(status);
-  if (state.activeView === "library") renderLibrary();
+  if (state.activeView === "library") refreshLibraryOfflineBadges();
   if (!el.downloadStatusButton) return;
   const total = Number(status?.windowSize) || 0;
   const downloaded = Number(status?.downloaded) || 0;
@@ -4180,11 +4379,13 @@ function renderDownloadStatus(status) {
     ? "Downloads need attention"
     : (working ? "Preparing server chapters" : "Server chapters ready");
   el.downloadStatusCount.textContent = total ? `${downloaded}/${total} ready` : (globalFailed ? `${globalFailed} failed` : "Checking…");
-  el.downloadStatusButton.setAttribute("aria-label", `${el.downloadStatusLabel.textContent}, ${el.downloadStatusCount.textContent}. Open details.`);
+  el.downloadStatusButton.setAttribute("aria-label", `Suwayomi server buffer: ${el.downloadStatusLabel.textContent}, ${el.downloadStatusCount.textContent}. Open details.`);
 
   const chapters = Array.isArray(status?.windowChapters) ? status.windowChapters : [];
   const mangaTitle = chapters.find((chapter) => chapter.mangaTitle)?.mangaTitle || "";
-  if (el.downloadStatusTitle) el.downloadStatusTitle.textContent = mangaTitle ? `${mangaTitle} downloads` : "Chapter downloads";
+  if (el.downloadStatusTitle) {
+    el.downloadStatusTitle.textContent = mangaTitle ? `${mangaTitle} · server buffer` : "Server chapter buffer";
+  }
   if (el.downloadStatusSummary) {
     el.downloadStatusSummary.textContent = downloadBufferStatusText(status).replace(/^Server chapter buffer:\s*/i, "");
   }
@@ -10111,12 +10312,18 @@ function wireEvents() {
     });
   });
   el.navReader?.addEventListener("click", openReaderFromNav);
-  el.downloadStatusButton?.addEventListener("click", () => setDownloadStatusSheet(!state.downloadStatusSheetOpen));
+  el.downloadStatusButton?.addEventListener("click", (event) => setDownloadStatusSheet(!state.downloadStatusSheetOpen, event.currentTarget));
   el.downloadStatusBackdrop?.addEventListener("click", () => setDownloadStatusSheet(false));
   el.downloadStatusClose?.addEventListener("click", () => setDownloadStatusSheet(false));
   el.downloadStatusRetry?.addEventListener("click", retryFailedDownloads);
   window.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && state.downloadStatusSheetOpen) setDownloadStatusSheet(false);
+    if (!state.downloadStatusSheetOpen) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setDownloadStatusSheet(false);
+      return;
+    }
+    trapReaderModalFocus(event, el.downloadStatusSheet);
   });
   el.readerBack?.addEventListener("click", leaveReaderView);
   el.readerLoadingCancel?.addEventListener("click", cancelReaderLoading);
@@ -10168,6 +10375,8 @@ function wireEvents() {
   el.toggleLibraryPanel?.addEventListener("click", toggleLibraryPanel);
   el.toggleHiddenLibrary?.addEventListener("click", () => setShowHiddenLibrary(!state.showHiddenLibrary));
   el.libraryFilters.forEach((button) => button.addEventListener("click", () => setLibraryFilter(button.dataset.libraryFilter)));
+  el.libraryList?.addEventListener("focusout", flushDeferredLibraryRender);
+  el.libraryList?.addEventListener("toggle", flushDeferredLibraryRender, true);
   el.toggleBrowsePanel?.addEventListener("click", toggleBrowsePanel);
   el.closeMangaDetail?.addEventListener("click", closeMangaDetail);
   el.detailPrimary?.addEventListener("click", (event) => { void startOrContinueCurrentManga(event.currentTarget); });
@@ -10181,7 +10390,10 @@ function wireEvents() {
   });
   el.searchSource.addEventListener("click", searchSource);
   el.searchQuery?.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") searchSource();
+    if (event.key === "Enter" && !event.repeat) {
+      event.preventDefault();
+      void searchSource();
+    }
   });
   el.fetchChapters.addEventListener("click", fetchChapters);
   el.scanlatorSelect?.addEventListener("change", (event) => {

@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const distRoot = join(projectRoot, "dist");
+const iconSetBudgetBytes = 300_000;
+const installShellBudgetBytes = 650_000;
 
 function readSource(path) {
   return readFileSync(join(projectRoot, path), "utf8");
@@ -81,6 +83,39 @@ test("the production directory contains the complete multi-page app", () => {
     assert.equal(iconBytes.readUInt32BE(20), expectedHeight, `${iconPath} has the wrong height`);
     assert.ok(statSync(absoluteIconPath).size > 10_000, `${iconPath} does not contain the released artwork`);
   }
+});
+
+test("the production icon set and install shell stay within raw-byte budgets", () => {
+  assert.ok(existsSync(distRoot), "dist is missing; run npm run build before the contract tests");
+
+  const manifest = JSON.parse(readDist("manifest.webmanifest"));
+  const iconPaths = new Set([
+    ...manifest.icons.map((icon) => normalizedBuildPath(icon.src)),
+    "assets/apple-touch-icon.png",
+  ]);
+  let iconBytes = 0;
+  for (const iconPath of iconPaths) {
+    const absoluteIconPath = join(distRoot, iconPath);
+    assert.ok(existsSync(absoluteIconPath), `install icon dist/${iconPath} is missing`);
+    iconBytes += statSync(absoluteIconPath).size;
+  }
+
+  const worker = readDist("sw.js");
+  const shellPaths = new Set([...precacheUrls(worker), "sw.js"]);
+  let installShellBytes = 0;
+  for (const shellPath of shellPaths) {
+    const absoluteShellPath = join(distRoot, shellPath);
+    assert.ok(existsSync(absoluteShellPath), `install-shell file dist/${shellPath} is missing`);
+    installShellBytes += statSync(absoluteShellPath).size;
+  }
+  assert.ok(
+    iconBytes <= iconSetBudgetBytes,
+    `install icons use ${iconBytes} bytes; budget is ${iconSetBudgetBytes} bytes`,
+  );
+  assert.ok(
+    installShellBytes <= installShellBudgetBytes,
+    `install shell uses ${installShellBytes} bytes; budget is ${installShellBudgetBytes} bytes`,
+  );
 });
 
 test("built pages use existing hashed assets and no hand-maintained version queries", () => {

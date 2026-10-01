@@ -146,13 +146,13 @@
         </header>
         <section class="library-content">
           <p class="library-filter-help">Reading includes rereading · Other includes considering and dropped</p>
-          <div class="library-filters" id="library-filters" role="tablist" aria-label="Library status">
-            <button class="library-filter active" type="button" role="tab" aria-selected="true" data-library-filter="reading">Reading <span data-library-count="reading">0</span></button>
-            <button class="library-filter" type="button" role="tab" aria-selected="false" data-library-filter="plan_to_read">Plan <span data-library-count="plan_to_read">0</span></button>
-            <button class="library-filter" type="button" role="tab" aria-selected="false" data-library-filter="paused">Paused <span data-library-count="paused">0</span></button>
-            <button class="library-filter" type="button" role="tab" aria-selected="false" data-library-filter="completed">Completed <span data-library-count="completed">0</span></button>
-            <button class="library-filter" type="button" role="tab" aria-selected="false" data-library-filter="other">Other <span data-library-count="other">0</span></button>
-            <button class="library-filter" type="button" role="tab" aria-selected="false" data-library-filter="all">All <span data-library-count="all">0</span></button>
+          <div class="library-filters" id="library-filters" role="group" aria-label="Filter library by reading status">
+            <button class="library-filter active" type="button" aria-pressed="true" data-library-filter="reading">Reading <span data-library-count="reading">0</span></button>
+            <button class="library-filter" type="button" aria-pressed="false" data-library-filter="plan_to_read">Plan <span data-library-count="plan_to_read">0</span></button>
+            <button class="library-filter" type="button" aria-pressed="false" data-library-filter="paused">Paused <span data-library-count="paused">0</span></button>
+            <button class="library-filter" type="button" aria-pressed="false" data-library-filter="completed">Completed <span data-library-count="completed">0</span></button>
+            <button class="library-filter" type="button" aria-pressed="false" data-library-filter="other">Other <span data-library-count="other">0</span></button>
+            <button class="library-filter" type="button" aria-pressed="false" data-library-filter="all">All <span data-library-count="all">0</span></button>
           </div>
           <div id="library-body">
             <div class="cover-grid library-list" id="library-list" aria-live="polite"></div>
@@ -473,22 +473,22 @@
       <span class="download-status-dot" id="download-status-dot" aria-hidden="true"></span>
     </button>
 
-    <button class="download-status-backdrop" id="download-status-backdrop" type="button" aria-label="Close download details" hidden></button>
-    <section class="download-status-sheet" id="download-status-sheet" role="dialog" aria-modal="false" aria-labelledby="download-status-title" hidden>
+    <button class="download-status-backdrop" id="download-status-backdrop" type="button" tabindex="-1" aria-label="Close server buffer details" hidden></button>
+    <section class="download-status-sheet" id="download-status-sheet" role="dialog" aria-modal="true" aria-labelledby="download-status-title" aria-describedby="download-status-summary" tabindex="-1" hidden>
       <div class="sheet-handle" aria-hidden="true"></div>
       <div class="download-status-heading">
         <div>
-          <span class="download-status-eyebrow">Offline reading</span>
-          <h2 id="download-status-title">Chapter downloads</h2>
+          <span class="download-status-eyebrow">Suwayomi server</span>
+          <h2 id="download-status-title">Server chapter buffer</h2>
         </div>
-        <button class="sheet-close" id="download-status-close" type="button" aria-label="Close download details">×</button>
+        <button class="sheet-close" id="download-status-close" type="button" aria-label="Close server buffer details">×</button>
       </div>
       <p class="download-status-summary" id="download-status-summary">Checking the server chapter buffer…</p>
-      <div class="download-progress-track" role="progressbar" id="download-progress-track" aria-label="Chapter download progress" aria-valuemin="0" aria-valuemax="10" aria-valuenow="0">
+      <div class="download-progress-track" role="progressbar" id="download-progress-track" aria-label="Suwayomi server preparation progress" aria-valuemin="0" aria-valuemax="10" aria-valuenow="0">
         <span id="download-progress-bar"></span>
       </div>
-      <div class="download-status-stats" aria-label="Download totals">
-        <span><strong id="download-stat-downloaded">0</strong>Downloaded</span>
+      <div class="download-status-stats" aria-label="Server preparation totals">
+        <span><strong id="download-stat-downloaded">0</strong>On server</span>
         <span><strong id="download-stat-queued">0</strong>Queued</span>
         <span><strong id="download-stat-retrying">0</strong>Retrying</span>
         <span><strong id="download-stat-failed">0</strong>Failed</span>

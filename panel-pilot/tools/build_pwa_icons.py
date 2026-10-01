@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MASTER = ROOT / "artwork" / "panels-icon-master.png"
 ASSETS = ROOT / "public" / "assets"
 BACKGROUND = "#0b3f42"
+PALETTE_COLORS = 256
 
 
 def draw_icon(size: int, path: Path, *, maskable: bool = False) -> None:
@@ -21,7 +22,17 @@ def draw_icon(size: int, path: Path, *, maskable: bool = False) -> None:
     image = Image.new("RGBA", (size, size), BACKGROUND)
     offset = (size - artwork_size) // 2
     image.alpha_composite(artwork, (offset, offset))
-    image.convert("RGB").save(path, "PNG", optimize=True)
+    # The artwork is mostly flat ink and colour, so an indexed palette keeps the
+    # launcher image visually faithful while avoiding four large true-colour
+    # files in every service-worker install.  Pillow's median-cut quantizer is
+    # deterministic for identical source pixels and does not depend on optional
+    # native image libraries.
+    optimized = image.convert("RGB").quantize(
+        colors=PALETTE_COLORS,
+        method=Image.Quantize.MEDIANCUT,
+        dither=Image.Dither.FLOYDSTEINBERG,
+    )
+    optimized.save(path, "PNG", optimize=True, compress_level=9)
 
 
 if __name__ == "__main__":

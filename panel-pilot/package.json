@@ -1,6 +1,6 @@
 {
   "name": "panels",
-  "version": "0.111.3",
+  "version": "0.112.0",
   "private": true,
   "type": "module",
   "description": "A mobile-first Suwayomi manga reader with guided panel navigation.",

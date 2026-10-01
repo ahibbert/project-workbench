@@ -552,7 +552,7 @@ h2 {
   padding: 0.3rem 0.55rem;
   background: #fff;
   color: var(--muted);
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   font-weight: 780;
   white-space: nowrap;
 }
@@ -1018,7 +1018,7 @@ h2 {
   display: block;
   overflow: hidden;
   color: rgba(255, 255, 255, 0.82);
-  font-size: 0.67rem;
+  font-size: 0.75rem;
   font-weight: 750;
   line-height: 1.25;
   text-overflow: ellipsis;
@@ -1052,7 +1052,7 @@ h2 {
   padding: 0.16rem 0.42rem;
   background: rgba(31, 81, 82, 0.9);
   color: #fff;
-  font-size: 0.61rem;
+  font-size: 0.75rem;
   font-weight: 820;
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
@@ -1149,7 +1149,7 @@ h2 {
   min-height: 2.75rem;
   background: #f7f8f5;
   color: var(--muted);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
 }
 
 .manga-card.pinned-item .manga-cover-button {
@@ -1186,7 +1186,7 @@ h2 {
 .library-filter-help {
   margin: -0.15rem 0 0.55rem;
   color: var(--muted);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   line-height: 1.35;
 }
 
@@ -1202,7 +1202,7 @@ h2 {
   padding: 0.42rem 0.7rem;
   background: #f7f8f5;
   color: var(--muted);
-  font-size: 0.74rem;
+  font-size: 0.75rem;
   white-space: nowrap;
 }
 
@@ -1214,7 +1214,7 @@ h2 {
   border-radius: 999px;
   padding: 0.05rem 0.28rem;
   background: rgba(104, 113, 108, 0.12);
-  font-size: 0.65rem;
+  font-size: 0.75rem;
 }
 
 .library-filter.active {
@@ -1232,7 +1232,7 @@ h2 {
   background: #f7f8f5;
   color: var(--ink);
   font: inherit;
-  font-size: 0.7rem;
+  font-size: 0.75rem;
 }
 
 .recommendation-section {
@@ -1246,7 +1246,7 @@ h2 {
 .recommendation-note {
   margin: 0.15rem 0 0;
   color: var(--muted);
-  font-size: 0.72rem;
+  font-size: 0.75rem;
 }
 
 .recommendation-rail {
@@ -1275,7 +1275,7 @@ h2 {
   margin: 0.35rem 0 0;
   overflow: hidden;
   color: var(--muted);
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   line-height: 1.25;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -1285,7 +1285,7 @@ h2 {
   width: 100%;
   min-height: 2.75rem;
   margin-top: 0.4rem;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
 }
 
 .recommendation-context {
@@ -1316,7 +1316,7 @@ h2 {
 
 .recommendation-context span {
   color: var(--muted);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   line-height: 1.35;
 }
 
@@ -1838,7 +1838,7 @@ body.reader-focus {
 
 .network-status-banner button {
   flex: 0 0 auto;
-  min-height: 2.5rem;
+  min-height: 2.75rem;
   border-color: currentColor;
   background-color: #ffffff;
   color: inherit;
@@ -2312,7 +2312,7 @@ body.has-network-status.reader-focus .reader-topbar {
   padding: 0.25rem 0.48rem;
   background: var(--device-state-background);
   color: var(--device-state-color);
-  font-size: 0.62rem;
+  font-size: 0.75rem;
   font-weight: 780;
   line-height: 1.05;
   white-space: nowrap;
@@ -2852,8 +2852,8 @@ body.has-network-status.reader-focus .reader-topbar {
   border-radius: 12px;
   padding: 0.25rem;
   background: transparent;
-  color: #727b76;
-  font-size: 0.66rem;
+  color: #5f6863;
+  font-size: 0.75rem;
 }
 
 .app-nav-button svg {
@@ -2903,7 +2903,7 @@ body.has-network-status.reader-focus .reader-topbar {
   display: block;
   margin-bottom: 0.13rem;
   color: var(--accent-2);
-  font-size: 0.58rem;
+  font-size: 0.75rem;
   font-weight: 820;
   text-transform: uppercase;
 }
@@ -2914,7 +2914,7 @@ body.has-network-status.reader-focus .reader-topbar {
 
 .reading-miniplayer .reader-resume-copy small {
   color: var(--muted);
-  font-size: 0.66rem;
+  font-size: 0.75rem;
 }
 
 .miniplayer-action {
@@ -2951,7 +2951,7 @@ body.reader-focus .reading-miniplayer {
   right: max(0.75rem, env(safe-area-inset-right), calc((100vw - 50rem) / 2 + 0.75rem));
   bottom: var(--app-nav-stack-bottom);
   z-index: 20;
-  min-height: 2.45rem;
+  min-height: 2.75rem;
   max-width: min(19rem, calc(100vw - max(0.75rem, env(safe-area-inset-left)) - max(0.75rem, env(safe-area-inset-right))));
   display: inline-flex;
   align-items: center;
@@ -3005,13 +3005,13 @@ body.has-reading-miniplayer .download-status-button {
 }
 
 .download-status-copy strong {
-  font-size: 0.7rem;
+  font-size: 0.75rem;
 }
 
 .download-status-copy small {
   margin-top: 0.12rem;
   color: var(--muted);
-  font-size: 0.61rem;
+  font-size: 0.75rem;
   font-weight: 680;
 }
 
@@ -3082,7 +3082,7 @@ body.has-reading-miniplayer .download-status-button {
 
 .download-status-eyebrow {
   color: var(--accent-2);
-  font-size: 0.64rem;
+  font-size: 0.75rem;
   font-weight: 820;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -3094,8 +3094,8 @@ body.has-reading-miniplayer .download-status-button {
 }
 
 .sheet-close {
-  width: 2.5rem;
-  min-height: 2.5rem;
+  width: 2.75rem;
+  min-height: 2.75rem;
   border: 0;
   border-radius: 999px;
   padding: 0;
@@ -3140,7 +3140,7 @@ body.has-reading-miniplayer .download-status-button {
   padding: 0.48rem 0.25rem;
   background: var(--panel-strong);
   color: var(--muted);
-  font-size: 0.58rem;
+  font-size: 0.75rem;
   text-align: center;
 }
 
@@ -3193,15 +3193,45 @@ body.has-reading-miniplayer .download-status-button {
   white-space: nowrap;
 }
 
-.download-chapter-copy strong { font-size: 0.72rem; }
-.download-chapter-copy small { color: var(--muted); font-size: 0.61rem; }
+.download-chapter-copy strong { font-size: 0.75rem; }
+.download-chapter-copy small { color: var(--muted); font-size: 0.75rem; }
+
+body.download-sheet-open {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+.kicker,
+.test-metric span,
+.test-expected span,
+.version-note,
+.manga-card-actions button,
+.manga-card-more summary,
+.setup-guide li,
+.setup-guide li > span,
+.panel-thumb span,
+.reader-resume-fallback,
+.reader-resume-copy strong,
+.reader-resume-copy small,
+.header-action,
+.section-count,
+.source-filter,
+.chapter-filter,
+.detail-source,
+.device-storage-meter-copy,
+.device-storage-meter-copy strong,
+.device-storage-item-status,
+.settings-view .version-note,
+.reader-stats {
+  font-size: 0.75rem;
+}
 
 .download-chapter-badge {
   border-radius: 999px;
   padding: 0.2rem 0.42rem;
   background: var(--panel-strong);
   color: var(--muted);
-  font-size: 0.58rem;
+  font-size: 0.75rem;
   font-weight: 780;
   text-transform: capitalize;
 }
@@ -3212,7 +3242,7 @@ body.has-reading-miniplayer .download-status-button {
   padding: 0.62rem 0.7rem;
   background: #fff1ef;
   color: #8d3e36;
-  font-size: 0.7rem;
+  font-size: 0.75rem;
 }
 
 body.reader-active .download-status-button,
@@ -3486,7 +3516,7 @@ body.has-reading-miniplayer .app-toast {
 
   .manga-card-actions button,
   .manga-card-more summary {
-    font-size: 0.66rem;
+    font-size: 0.75rem;
   }
 
   #chapter-list .result-item {
