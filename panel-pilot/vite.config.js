@@ -49,8 +49,8 @@ export default defineConfig({
       registerType: "prompt",
       includeManifestIcons: false,
       manifest: {
-        name: "Panel Pilot",
-        short_name: "Panel Pilot",
+        name: "Panels",
+        short_name: "Panels",
         description:
           "A mobile-first Suwayomi manga reader with guided panel navigation, discovery, and reading progress sync.",
         id: "/",

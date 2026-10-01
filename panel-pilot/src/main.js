@@ -829,7 +829,7 @@ function showRestoredNetworkStatus() {
   setNetworkStatus(
     "restored",
     "Connection restored",
-    "Panel Pilot is connected and queued progress can sync again.",
+    "Panels is connected and queued progress can sync again.",
     { hideAfterMs: 3500 }
   );
 }
@@ -1191,7 +1191,7 @@ function persistMangaBakaOutbox() {
       entries: state.mangabakaOutbox,
     }));
   } catch {
-    // The Panel Pilot library still retains the last known state.
+    // The Panels library still retains the last known state.
   }
 }
 
@@ -1423,7 +1423,7 @@ function handleAuthenticationResponse(response, payload) {
   const login = payload?.login || "/login";
   const next = `${location.pathname}${location.search}${location.hash}`;
   location.assign(`${login}?next=${encodeURIComponent(next)}`);
-  throw new Error("Your Panel Pilot session expired. Redirecting to sign in.");
+  throw new Error("Your Panels session expired. Redirecting to sign in.");
 }
 
 function appUrl(path) {
@@ -2347,12 +2347,12 @@ function emptyLine(text) {
 }
 
 function coverInitials(title) {
-  const words = String(title || "Panel Pilot").trim().split(/\s+/).filter(Boolean);
+  const words = String(title || "Panels").trim().split(/\s+/).filter(Boolean);
   return (words.slice(0, 2).map((word) => word[0]).join("") || "PP").toUpperCase();
 }
 
 function coverHue(title) {
-  return [...String(title || "Panel Pilot")].reduce((value, character) => ((value * 31) + character.charCodeAt(0)) % 360, 204);
+  return [...String(title || "Panels")].reduce((value, character) => ((value * 31) + character.charCodeAt(0)) % 360, 204);
 }
 
 function normalizeMangaCoverUrl(url) {
@@ -2404,7 +2404,7 @@ function createCoverButton(item, content) {
   overlay.className = "manga-cover-overlay";
   const eyebrow = document.createElement("span");
   eyebrow.className = "manga-cover-eyebrow";
-  eyebrow.textContent = content.eyebrow || "Panel Pilot";
+  eyebrow.textContent = content.eyebrow || "Panels";
   const title = document.createElement("strong");
   title.className = "manga-cover-title";
   title.textContent = content.title || "Untitled";
@@ -2751,8 +2751,8 @@ function updateReaderNav() {
   if (!hasResume) return;
   el.navReaderLabel.textContent = title;
   el.navReaderTitle.textContent = [item.chapterTitle, item.progressLabel].filter(Boolean).join(" · ") || "Resume reading";
-  el.navReaderFallback.textContent = coverInitials(item?.mangaTitle || "Panel Pilot");
-  el.navReaderCover.style.setProperty("--cover-hue", String(coverHue(item?.mangaTitle || "Panel Pilot")));
+  el.navReaderFallback.textContent = coverInitials(item?.mangaTitle || "Panels");
+  el.navReaderCover.style.setProperty("--cover-hue", String(coverHue(item?.mangaTitle || "Panels")));
   el.navReader.setAttribute("aria-label", `Resume ${title}${item.progressLabel ? `, ${item.progressLabel}` : ""}`);
   el.navReader.title = `${title}${item.progressLabel ? ` — ${item.progressLabel}` : ""}`;
 
@@ -2985,7 +2985,7 @@ async function syncSuwayomiLibrary({ announce = false } = {}) {
   saveLibraryItems();
   renderLibrary();
   if (announce) {
-    setSyncStatus("Synced", `${mangas.length} Suwayomi library title${mangas.length === 1 ? "" : "s"} available in Panel Pilot.`, "good");
+    setSyncStatus("Synced", `${mangas.length} Suwayomi library title${mangas.length === 1 ? "" : "s"} available in Panels.`, "good");
     showToast("Library refreshed from Suwayomi.");
   }
   return mangas.length;
@@ -7309,19 +7309,19 @@ function renderInstallExperience(message = "") {
 
   if (isInstalledApp()) {
     el.appInstallState.textContent = "Installed";
-    el.appInstallNote.textContent = "Panel Pilot is running as an installed app on this device.";
+    el.appInstallNote.textContent = "Panels is running as an installed app on this device.";
     return;
   }
 
   if (installRequestPending) {
     el.appInstallState.textContent = "Installing…";
-    el.appInstallNote.textContent = message || "Finish the browser installation to add Panel Pilot to this device.";
+    el.appInstallNote.textContent = message || "Finish the browser installation to add Panels to this device.";
     return;
   }
 
   if (deferredInstallPrompt) {
     el.appInstallState.textContent = "Ready to install";
-    el.appInstallNote.textContent = message || "Install Panel Pilot for a full-screen launcher and app-like experience.";
+    el.appInstallNote.textContent = message || "Install Panels for a full-screen launcher and app-like experience.";
     el.installApp.hidden = false;
     return;
   }
@@ -7337,7 +7337,7 @@ function renderInstallExperience(message = "") {
 
   if (!window.isSecureContext) {
     el.appInstallState.textContent = "HTTPS required";
-    el.appInstallNote.textContent = "Open Panel Pilot over HTTPS before installing it on this device.";
+    el.appInstallNote.textContent = "Open Panels over HTTPS before installing it on this device.";
     return;
   }
 
@@ -7386,7 +7386,7 @@ async function promptAppInstall() {
     const promptResult = await installPrompt.prompt();
     const choice = promptResult?.outcome ? promptResult : await installPrompt.userChoice;
     if (choice?.outcome === "accepted") {
-      renderInstallExperience("Panel Pilot is being added to this device.");
+      renderInstallExperience("Panels is being added to this device.");
       return;
     }
     installRequestPending = false;
@@ -7403,7 +7403,7 @@ function setAppUpdateMessage(message) {
 
 function showAppUpdate() {
   appUpdateReady = true;
-  setAppUpdateMessage(`Update ready for Panel Pilot ${appVersion}. Apply it when you are ready.`);
+  setAppUpdateMessage(`Update ready for Panels ${appVersion}. Apply it when you are ready.`);
   if (el.appUpdate) {
     el.appUpdate.hidden = false;
     el.appUpdate.disabled = false;
@@ -7493,7 +7493,7 @@ async function checkForAppUpdate() {
     } else if (registration.installing) {
       setAppUpdateMessage("Downloading an app update…");
     } else if (!appUpdateReady) {
-      setAppUpdateMessage(`Panel Pilot ${appVersion} is up to date.`);
+      setAppUpdateMessage(`Panels ${appVersion} is up to date.`);
     }
   } catch (error) {
     setAppUpdateMessage(`Update check failed: ${error.message}. Online reading still works.`);
@@ -7515,7 +7515,7 @@ async function registerPanelPilotServiceWorker() {
     return;
   }
 
-  setAppUpdateMessage(`Preparing update checks for Panel Pilot ${appVersion}…`);
+  setAppUpdateMessage(`Preparing update checks for Panels ${appVersion}…`);
 
   navigator.serviceWorker.addEventListener("controllerchange", () => {
     if (!serviceWorkerReloadPending || serviceWorkerReloaded) return;
@@ -7537,14 +7537,14 @@ async function registerPanelPilotServiceWorker() {
         if (!registration) return;
         observeServiceWorkerRegistration(registration);
         if (!registration.waiting && !registration.installing) {
-          setAppUpdateMessage(`Panel Pilot ${appVersion} is up to date.`);
+          setAppUpdateMessage(`Panels ${appVersion} is up to date.`);
         }
         registration.update().catch((error) => {
           setAppUpdateMessage(`Automatic update check failed: ${error.message}. Online reading still works.`);
         });
       },
       onRegisterError(error) {
-        console.warn("Panel Pilot service worker registration failed; continuing online.", error);
+        console.warn("Panels service worker registration failed; continuing online.", error);
         setAppUpdateMessage("Update checks are unavailable because registration failed. Online reading still works.");
       },
     });
@@ -7552,7 +7552,7 @@ async function registerPanelPilotServiceWorker() {
     const registration = await navigator.serviceWorker.getRegistration("/");
     if (registration) observeServiceWorkerRegistration(registration);
   } catch (error) {
-    console.warn("Panel Pilot service worker registration failed; continuing online.", error);
+    console.warn("Panels service worker registration failed; continuing online.", error);
     setAppUpdateMessage(`Update checks are unavailable: ${error.message}. Online reading still works.`);
   }
 }

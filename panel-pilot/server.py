@@ -66,7 +66,7 @@ def resolve_static_root():
             source = "the explicitly enabled development source fallback"
         else:
             raise RuntimeError(
-                "Panel Pilot's production frontend build is missing. Run `npm ci` and "
+                "Panels' production frontend build is missing. Run `npm ci` and "
                 "`npm run build`, set PANEL_PILOT_STATIC_ROOT to a built frontend, or "
                 "set PANEL_PILOT_ALLOW_SOURCE_STATIC=1 for development only."
             )
@@ -75,7 +75,7 @@ def resolve_static_root():
     missing = [name for name in ("index.html", "login.html") if not (root / name).is_file()]
     if missing:
         raise RuntimeError(
-            f"Invalid Panel Pilot static root from {source}: {root}. "
+            f"Invalid Panels static root from {source}: {root}. "
             f"Missing required build output: {', '.join(missing)}."
         )
     return root
@@ -1570,7 +1570,7 @@ def main():
     DOWNLOAD_BUFFER_MANAGER.start()
     handler = lambda *args, **kwargs: PanelPilotHandler(*args, directory=static_root, **kwargs)
     server = ThreadingHTTPServer(("0.0.0.0", port), handler)
-    print(f"Panel Pilot server running on http://0.0.0.0:{port} from {static_root}", flush=True)
+    print(f"Panels server running on http://0.0.0.0:{port} from {static_root}", flush=True)
     server.serve_forever()
 
 

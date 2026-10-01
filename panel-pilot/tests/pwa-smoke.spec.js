@@ -25,6 +25,8 @@ test("the built application loads without browser runtime errors", async ({ page
 
   const response = await page.goto("/", { waitUntil: "networkidle" });
   expect(response?.ok()).toBeTruthy();
+  await expect(page).toHaveTitle("Panels");
+  await expect(page.locator(".kicker").first()).toHaveText("Panels");
   await expect(page.locator("#library-view")).toHaveClass(/\bactive\b/);
   await expect.poll(() => page.evaluate(() => typeof window.PanelPilot?.detectPanels)).toBe("function");
 

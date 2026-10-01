@@ -553,7 +553,7 @@ function exportReport() {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = "panel-pilot-detection-report.json";
+  link.download = "panels-detection-report.json";
   link.click();
   URL.revokeObjectURL(url);
 }

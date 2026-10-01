@@ -1,11 +1,11 @@
-# Panel Pilot
+# Panels
 
 A static PWA prototype for a Suwayomi-backed manga reader with panel-by-panel
 guided reading.
 
 ## Run locally
 
-Panel Pilot requires Node 22.12 or newer. Install the pinned frontend dependencies,
+Panels requires Node 22.12 or newer. Install the pinned frontend dependencies,
 build the PWA, and then start the project server:
 
 ```sh
@@ -53,13 +53,13 @@ npm test
 ## Install and update
 
 Open **Settings → App** to manage the PWA on the current device. Browsers that
-support a programmatic install prompt show an **Install Panel Pilot** button.
-On iPhone and iPad, open Panel Pilot in Safari, choose **Share → Add to Home
+support a programmatic install prompt show an **Install Panels** button.
+On iPhone and iPad, open Panels in Safari, choose **Share → Add to Home
 Screen**, and then tap **Add**.
 
-Panel Pilot checks for application updates without interrupting the reader. A
+Panels checks for application updates without interrupting the reader. A
 waiting update appears both in Settings and in the global **Update ready**
-control. Applying it is always explicit: Panel Pilot first persists the current
+control. Applying it is always explicit: Panels first persists the current
 reading position and sync outboxes, activates the waiting worker, and reloads
 once. **Check for updates** performs an on-demand check; a failed check does not
 prevent online reading.
@@ -109,12 +109,12 @@ panel-test.html?source=suwayomi&mangaId=1916&chapterId=4016&autorun=1
 ## Suwayomi flow
 
 1. Start Suwayomi Server, usually at `http://localhost:4567`.
-2. Open Panel Pilot and keep the server URL set to that address.
+2. Open Panels and keep the server URL set to that address.
 3. Click `Test`.
 4. Click `Sources` to load installed source extensions.
 5. Search a source, choose a manga, fetch chapters, then read a chapter.
 
-The browser talks to Suwayomi through Panel Pilot's local
+The browser talks to Suwayomi through Panels' local
 `/api/suwayomi/graphql` proxy. This matters on a phone: `localhost:4567` means
 the PC from the server's point of view, not the phone. The integration uses the
 same core operations used by the official WebUI:
@@ -124,15 +124,15 @@ same core operations used by the official WebUI:
 - `fetchChapters`
 - `fetchChapterPages`
 
-Panel Pilot also writes page progress and completed chapters back to Suwayomi.
+Panels also writes page progress and completed chapters back to Suwayomi.
 It refreshes Suwayomi's library on startup and marks a manga as in-library when
 you start reading it, so Suwayomi-backed titles use one shared library across
-Panel Pilot and Tachimanga.
-While reading, it asks a persistent Panel Pilot server queue to keep the current
+Panels and Tachimanga.
+While reading, it asks a persistent Panels server queue to keep the current
 and next 10 chapters downloaded in Suwayomi. Resume opens the saved chapter and
 page before refreshing the full chapter list, upcoming pages receive a six-page
 preparation lead, and next-chapter work waits until that lead is ready. Manga
-images are fetched for model inference directly between the Panel Pilot and
+images are fetched for model inference directly between the Panels and
 Suwayomi servers rather than being uploaded again by the phone. The server
 downloads one chapter at a time, independently backs off failed chapters, and
 moves repeatedly failing work aside so one source cannot stall the queue; it
@@ -140,7 +140,7 @@ keeps working after the PWA closes or the server restarts. Progress updates use
 a durable browser outbox and model results are cached for repeat visits.
 To share that progress with Tachimanga, enable **Enhanced Tracking → Suwayomi**
 in Tachimanga. Tachimanga can then use MangaBaka as a regular tracker; connect
-MangaBaka in Tachimanga's Tracking settings. Panel Pilot's Settings page has a
+MangaBaka in Tachimanga's Tracking settings. Panels' Settings page has a
 manual sync button, and progress is also sent automatically while reading.
 
 Enhanced Tracking only applies to entries opened through Tachimanga's Suwayomi
@@ -158,19 +158,19 @@ password managers can fill it. Sessions last 30 days by default.
 For a stable session signing key across password changes or multiple replicas,
 set `PANEL_PILOT_SESSION_SECRET` to a long random value. You can optionally set
 `PANEL_PILOT_SESSION_MAX_AGE` in seconds. TLS remains the responsibility of the
-reverse proxy; do not add a second Basic Auth gate in front of Panel Pilot.
+reverse proxy; do not add a second Basic Auth gate in front of Panels.
 
 ## Manga panel model
 
 The production compose stack includes a private CPU-only ONNX service for manga
 panel detection. It is used only in manga mode; comic and webtoon behavior is
 unchanged. The service downloads a checksum-pinned 10 MB model during its image
-build. If the service is unavailable, Panel Pilot automatically uses the local
+build. If the service is unavailable, Panels automatically uses the local
 browser detector, so reading still works.
 
 The model and its Manga109-s training-data attribution are documented in
 [`ml/MODEL-NOTICE.md`](ml/MODEL-NOTICE.md). Because the weights are AGPL-3.0,
-keep the corresponding Panel Pilot source available to anyone using the hosted
+keep the corresponding Panels source available to anyone using the hosted
 service.
 
 ## Current limitations

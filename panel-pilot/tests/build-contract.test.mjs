@@ -53,6 +53,8 @@ test("the production directory contains the complete multi-page app", () => {
   }
 
   const manifest = JSON.parse(readDist("manifest.webmanifest"));
+  assert.equal(manifest.name, "Panels", "the installed app name must match the released brand");
+  assert.equal(manifest.short_name, "Panels", "the launcher name must match the released brand");
   assert.equal(
     new URL(manifest.start_url, "https://panel-pilot.invalid").pathname,
     "/",
@@ -66,7 +68,14 @@ test("the production directory contains the complete multi-page app", () => {
   for (const icon of manifest.icons) {
     const iconPath = normalizedBuildPath(icon.src);
     assert.ok(iconPath, "manifest icon has an empty src");
-    assert.ok(existsSync(join(distRoot, iconPath)), `manifest icon dist/${iconPath} is missing`);
+    const absoluteIconPath = join(distRoot, iconPath);
+    assert.ok(existsSync(absoluteIconPath), `manifest icon dist/${iconPath} is missing`);
+    const iconBytes = readFileSync(absoluteIconPath);
+    assert.equal(iconBytes.subarray(1, 4).toString("ascii"), "PNG", `${iconPath} is not a PNG`);
+    const [expectedWidth, expectedHeight] = icon.sizes.split("x").map(Number);
+    assert.equal(iconBytes.readUInt32BE(16), expectedWidth, `${iconPath} has the wrong width`);
+    assert.equal(iconBytes.readUInt32BE(20), expectedHeight, `${iconPath} has the wrong height`);
+    assert.ok(statSync(absoluteIconPath).size > 10_000, `${iconPath} does not contain the released artwork`);
   }
 });
 

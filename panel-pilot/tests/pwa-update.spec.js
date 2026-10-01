@@ -40,7 +40,7 @@ function startMigrationServer({ failWorker = false } = {}) {
 
     if (url.pathname === "/legacy.html") {
       response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      response.end("<!doctype html><title>Panel Pilot legacy migration fixture</title>");
+      response.end("<!doctype html><title>Panels legacy migration fixture</title>");
       return;
     }
 

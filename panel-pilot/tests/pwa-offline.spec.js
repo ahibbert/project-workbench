@@ -235,7 +235,7 @@ test("online-only and excluded routes never receive the offline app shell", asyn
       const result = await offlineNavigationResult(context, `${fixture.origin}${pathname}`);
       expect(result.ok, `${pathname} unexpectedly resolved successfully offline`).toBe(false);
       expect(result.body).not.toContain('id="library-view"');
-      expect(result.body).not.toContain("Panel Pilot — Guided Reader");
+      expect(result.body).not.toContain("Panels — Guided Reader");
     }
   } finally {
     await context.setOffline(false);
