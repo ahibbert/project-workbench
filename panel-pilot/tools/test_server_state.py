@@ -60,6 +60,7 @@ class LibraryMergeTests(unittest.TestCase):
             "mangaTitle": "Kingdom",
             "libraryStatus": "reading",
             "statusExplicit": True,
+            "mediaFormat": "comic",
             "started": True,
             "mangabakaId": 1797,
             "mangabakaTitle": "Kingdom",
@@ -71,6 +72,7 @@ class LibraryMergeTests(unittest.TestCase):
 
         self.assertEqual(cleaned[0]["libraryStatus"], "reading")
         self.assertTrue(cleaned[0]["statusExplicit"])
+        self.assertEqual(cleaned[0]["mediaFormat"], "comic")
         self.assertTrue(cleaned[0]["started"])
         self.assertEqual(cleaned[0]["mangabakaId"], 1797)
         self.assertEqual(cleaned[0]["mangabakaMatchSource"], "exact-title")

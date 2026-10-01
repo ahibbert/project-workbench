@@ -1174,13 +1174,18 @@ h2 {
   padding-inline: 0.1rem;
 }
 
-.library-filters {
+.library-filters,
+.library-format-filters {
   display: flex;
   gap: 0.45rem;
   margin: 0.1rem 0 0.9rem;
   padding-bottom: 0.15rem;
   overflow-x: auto;
   scrollbar-width: none;
+}
+
+.library-format-filters {
+  margin-bottom: 0.65rem;
 }
 
 .library-filter-help {
@@ -1190,11 +1195,13 @@ h2 {
   line-height: 1.35;
 }
 
-.library-filters::-webkit-scrollbar {
+.library-filters::-webkit-scrollbar,
+.library-format-filters::-webkit-scrollbar {
   display: none;
 }
 
-.library-filter {
+.library-filter,
+.library-format-filter {
   min-height: 2.75rem;
   flex: 0 0 auto;
   border-color: var(--line);
@@ -1217,13 +1224,15 @@ h2 {
   font-size: 0.75rem;
 }
 
-.library-filter.active {
+.library-filter.active,
+.library-format-filter.active {
   border-color: var(--accent-2);
   background: #e5f1f0;
   color: var(--ink);
 }
 
-.library-status-select {
+.library-status-select,
+.library-format-select {
   width: 100%;
   min-height: 2.75rem;
   border: 1px solid var(--line);
@@ -1233,6 +1242,10 @@ h2 {
   color: var(--ink);
   font: inherit;
   font-size: 0.75rem;
+}
+
+.library-format-select {
+  margin-bottom: 0.45rem;
 }
 
 .recommendation-section {

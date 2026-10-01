@@ -120,6 +120,18 @@ reset stats. Resetting stats does not alter the Suwayomi library or reading
 progress. See the [privacy and data-flow notes](docs/PRIVACY.md) for storage
 details.
 
+## Manga, comics, and webtoons
+
+The Library can be filtered by format independently of reading status. Panels
+infers a format for existing titles from their source and last reader mode, and
+the **More** menu on each title lets you correct it permanently. The saved
+format chooses the initial reader mode without preventing temporary mode
+changes while reading.
+
+Manga and webtoons remain eligible for MangaBaka matching and progress sync.
+Titles marked as comics are excluded; changing a matched title to Comic also
+removes its local MangaBaka link and any queued update for that series.
+
 ### Apple platform support
 
 The supported baseline is iOS/iPadOS 16.4 for Home Screen installation and

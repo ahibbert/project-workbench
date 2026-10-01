@@ -45,6 +45,7 @@ const seededLibrary = [
     pageIndex: 2,
     panelIndex: 1,
     progressLabel: "Page 3, panel 2",
+    mediaFormat: "comic",
     libraryStatus: "reading",
     statusExplicit: true,
     started: true,
@@ -59,6 +60,11 @@ const seededLibrary = [
     sourceLabel: source.displayName,
     thumbnailUrl: cover,
     serverUrl,
+    mediaFormat: "manga",
+    mangabakaId: 8802,
+    mangabakaTitle: "Planned Fixture",
+    mangabakaMatchSource: "exact-title",
+    mangabakaAccountKey: "fixture-account",
     libraryStatus: "plan_to_read",
     statusExplicit: true,
     started: false,
@@ -387,6 +393,48 @@ test("library filters expose truthful pressed-button semantics and work from the
     await expect(button).toHaveAttribute("aria-pressed", pressed);
     await expect(button).not.toHaveAttribute("role", "tab");
   }
+});
+
+test("library formats filter titles, persist corrections, and detach comics from MangaBaka", async ({ page }) => {
+  await installPolishFixture(page);
+  await page.goto("/");
+
+  const allFormats = page.locator('[data-library-format-filter="all"]');
+  const manga = page.locator('[data-library-format-filter="manga"]');
+  const comics = page.locator('[data-library-format-filter="comic"]');
+  const webtoons = page.locator('[data-library-format-filter="webtoon"]');
+  await comics.click();
+  await expect(comics).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#library-list")).toContainText("Reading Fixture");
+  await expect(page.locator("#library-list")).not.toContainText("Planned Fixture");
+
+  await manga.click();
+  await page.locator('[data-library-filter="all"]').click();
+  await expect(page.locator("#library-list")).toContainText("Planned Fixture");
+  await expect(page.locator("#library-list")).not.toContainText("Reading Fixture");
+
+  const planned = page.locator(".library-card").filter({ hasText: "Planned Fixture" });
+  await planned.locator(".manga-card-more summary").click();
+  await planned.locator(".library-format-select").selectOption("comic");
+  await expect(page.locator("#library-list")).not.toContainText("Planned Fixture");
+  await comics.click();
+  await expect(page.locator("#library-list")).toContainText("Planned Fixture");
+  await expect.poll(() => page.evaluate(() => {
+    const items = JSON.parse(localStorage.getItem("panel-pilot-library") || "[]");
+    return items.find((item) => item.mangaId === 802);
+  })).toMatchObject({ mediaFormat: "comic", panelMode: "comic" });
+  const saved = await page.evaluate(() => {
+    const items = JSON.parse(localStorage.getItem("panel-pilot-library") || "[]");
+    return items.find((item) => item.mangaId === 802);
+  });
+  expect(saved).not.toHaveProperty("mangabakaId");
+  expect(await page.evaluate(() => ({
+    comic: window.PanelPilot.mangaBakaEligibleLibraryItem({ mediaFormat: "comic" }),
+    manga: window.PanelPilot.mangaBakaEligibleLibraryItem({ mediaFormat: "manga" }),
+    webtoon: window.PanelPilot.mangaBakaEligibleLibraryItem({ mediaFormat: "webtoon" }),
+  }))).toEqual({ comic: false, manga: true, webtoon: true });
+  await expect(allFormats).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator("#library-format-filters")).toHaveAccessibleName(/library.*format/i);
 });
 
 test("direct library actions repaint immediately instead of leaving an in-use card stale", async ({ page }) => {

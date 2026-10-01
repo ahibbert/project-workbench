@@ -292,6 +292,7 @@ function descriptorMetadata(descriptor) {
     chapterId: serializableValue(descriptor.chapterId), mangaId: serializableValue(descriptor.mangaId),
     title: String(descriptor.title ?? descriptor.mangaTitle ?? ""), sourceId: serializableValue(descriptor.sourceId),
     sourceLabel: String(descriptor.sourceLabel ?? ""), thumbnailUrl: String(descriptor.thumbnailUrl ?? ""),
+    mediaFormat: ["manga", "comic", "webtoon"].includes(descriptor.mediaFormat) ? descriptor.mediaFormat : "manga",
     chapterTitle: String(descriptor.chapterTitle ?? ""), chapterNumber: serializableValue(descriptor.chapterNumber ?? descriptor.number),
     chapterOrder: serializableValue(descriptor.chapterOrder ?? descriptor.order), scanlator: String(descriptor.scanlator ?? ""), pageUrls,
   };

@@ -2237,7 +2237,7 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             return []
         cleaned = []
         seen = set()
-        text_fields = ("mangaTitle", "sourceId", "sourceLabel", "chapterTitle", "panelMode", "readingDirection", "progressLabel", "updatedAt", "libraryStatus", "mangabakaTitle", "mangabakaMatchSource", "mangabakaAccountKey")
+        text_fields = ("mangaTitle", "sourceId", "sourceLabel", "chapterTitle", "panelMode", "mediaFormat", "readingDirection", "progressLabel", "updatedAt", "libraryStatus", "mangabakaTitle", "mangabakaMatchSource", "mangabakaAccountKey")
         number_fields = ("mangaId", "chapterId", "pageIndex", "panelIndex", "mangabakaId")
         bool_fields = ("pinned", "hidden", "isNsfw", "statusExplicit", "suwayomiLibrary", "started")
         for item in items:
@@ -2255,6 +2255,8 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
                 value = item.get(field)
                 if isinstance(value, (str, int, float)):
                     output[field] = str(value)[:300]
+            if output.get("mediaFormat") not in ("manga", "comic", "webtoon"):
+                output.pop("mediaFormat", None)
             server_url = sanitize_library_server_url(item.get("serverUrl"))
             if server_url:
                 output["serverUrl"] = server_url[:300]
