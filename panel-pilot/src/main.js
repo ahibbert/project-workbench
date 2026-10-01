@@ -264,6 +264,9 @@ const el = {
   redetect: document.querySelector("#redetect"),
   redetectChapter: document.querySelector("#redetect-chapter"),
   reportBadPanels: document.querySelector("#report-bad-panels"),
+  saveMoment: document.querySelector("#save-moment"),
+  momentsGrid: document.querySelector("#moments-grid"),
+  momentsCount: document.querySelector("#moments-count"),
   mangaMode: document.querySelector("#manga-mode"),
   comicMode: document.querySelector("#comic-mode"),
   webtoonMode: document.querySelector("#webtoon-mode"),
@@ -430,6 +433,8 @@ const state = {
   scanlatorFilter: "auto",
   currentManga: null,
   libraryItems: [],
+  moments: [],
+  momentsLoaded: false,
   librarySavePromise: null,
   librarySavePending: false,
   pendingResume: null,
@@ -963,7 +968,7 @@ async function resetReadingStats() {
 }
 
 function isAppView(view) {
-  return view === "library" || view === "browse" || view === "stats" || view === "reader" || view === "settings";
+  return view === "library" || view === "browse" || view === "moments" || view === "stats" || view === "reader" || view === "settings";
 }
 
 function navigationHash(view, detail = false) {
@@ -1064,6 +1069,7 @@ function setActiveView(view, options = {}) {
   if (view === "reader") setDownloadStatusSheet(false);
   if (view === "settings") void refreshDeviceStorage();
   if (view === "stats") void refreshReadingStats();
+  if (view === "moments") void loadMoments();
 
   if (view === "reader") {
     setReaderFocus(isReaderFocusAvailable());
@@ -1633,6 +1639,16 @@ async function postLocalJson(path, body) {
   }
   if (payload.error) {
     throw new Error(payload.error);
+  }
+  return payload;
+}
+
+async function deleteLocalJson(path) {
+  const response = await fetch(appUrl(path), { method: "DELETE" });
+  const payload = await response.json().catch(() => null);
+  handleAuthenticationResponse(response, payload);
+  if (!response.ok || !payload) {
+    throw new Error(payload?.error || `Local request failed with HTTP ${response.status}`);
   }
   return payload;
 }
@@ -10365,6 +10381,209 @@ async function redetectChapterPanels() {
   }
 }
 
+function momentCaptureRect(page) {
+  const panel = currentPanel() || fullPagePanel(page.naturalWidth, page.naturalHeight);
+  const bubbleAware = state.panelMode === "manga" && state.bubbleAwareFraming
+    ? bubbleAwarePanelRect(panel, page.bubbles, page.panels)
+    : panel;
+  return expandPanelRect(bubbleAware, Math.min(0.08, state.panelPadding / 100));
+}
+
+function blobDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => resolve(String(reader.result || "")), { once: true });
+    reader.addEventListener("error", () => reject(reader.error || new Error("Could not encode moment image.")), { once: true });
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function makeMomentCapture(page) {
+  const rect = momentCaptureRect(page);
+  const sourceWidth = Math.max(1, page.naturalWidth || page.image?.naturalWidth || page.image?.width || 1);
+  const sourceHeight = Math.max(1, page.naturalHeight || page.image?.naturalHeight || page.image?.height || 1);
+  const x = clamp(Math.floor(rect.x * sourceWidth), 0, sourceWidth - 1);
+  const y = clamp(Math.floor(rect.y * sourceHeight), 0, sourceHeight - 1);
+  const width = Math.max(1, Math.min(sourceWidth - x, Math.ceil(rect.w * sourceWidth)));
+  const height = Math.max(1, Math.min(sourceHeight - y, Math.ceil(rect.h * sourceHeight)));
+  const maxPixels = 24_000_000;
+  const scale = Math.min(1, 6000 / width, 6000 / height, Math.sqrt(maxPixels / (width * height)));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(width * scale));
+  canvas.height = Math.max(1, Math.round(height * scale));
+  const context = canvas.getContext("2d", { alpha: false });
+  context.fillStyle = "#fff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+
+  if (page.stripImages?.length) {
+    const cropEnd = y + height;
+    for (let index = 0; index < page.stripImages.length; index += 1) {
+      const segment = page.stripImages[index];
+      const intersectionStart = Math.max(y, segment.y);
+      const intersectionEnd = Math.min(cropEnd, segment.y + segment.height);
+      if (intersectionEnd <= intersectionStart) continue;
+      const residentSource = page.sourceImages?.[index]?.image || null;
+      const image = residentSource || await loadImage(segment.url);
+      const naturalWidth = image.naturalWidth || segment.naturalWidth || sourceWidth;
+      const naturalHeight = image.naturalHeight || segment.naturalHeight || segment.height;
+      const sourceX = (x / sourceWidth) * naturalWidth;
+      const sourceY = ((intersectionStart - segment.y) / segment.height) * naturalHeight;
+      const sourceCropWidth = (width / sourceWidth) * naturalWidth;
+      const sourceCropHeight = ((intersectionEnd - intersectionStart) / segment.height) * naturalHeight;
+      context.drawImage(
+        image,
+        sourceX,
+        sourceY,
+        sourceCropWidth,
+        sourceCropHeight,
+        0,
+        (intersectionStart - y) * scale,
+        canvas.width,
+        (intersectionEnd - intersectionStart) * scale
+      );
+      if (!residentSource) releaseDecodedImage(image);
+    }
+  } else {
+    const residentImage = page.image || null;
+    const image = residentImage || await loadImage(page.url);
+    context.drawImage(image, x, y, width, height, 0, 0, canvas.width, canvas.height);
+    if (!residentImage) releaseDecodedImage(image);
+  }
+
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.94));
+  if (!blob) throw new Error("This browser could not create the moment image.");
+  return {
+    imageDataUrl: await blobDataUrl(blob),
+    width: canvas.width,
+    height: canvas.height,
+  };
+}
+
+async function saveCurrentMoment() {
+  const page = state.pages[state.pageIndex];
+  if (!page || !currentPanel()) {
+    showToast("Open a detected panel before saving a moment.", "bad");
+    return;
+  }
+  if (el.readerOptions?.open) el.readerOptions.open = false;
+  setBusy(el.saveMoment, true, "Saving");
+  try {
+    const capture = await makeMomentCapture(page);
+    const payload = await postLocalJson("/api/moments", {
+      ...capture,
+      title: state.currentManga?.title || "Saved moment",
+      chapterTitle: el.chapterTitle?.textContent || "",
+      sourceLabel: state.currentManga?.sourceLabel || activeChapterSourceLabel(),
+      mediaFormat: state.panelMode,
+      pageIndex: currentSuwayomiPageIndex(),
+      panelIndex: state.panelIndex,
+    });
+    state.moments = [payload.moment, ...state.moments.filter((moment) => moment.id !== payload.moment.id)];
+    state.momentsLoaded = true;
+    renderMoments();
+    showToast("Moment saved in high resolution.", "good");
+  } catch (error) {
+    showToast(`Could not save this moment: ${friendlySourceErrorMessage(error)}`, "bad");
+  } finally {
+    setBusy(el.saveMoment, false);
+  }
+}
+
+async function loadMoments() {
+  if (!el.momentsGrid) return;
+  try {
+    const payload = await localJson("/api/moments");
+    state.moments = Array.isArray(payload.moments) ? payload.moments : [];
+    state.momentsLoaded = true;
+    renderMoments();
+  } catch (error) {
+    if (!state.momentsLoaded) {
+      el.momentsGrid.replaceChildren(createMomentsEmptyState("Moments could not be loaded", friendlySourceErrorMessage(error)));
+    }
+  }
+}
+
+function createMomentsEmptyState(title, copy) {
+  const empty = document.createElement("div");
+  empty.className = "app-empty-state moments-empty";
+  const heading = document.createElement("strong");
+  heading.textContent = title;
+  const note = document.createElement("p");
+  note.textContent = copy;
+  empty.append(heading, note);
+  return empty;
+}
+
+function renderMoments() {
+  if (!el.momentsGrid) return;
+  if (el.momentsCount) el.momentsCount.textContent = `${state.moments.length} saved`;
+  el.momentsGrid.replaceChildren();
+  if (!state.moments.length) {
+    el.momentsGrid.append(createMomentsEmptyState(
+      "No saved moments yet",
+      "While reading, open the reader controls and choose “Save this moment.” Panels keeps a high-resolution crop here."
+    ));
+    return;
+  }
+  const fragment = document.createDocumentFragment();
+  state.moments.forEach((moment) => {
+    const card = document.createElement("article");
+    card.className = "moment-card";
+    const imageLink = document.createElement("a");
+    imageLink.className = "moment-image-link";
+    imageLink.href = appUrl(moment.imageUrl);
+    imageLink.target = "_blank";
+    imageLink.rel = "noopener";
+    imageLink.setAttribute("aria-label", `Open ${moment.title || "saved moment"} image`);
+    const image = document.createElement("img");
+    image.src = appUrl(moment.imageUrl);
+    image.alt = `Saved panel from ${moment.title || "Untitled"}`;
+    image.loading = "lazy";
+    image.decoding = "async";
+    imageLink.append(image);
+    const copy = document.createElement("div");
+    copy.className = "moment-copy";
+    const title = document.createElement("strong");
+    title.textContent = moment.title || "Untitled";
+    const chapter = document.createElement("span");
+    chapter.textContent = moment.chapterTitle || `Page ${Number(moment.pageIndex || 0) + 1}`;
+    const details = document.createElement("small");
+    const savedAt = moment.createdAt ? new Date(moment.createdAt).toLocaleDateString() : "Saved";
+    details.textContent = `${savedAt} · ${moment.width || 0}×${moment.height || 0} · ${formatStorageBytes(moment.byteSize, "Image")}`;
+    const actions = document.createElement("div");
+    actions.className = "moment-actions";
+    const download = document.createElement("a");
+    download.className = "text-button moment-download";
+    download.href = appUrl(moment.imageUrl);
+    download.download = `${String(moment.title || "panels-moment").replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").slice(0, 80) || "panels-moment"}.jpg`;
+    download.textContent = "Download";
+    const remove = document.createElement("button");
+    remove.className = "text-button danger-button";
+    remove.type = "button";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", () => { void removeMoment(moment, remove); });
+    actions.append(download, remove);
+    copy.append(title, chapter, details, actions);
+    card.append(imageLink, copy);
+    fragment.append(card);
+  });
+  el.momentsGrid.append(fragment);
+}
+
+async function removeMoment(moment, button) {
+  if (!window.confirm(`Remove this moment from ${moment.title || "this title"}?`)) return;
+  setBusy(button, true, "Removing");
+  try {
+    await deleteLocalJson(`/api/moments/${encodeURIComponent(moment.id)}`);
+    state.moments = state.moments.filter((candidate) => candidate.id !== moment.id);
+    renderMoments();
+    showToast("Moment removed.");
+  } catch (error) {
+    setBusy(button, false);
+    showToast(`Could not remove this moment: ${friendlySourceErrorMessage(error)}`, "bad");
+  }
+}
+
 async function reportBadPanels() {
   const page = state.pages[state.pageIndex];
   if (!page) {
@@ -11357,6 +11576,7 @@ function wireEvents() {
   el.hideReaderControls?.addEventListener("click", hideReaderControls);
   el.toggleReaderMode?.addEventListener("click", toggleReaderFocus);
   el.redetect.addEventListener("click", redetectCurrentPage);
+  el.saveMoment?.addEventListener("click", () => { void saveCurrentMoment(); });
   el.reportBadPanels?.addEventListener("click", reportBadPanels);
   el.redetectChapter?.addEventListener("click", redetectChapterPanels);
   el.mangaMode?.addEventListener("click", () => setPanelMode("manga"));

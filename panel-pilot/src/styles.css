@@ -2890,7 +2890,7 @@ body.has-network-status.reader-focus .reader-topbar {
   left: max(0.75rem, env(safe-area-inset-left), calc((100vw - 50rem) / 2 + 0.75rem));
   right: max(0.75rem, env(safe-area-inset-right), calc((100vw - 50rem) / 2 + 0.75rem));
   bottom: var(--app-nav-bottom-inset);
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 0.2rem;
   min-height: var(--app-nav-height);
   border: 1px solid rgba(201, 208, 203, 0.92);
@@ -2900,6 +2900,82 @@ body.has-network-status.reader-focus .reader-topbar {
   box-shadow: 0 12px 34px rgba(35, 42, 37, 0.16), 0 2px 8px rgba(35, 42, 37, 0.08);
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
+}
+
+.moments-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(16rem, 100%), 1fr));
+  gap: 1rem;
+}
+
+.moments-grid > .app-empty-state {
+  grid-column: 1 / -1;
+}
+
+.moment-card {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(35, 42, 37, 0.08);
+}
+
+.moment-image-link {
+  display: block;
+  min-height: 10rem;
+  max-height: 34rem;
+  overflow: hidden;
+  background: #eef0ec;
+}
+
+.moment-image-link img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 34rem;
+  object-fit: contain;
+  background: #fff;
+}
+
+.moment-copy {
+  display: grid;
+  gap: 0.28rem;
+  padding: 0.85rem;
+}
+
+.moment-copy > strong,
+.moment-copy > span,
+.moment-copy > small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.moment-copy > span,
+.moment-copy > small {
+  color: var(--muted);
+}
+
+.moment-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin-top: 0.45rem;
+}
+
+.moment-actions .text-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.75rem;
+  text-decoration: none;
+}
+
+.moment-save-button {
+  border-color: #7aa9a7;
+  background: #edf6f5;
+  color: var(--accent-2);
 }
 
 .app-nav-button {

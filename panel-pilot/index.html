@@ -123,6 +123,7 @@
                 </label>
                 <small id="wake-lock-status" role="status" aria-live="polite" aria-atomic="true">Checking screen wake support…</small>
               </div>
+              <button class="text-button moment-save-button" id="save-moment" type="button">Save this moment</button>
               <button class="text-button" id="toggle-fit" type="button" aria-pressed="false">Full page</button>
               <button class="text-button" id="redetect" type="button">Detect panels again</button>
               <button class="text-button" id="report-bad-panels" type="button">Report bad panels</button>
@@ -258,6 +259,22 @@
             </div>
           </details>
         </section>
+      </section>
+
+      <section class="app-view moments-view" id="moments-view" data-view="moments" aria-label="Saved moments" hidden>
+        <header class="view-header">
+          <div>
+            <h1>Moments</h1>
+            <p class="view-subtitle">Panels worth keeping</p>
+          </div>
+          <span class="small-count" id="moments-count">0 saved</span>
+        </header>
+        <div class="moments-grid" id="moments-grid" aria-live="polite">
+          <div class="app-empty-state" id="moments-empty">
+            <strong>No saved moments yet</strong>
+            <p>While reading, open the reader controls and choose “Save this moment.” Panels keeps a high-resolution crop here.</p>
+          </div>
+        </div>
       </section>
 
       <section class="app-view stats-view" id="stats-view" data-view="stats" aria-label="Reading activity" hidden>
@@ -613,6 +630,10 @@
       <button class="app-nav-button" id="nav-browse" type="button" data-target-view="browse">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>
         <span>Browse</span>
+      </button>
+      <button class="app-nav-button" id="nav-moments" type="button" data-target-view="moments">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2.4 4.9L20 8.7l-4 3.9.9 5.5L12 15.5 7.1 18l.9-5.4-4-3.9 5.6-.8L12 3Z"/></svg>
+        <span>Moments</span>
       </button>
       <button class="app-nav-button" id="nav-stats" type="button" data-target-view="stats">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V10m7 10V4m7 16v-7"/><path d="M3 20h18"/></svg>

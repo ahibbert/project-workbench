@@ -37,6 +37,7 @@ READING_STATS_PATH = os.environ.get(
     "PANEL_PILOT_READING_STATS_PATH",
     os.path.join(DATA_ROOT, "reading-stats.sqlite3"),
 )
+MOMENTS_PATH = os.environ.get("PANEL_PILOT_MOMENTS_PATH", os.path.join(DATA_ROOT, "moments"))
 MANGABAKA_API_BASE = "https://api.mangabaka.org"
 LIBRARY_LIMIT = 5000
 LIBRARY_LOCK = threading.Lock()
@@ -45,6 +46,8 @@ DETECTOR_CACHE_LOCK = threading.Lock()
 MANGABAKA_LOCK = threading.Lock()
 DOWNLOAD_BUFFER_MANAGER = None
 READING_STATS_LOCK = threading.RLock()
+MOMENTS_LOCK = threading.Lock()
+MOMENT_ID_PATTERN = re.compile(r"^[0-9]{13}-[0-9a-f]{16}$")
 
 
 IMAGE_CDN_DOMAINS = (
@@ -1703,6 +1706,12 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/library":
                 self.handle_library_post()
                 return
+            if parsed.path == "/api/moments":
+                try:
+                    self.handle_moments_post()
+                except (ValueError, json.JSONDecodeError) as error:
+                    self.send_json({"error": str(error)}, status=400)
+                return
             if parsed.path == "/api/panel-report":
                 self.handle_panel_report_post()
                 return
@@ -1738,6 +1747,19 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             return
 
         self.send_json({"error": "Unknown POST endpoint"}, status=404)
+
+    def do_DELETE(self):
+        parsed = urlparse(self.path)
+        if not self.require_auth(parsed):
+            return
+        match = re.fullmatch(r"/api/moments/([^/]+)", parsed.path)
+        if not match:
+            self.send_json({"error": "Unknown DELETE endpoint"}, status=404)
+            return
+        try:
+            self.handle_moment_delete(match.group(1))
+        except Exception as error:
+            self.send_json({"error": str(error)}, status=502)
 
     def handle_panel_detection(self, mode):
         detector_base = os.environ.get("PANEL_PILOT_MANGA_DETECTOR_URL", "").strip().rstrip("/")
@@ -1842,6 +1864,13 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
                 return
             if parsed.path == "/api/library":
                 self.handle_library_get()
+                return
+            if parsed.path == "/api/moments":
+                self.handle_moments_get()
+                return
+            moment_image = re.fullmatch(r"/api/moments/([^/]+)/image", parsed.path)
+            if moment_image:
+                self.handle_moment_image_get(moment_image.group(1))
                 return
             if parsed.path == "/api/mangabaka/status":
                 self.handle_mangabaka_status()
@@ -2161,6 +2190,160 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             raise ValueError("Library items must be an array")
         stored = self.write_library_items(items)
         self.send_json({"items": stored})
+
+    def moments_root(self):
+        root = Path(MOMENTS_PATH).expanduser().resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def valid_moment_id(self, moment_id):
+        if not MOMENT_ID_PATTERN.fullmatch(str(moment_id or "")):
+            raise ValueError("Invalid moment id")
+        return str(moment_id)
+
+    def clean_moment_text(self, value, limit):
+        return str(value or "").replace("\x00", "").strip()[:limit]
+
+    def clean_moment_metadata(self, payload, moment_id, image_name, byte_size, created_at):
+        def clean_integer(name, minimum=0, maximum=100000):
+            try:
+                value = int(payload.get(name, 0))
+            except (TypeError, ValueError):
+                value = 0
+            return max(minimum, min(maximum, value))
+
+        media_format = self.clean_moment_text(payload.get("mediaFormat"), 16)
+        if media_format not in ("manga", "comic", "webtoon"):
+            media_format = "manga"
+        return {
+            "id": moment_id,
+            "title": self.clean_moment_text(payload.get("title"), 300) or "Untitled",
+            "chapterTitle": self.clean_moment_text(payload.get("chapterTitle"), 300),
+            "sourceLabel": self.clean_moment_text(payload.get("sourceLabel"), 200),
+            "mediaFormat": media_format,
+            "pageIndex": clean_integer("pageIndex"),
+            "panelIndex": clean_integer("panelIndex"),
+            "width": clean_integer("width", 1, 12000),
+            "height": clean_integer("height", 1, 24000),
+            "createdAt": created_at,
+            "imageName": image_name,
+            "byteSize": byte_size,
+            "imageUrl": f"/api/moments/{moment_id}/image",
+        }
+
+    def handle_moments_post(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        if length < 1 or length > 24000000:
+            raise ValueError("Moment payload is empty or too large")
+        payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+        encoded = payload.get("imageDataUrl", "")
+        match = re.fullmatch(r"data:(image/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=\r\n]+)", str(encoded))
+        if not match:
+            raise ValueError("Moment must contain a JPEG, PNG, or WebP image")
+        try:
+            image_bytes = base64.b64decode(match.group(2), validate=True)
+        except (ValueError, TypeError) as error:
+            raise ValueError("Moment image is not valid base64") from error
+        if not image_bytes or len(image_bytes) > 16000000:
+            raise ValueError("Moment image is empty or too large")
+        mime_type = match.group(1)
+        signatures = {
+            "image/jpeg": image_bytes.startswith(b"\xff\xd8\xff"),
+            "image/png": image_bytes.startswith(b"\x89PNG\r\n\x1a\n"),
+            "image/webp": image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP",
+        }
+        if not signatures.get(mime_type):
+            raise ValueError("Moment image contents do not match its media type")
+        extension = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}[mime_type]
+        moment_id = f"{int(time.time() * 1000):013d}-{secrets.token_hex(8)}"
+        image_name = f"{moment_id}.{extension}"
+        created_at = datetime.now(timezone.utc).isoformat()
+        metadata = self.clean_moment_metadata(payload, moment_id, image_name, len(image_bytes), created_at)
+        root = self.moments_root()
+        with MOMENTS_LOCK:
+            image_path = root / image_name
+            metadata_path = root / f"{moment_id}.json"
+            with tempfile.NamedTemporaryFile(dir=root, prefix=".moment-", delete=False) as temporary:
+                temporary.write(image_bytes)
+                temporary_path = Path(temporary.name)
+            os.replace(temporary_path, image_path)
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=root, prefix=".moment-", delete=False) as temporary:
+                json.dump(metadata, temporary, ensure_ascii=False, separators=(",", ":"))
+                temporary_metadata_path = Path(temporary.name)
+            os.replace(temporary_metadata_path, metadata_path)
+        self.send_json({"moment": metadata}, status=201)
+
+    def read_moments(self):
+        root = self.moments_root()
+        moments = []
+        with MOMENTS_LOCK:
+            for metadata_path in root.glob("*.json"):
+                try:
+                    with open(metadata_path, "r", encoding="utf-8") as handle:
+                        metadata = json.load(handle)
+                    if not isinstance(metadata, dict):
+                        continue
+                    moment_id = self.valid_moment_id(metadata.get("id"))
+                    image_name = str(metadata.get("imageName", ""))
+                    if image_name != Path(image_name).name or not (root / image_name).is_file():
+                        continue
+                    metadata["imageUrl"] = f"/api/moments/{moment_id}/image"
+                    moments.append(metadata)
+                except (OSError, ValueError, json.JSONDecodeError, TypeError):
+                    continue
+        return sorted(moments, key=lambda item: item.get("createdAt", ""), reverse=True)[:2000]
+
+    def handle_moments_get(self):
+        self.send_json({"moments": self.read_moments()})
+
+    def handle_moment_image_get(self, moment_id):
+        moment_id = self.valid_moment_id(moment_id)
+        root = self.moments_root()
+        metadata_path = root / f"{moment_id}.json"
+        try:
+            with MOMENTS_LOCK:
+                with open(metadata_path, "r", encoding="utf-8") as handle:
+                    metadata = json.load(handle)
+                if not isinstance(metadata, dict):
+                    raise FileNotFoundError
+                image_name = str(metadata.get("imageName", ""))
+                if image_name != Path(image_name).name:
+                    raise FileNotFoundError
+                image_path = root / image_name
+                body = image_path.read_bytes()
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            self.send_json({"error": "Moment not found"}, status=404)
+            return
+        content_type = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}.get(image_path.suffix.lower(), "application/octet-stream")
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "private, max-age=86400")
+        self.send_header("Content-Disposition", f'inline; filename="panels-moment-{moment_id}{image_path.suffix}"')
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def handle_moment_delete(self, moment_id):
+        moment_id = self.valid_moment_id(moment_id)
+        root = self.moments_root()
+        metadata_path = root / f"{moment_id}.json"
+        deleted = False
+        with MOMENTS_LOCK:
+            try:
+                with open(metadata_path, "r", encoding="utf-8") as handle:
+                    metadata = json.load(handle)
+                if not isinstance(metadata, dict):
+                    raise FileNotFoundError
+                image_name = str(metadata.get("imageName", ""))
+                if image_name == Path(image_name).name:
+                    image_path = root / image_name
+                    if image_path.is_file():
+                        image_path.unlink()
+                metadata_path.unlink()
+                deleted = True
+            except FileNotFoundError:
+                pass
+        self.send_json({"deleted": deleted, "id": moment_id}, status=200 if deleted else 404)
 
     def read_library_items(self):
         with LIBRARY_LOCK:
