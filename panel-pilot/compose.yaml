@@ -102,7 +102,6 @@ services:
       - books
     image: ghcr.io/crocodilestick/calibre-web-automated:V4.0.8
     restart: unless-stopped
-    init: true
     environment:
       PUID: ${BOOKS_PUID:-1000}
       PGID: ${BOOKS_PGID:-1000}
