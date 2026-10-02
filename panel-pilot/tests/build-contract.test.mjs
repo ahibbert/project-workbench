@@ -310,9 +310,10 @@ test("the Docker runtime stage contains only the server, generated frontend, and
 
   const runtimeStage = dockerfile.slice(dockerfile.lastIndexOf("FROM python:"));
   assert.match(runtimeStage, /^ENV PANEL_PILOT_STATIC_ROOT=\/app\/web$/m);
-  assert.match(runtimeStage, /^COPY server\.py \.\/server\.py$/m);
-  assert.match(runtimeStage, /^COPY LICENSE THIRD_PARTY_NOTICES\.md \.\/$/m);
-  assert.match(runtimeStage, /^COPY --from=frontend-builder \/build\/dist \.\/web$/m);
+  assert.match(runtimeStage, /^COPY --chown=panels:panels server\.py \.\/server\.py$/m);
+  assert.match(runtimeStage, /^COPY --chown=panels:panels LICENSE THIRD_PARTY_NOTICES\.md \.\/$/m);
+  assert.match(runtimeStage, /^COPY --chown=panels:panels --from=frontend-builder \/build\/dist \.\/web$/m);
+  assert.match(runtimeStage, /^USER 10001:10001$/m);
   assert.doesNotMatch(runtimeStage, /^COPY\s+\.\s+/m, "the runtime stage must not copy the source tree");
   assert.doesNotMatch(runtimeStage, /package(?:-lock)?\.json|\/src\b|\/data\b/m);
 });

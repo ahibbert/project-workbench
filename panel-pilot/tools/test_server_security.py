@@ -113,8 +113,12 @@ class ServerConfigurationTests(unittest.TestCase):
         compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
         self.assertIn("ENV PANEL_PILOT_BIND_ADDRESS=0.0.0.0", dockerfile)
         self.assertIn("PANEL_PILOT_BIND_ADDRESS: 0.0.0.0", compose)
+        self.assertIn("USER 10001:10001", dockerfile)
+        self.assertIn("read_only: true", compose)
+        self.assertIn("no-new-privileges:true", compose)
+        self.assertIn("cap_drop:", compose)
 
-    def test_hex_session_secret_uses_raw_bytes_and_accepts_pre_migration_tokens(self):
+    def test_hex_session_secret_uses_raw_bytes_and_rejects_pre_migration_tokens(self):
         handler = object.__new__(PanelPilotHandler)
         configured = "ab" * 32
         environment = {
@@ -135,7 +139,87 @@ class ServerConfigurationTests(unittest.TestCase):
             signature = hmac.new(legacy_secret, encoded.encode("ascii"), hashlib.sha256).digest()
             token = f"{encoded}.{base64.urlsafe_b64encode(signature).decode('ascii').rstrip('=')}"
             handler.headers = {"Cookie": f"panel_pilot_session={token}"}
+            self.assertFalse(handler.valid_session())
+
+    def test_current_session_is_bound_to_the_configured_password(self):
+        handler = object.__new__(PanelPilotHandler)
+        environment = {
+            "PANEL_PILOT_AUTH_USER": "reader",
+            "PANEL_PILOT_AUTH_PASSWORD": "fixture-password-long",
+            "PANEL_PILOT_SESSION_SECRET": "ab" * 32,
+        }
+        with mock.patch.dict(os.environ, environment, clear=False):
+            token = handler.make_session_token("reader")
+            handler.headers = {"Cookie": f"panel_pilot_session={token}"}
             self.assertTrue(handler.valid_session())
+            os.environ["PANEL_PILOT_AUTH_PASSWORD"] = "rotated-password-long"
+            self.assertFalse(handler.valid_session())
+
+    def test_non_loopback_runtime_requires_strong_auth_and_session_secret(self):
+        configurations = (
+            (
+                {"PANEL_PILOT_AUTH_USER": "", "PANEL_PILOT_AUTH_PASSWORD": "", "PANEL_PILOT_SESSION_SECRET": ""},
+                "authentication is required",
+            ),
+            (
+                {"PANEL_PILOT_AUTH_USER": "reader", "PANEL_PILOT_AUTH_PASSWORD": "too-short", "PANEL_PILOT_SESSION_SECRET": "ab" * 32},
+                "at least 16 characters",
+            ),
+            (
+                {"PANEL_PILOT_AUTH_USER": "reader", "PANEL_PILOT_AUTH_PASSWORD": "fixture-password-long", "PANEL_PILOT_SESSION_SECRET": "short"},
+                "at least 32 bytes",
+            ),
+        )
+        for environment, message in configurations:
+            with self.subTest(message=message), mock.patch.dict(os.environ, environment, clear=False):
+                with self.assertRaisesRegex(RuntimeError, message):
+                    panel_pilot_server.validate_runtime_security("0.0.0.0")
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PANEL_PILOT_AUTH_USER": "reader",
+                "PANEL_PILOT_AUTH_PASSWORD": "fixture-password-long",
+                "PANEL_PILOT_SESSION_SECRET": "ab" * 32,
+            },
+            clear=False,
+        ):
+            self.assertEqual(
+                panel_pilot_server.validate_runtime_security("0.0.0.0"),
+                ("reader", "fixture-password-long"),
+            )
+
+    def test_loopback_runtime_can_remain_unauthenticated_for_local_development(self):
+        with mock.patch.dict(
+            os.environ,
+            {"PANEL_PILOT_AUTH_USER": "", "PANEL_PILOT_AUTH_PASSWORD": "", "PANEL_PILOT_SESSION_SECRET": ""},
+            clear=False,
+        ):
+            self.assertEqual(panel_pilot_server.validate_runtime_security("127.0.0.1"), ("", ""))
+
+    def test_login_attempt_limiter_expires_failures(self):
+        limiter = panel_pilot_server.LoginAttemptLimiter(per_client_limit=2, global_limit=10, window=60)
+        limiter.record_failure("203.0.113.4", now=100)
+        self.assertEqual(limiter.retry_after("203.0.113.4", now=101), 0)
+        limiter.record_failure("203.0.113.4", now=102)
+        self.assertGreater(limiter.retry_after("203.0.113.4", now=103), 0)
+        self.assertEqual(limiter.retry_after("203.0.113.4", now=163), 0)
+
+    def test_mutation_origin_must_match_public_request_origin(self):
+        handler = object.__new__(PanelPilotHandler)
+        handler.client_address = ("127.0.0.1", 1234)
+        handler.headers = {
+            "Host": "panels.example.com",
+            "X-Forwarded-Proto": "https",
+            "Origin": "https://panels.example.com",
+        }
+        self.assertTrue(handler.mutation_origin_allowed())
+        handler.headers["Origin"] = "https://attacker.example"
+        self.assertFalse(handler.mutation_origin_allowed())
+        handler.headers = {"Host": "panels.example.com", "Sec-Fetch-Site": "cross-site"}
+        self.assertFalse(handler.mutation_origin_allowed())
+        handler.headers = {"Host": "panels.example.com", "Origin": "null", "Sec-Fetch-Site": "same-origin"}
+        self.assertTrue(handler.mutation_origin_allowed())
 
 
 class SuwayomiUrlSecurityTests(unittest.TestCase):

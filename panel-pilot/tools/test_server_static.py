@@ -115,6 +115,23 @@ class StaticServingTests(unittest.TestCase):
             with urlopen(f"{self.base_url}/login", timeout=5) as response:
                 self.assertEqual(response.read(), b"built login")
 
+    def test_security_headers_are_sent_without_permissive_cors(self):
+        request = panel_pilot_server.Request(
+            f"{self.base_url}/",
+            headers={"X-Forwarded-Proto": "https"},
+        )
+        with urlopen(request, timeout=5) as response:
+            self.assertEqual(response.headers["Server"], "Panels")
+            self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
+            self.assertEqual(response.headers["X-Frame-Options"], "DENY")
+            self.assertEqual(response.headers["Referrer-Policy"], "no-referrer")
+            self.assertIn("default-src 'self'", response.headers["Content-Security-Policy"])
+            self.assertEqual(
+                response.headers["Strict-Transport-Security"],
+                "max-age=31536000; includeSubDomains",
+            )
+            self.assertIsNone(response.headers["Access-Control-Allow-Origin"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -43,9 +43,11 @@ The reverse proxy must preserve `X-Forwarded-Proto: https` so the session
 cookie receives its `Secure` attribute. Do not put a second Basic Auth prompt
 in front of Panels. Conversely, do not expose the Panels port directly to
 untrusted clients: Panels trusts this forwarded header because the supported
-Compose deployment binds the port to loopback. A VPN, IP allow-list, or reverse
-proxy rate limit is sensible additional protection for an internet-reachable
-personal instance.
+Compose deployment binds the port to loopback. A VPN or IP allow-list is
+sensible additional protection for an internet-reachable personal instance.
+Panels also throttles repeated sign-in failures, rejects explicit cross-origin
+writes, and sends restrictive browser security headers, but these controls do
+not turn it into a multi-tenant service.
 
 ## Client data
 
@@ -65,7 +67,7 @@ extensions and manga content have their own licenses and terms; none are
 bundled with Panels. The optional model has separate attribution and data-set
 terms in [`ml/MODEL-NOTICE.md`](ml/MODEL-NOTICE.md).
 
-The current container runs its Python process as the image's default root user.
-Keep the container unprivileged (no host PID/network mode, privileged flag, or
-Docker socket), mount only `data/panels`, and treat a non-root runtime as a
-hardening item for a later release.
+The supplied containers run as an unprivileged user with a read-only root
+filesystem, all Linux capabilities dropped, and `no-new-privileges` enabled.
+Mount only `data/panels`; never add host PID/network mode, privileged mode, or
+the Docker socket.

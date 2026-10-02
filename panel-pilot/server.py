@@ -326,6 +326,9 @@ def resolve_bind_address():
 
 SESSION_COOKIE = "panel_pilot_session"
 SESSION_MAX_AGE = int(os.environ.get("PANEL_PILOT_SESSION_MAX_AGE", str(30 * 24 * 60 * 60)))
+LOGIN_FAILURE_LIMIT = 5
+LOGIN_GLOBAL_FAILURE_LIMIT = 100
+LOGIN_FAILURE_WINDOW = 15 * 60
 APP_ROOT = Path(__file__).resolve().parent
 PROTECTED_STATIC_PATHS = {
     "/.dockerignore",
@@ -369,6 +372,87 @@ def resolve_static_root():
             f"Missing required build output: {', '.join(missing)}."
         )
     return root
+
+
+def decode_session_secret(configured):
+    value = str(configured or "")
+    if re.fullmatch(r"[0-9a-fA-F]{64}", value):
+        return bytes.fromhex(value)
+    return value.encode("utf-8")
+
+
+def bind_address_is_loopback(bind_address):
+    normalized = str(bind_address or "").strip().lower()
+    if normalized == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def validate_runtime_security(bind_address):
+    username, password = validate_panel_auth_configuration()
+    if SESSION_MAX_AGE < 300 or SESSION_MAX_AGE > 31 * 24 * 60 * 60:
+        raise RuntimeError("PANEL_PILOT_SESSION_MAX_AGE must be between 300 seconds and 31 days")
+    if bind_address_is_loopback(bind_address):
+        return username, password
+    if not username or not password:
+        raise RuntimeError("Panels authentication is required when binding outside loopback")
+    if len(password) < 16:
+        raise RuntimeError("PANEL_PILOT_AUTH_PASSWORD must be at least 16 characters")
+    configured_secret = os.environ.get("PANEL_PILOT_SESSION_SECRET", "")
+    if len(decode_session_secret(configured_secret)) < 32:
+        raise RuntimeError("PANEL_PILOT_SESSION_SECRET must contain at least 32 bytes of entropy")
+    return username, password
+
+
+class LoginAttemptLimiter:
+    def __init__(
+        self,
+        per_client_limit=LOGIN_FAILURE_LIMIT,
+        global_limit=LOGIN_GLOBAL_FAILURE_LIMIT,
+        window=LOGIN_FAILURE_WINDOW,
+    ):
+        self.per_client_limit = per_client_limit
+        self.global_limit = global_limit
+        self.window = window
+        self.failures = {}
+        self.lock = threading.Lock()
+
+    def _prune_locked(self, now):
+        cutoff = now - self.window
+        for key, attempts in list(self.failures.items()):
+            remaining = [attempt for attempt in attempts if attempt > cutoff]
+            if remaining:
+                self.failures[key] = remaining
+            else:
+                self.failures.pop(key, None)
+
+    def retry_after(self, client_key, now=None):
+        instant = time.monotonic() if now is None else now
+        with self.lock:
+            self._prune_locked(instant)
+            retry_values = []
+            for key, limit in ((client_key, self.per_client_limit), ("*", self.global_limit)):
+                attempts = self.failures.get(key, [])
+                if len(attempts) >= limit:
+                    retry_values.append(max(1, int(self.window - (instant - attempts[0])) + 1))
+            return max(retry_values, default=0)
+
+    def record_failure(self, client_key, now=None):
+        instant = time.monotonic() if now is None else now
+        with self.lock:
+            self._prune_locked(instant)
+            self.failures.setdefault(client_key, []).append(instant)
+            self.failures.setdefault("*", []).append(instant)
+
+    def clear_client(self, client_key):
+        with self.lock:
+            self.failures.pop(client_key, None)
+
+
+LOGIN_ATTEMPTS = LoginAttemptLimiter()
 
 
 class ReadingStatsRequestError(ValueError):
@@ -1649,6 +1733,9 @@ class DownloadBufferManager:
 
 
 class PanelPilotHandler(SimpleHTTPRequestHandler):
+    server_version = "Panels"
+    sys_version = ""
+
     def __init__(self, *args, directory=None, **kwargs):
         static_root = Path(directory).resolve() if directory else resolve_static_root()
         super().__init__(*args, directory=str(static_root), **kwargs)
@@ -1688,24 +1775,25 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         ).digest()
         if not configured:
             return (password_derived,)
-
-        candidates = []
-        if re.fullmatch(r"[0-9a-fA-F]{64}", configured):
-            candidates.append(bytes.fromhex(configured))
-        # Releases before 0.111.0 treated a hex value as literal UTF-8. Keep
-        # accepting that signature while issuing new tokens with 32 raw bytes.
-        candidates.append(configured.encode("utf-8"))
-        # A private deployment may add PANEL_PILOT_SESSION_SECRET during this
-        # upgrade. Its existing password-derived sessions must survive once.
-        candidates.append(password_derived)
-        return tuple(dict.fromkeys(candidates))
+        return (decode_session_secret(configured),)
 
     def session_secret(self):
         return self.session_secrets()[0]
 
     def make_session_token(self, username):
+        _, password = self.auth_credentials()
+        auth_version = hmac.new(
+            self.session_secret(),
+            f"panel-pilot-auth\0{username}\0{password}".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()[:24]
         payload = json.dumps(
-            {"sub": username, "exp": int(time.time()) + SESSION_MAX_AGE},
+            {
+                "sub": username,
+                "ver": auth_version,
+                "iat": int(time.time()),
+                "exp": int(time.time()) + SESSION_MAX_AGE,
+            },
             separators=(",", ":"),
         ).encode("utf-8")
         encoded = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
@@ -1737,11 +1825,24 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             return False
 
         try:
+            issued_at = int(payload.get("iat", 0))
             expires_at = int(payload.get("exp", 0))
         except (TypeError, ValueError):
             return False
-        username, _ = self.auth_credentials()
-        return payload.get("sub") == username and expires_at >= int(time.time())
+        username, password = self.auth_credentials()
+        expected_version = hmac.new(
+            self.session_secret(),
+            f"panel-pilot-auth\0{username}\0{password}".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()[:24]
+        now = int(time.time())
+        return (
+            payload.get("sub") == username
+            and hmac.compare_digest(str(payload.get("ver") or ""), expected_version)
+            and issued_at <= now + 60
+            and issued_at <= expires_at <= issued_at + SESSION_MAX_AGE
+            and expires_at >= now
+        )
 
     def require_auth(self, parsed):
         if self.valid_session():
@@ -1760,6 +1861,75 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
     def secure_request(self):
         forwarded = self.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip().lower()
         return forwarded == "https"
+
+    def version_string(self):
+        return "Panels"
+
+    def content_security_policy(self):
+        if urlparse(self.path).path == "/login":
+            return "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+        return (
+            "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; "
+            "form-action 'self'; script-src 'self'; style-src 'self'; "
+            "img-src 'self' data: blob: https:; connect-src 'self'; "
+            "worker-src 'self' blob:; manifest-src 'self'; font-src 'self'"
+        )
+
+    def end_headers(self):
+        self.send_header("Content-Security-Policy", self.content_security_policy())
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=(), fullscreen=(self), screen-wake-lock=(self)")
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header("X-Permitted-Cross-Domain-Policies", "none")
+        if self.secure_request():
+            self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+        super().end_headers()
+
+    def client_rate_key(self):
+        forwarded = self.headers.get("X-Forwarded-For", "").split(",", 1)[0].strip()
+        candidates = (forwarded, str(self.client_address[0] if self.client_address else ""))
+        for candidate in candidates:
+            try:
+                return str(ipaddress.ip_address(candidate))
+            except ValueError:
+                continue
+        return "unknown"
+
+    def mutation_origin_allowed(self):
+        supplied_origin = self.headers.get("Origin", "").strip()
+        fetch_site = self.headers.get("Sec-Fetch-Site", "").strip().lower()
+        if not supplied_origin:
+            return fetch_site != "cross-site"
+        if supplied_origin == "null":
+            return fetch_site == "same-origin"
+        try:
+            origin = urlparse(supplied_origin)
+            request_scheme = "https" if self.secure_request() else "http"
+            request_origin = urlparse(f"{request_scheme}://{self.headers.get('Host', '')}")
+            origin_port = origin.port or (443 if origin.scheme == "https" else 80)
+            request_port = request_origin.port or (443 if request_origin.scheme == "https" else 80)
+        except ValueError:
+            return False
+        return (
+            origin.scheme in ("http", "https")
+            and origin.username is None
+            and origin.password is None
+            and origin.hostname == request_origin.hostname
+            and origin_port == request_port
+            and origin.scheme == request_origin.scheme
+        )
+
+    def reject_cross_origin_mutation(self, parsed):
+        if self.mutation_origin_allowed():
+            return False
+        if parsed.path.startswith("/api/"):
+            self.send_json({"error": "Cross-origin request rejected"}, status=403)
+        else:
+            self.send_error(403, "Cross-origin request rejected")
+        return True
 
     def session_cookie_header(self, value, max_age):
         parts = [
@@ -1796,7 +1966,6 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -1808,6 +1977,18 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         if not self.auth_enabled():
             self.redirect("/")
             return
+        client_key = self.client_rate_key()
+        retry_after = LOGIN_ATTEMPTS.retry_after(client_key)
+        if retry_after:
+            body = b"Too many sign-in attempts. Try again later.\n"
+            self.send_response(429)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Retry-After", str(retry_after))
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         length = int(self.headers.get("Content-Length", "0"))
         if length > 16384:
             self.redirect("/login?error=1")
@@ -1816,12 +1997,16 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         username = form.get("username", [""])[0]
         password = form.get("password", [""])[0]
         expected_username, expected_password = self.auth_credentials()
-        valid = secrets.compare_digest(username, expected_username) and secrets.compare_digest(password, expected_password)
+        username_valid = secrets.compare_digest(username, expected_username)
+        password_valid = secrets.compare_digest(password, expected_password)
+        valid = username_valid & password_valid
         next_path = self.safe_next_path(form.get("next", ["/"])[0])
         if not valid:
+            LOGIN_ATTEMPTS.record_failure(client_key)
             self.redirect(f"/login?{urlencode({'error': '1', 'next': next_path})}")
             return
 
+        LOGIN_ATTEMPTS.clear_client(client_key)
         token = self.make_session_token(expected_username)
         self.redirect(next_path, self.session_cookie_header(token, SESSION_MAX_AGE))
 
@@ -1830,6 +2015,8 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
+        if self.reject_cross_origin_mutation(parsed):
+            return
         if parsed.path == "/login":
             self.handle_login_post()
             return
@@ -1895,6 +2082,8 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
 
     def do_DELETE(self):
         parsed = urlparse(self.path)
+        if self.reject_cross_origin_mutation(parsed):
+            return
         if not self.require_auth(parsed):
             return
         match = re.fullmatch(r"/api/moments/([^/]+)", parsed.path)
@@ -2671,6 +2860,8 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         params = parse_qs(parsed.query)
         base = self.resolve_suwayomi_base(params.get("base", ["http://localhost:4567"])[0])
         length = int(self.headers.get("Content-Length", "0"))
+        if length < 1 or length > 2000000:
+            raise ValueError("Suwayomi GraphQL request is empty or too large")
         body = self.rfile.read(length)
         request = Request(
             f"{base}/api/graphql",
@@ -2679,11 +2870,12 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             method="POST",
         )
         with open_url(request, timeout=30) as response:
-            payload = response.read()
+            payload = response.read(16000001)
+            if len(payload) > 16000000:
+                raise ValueError("Suwayomi GraphQL response was too large")
             self.send_response(response.status)
             self.send_header("Content-Type", response.headers.get("Content-Type") or "application/json")
             self.send_header("Cache-Control", "no-store")
-            self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
@@ -2699,11 +2891,12 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             method="GET",
         )
         with open_url(request, timeout=30) as response:
-            payload = response.read()
+            payload = response.read(64000001)
+            if len(payload) > 64000000:
+                raise ValueError("Suwayomi asset was too large")
             self.send_response(response.status)
             self.send_header("Content-Type", response.headers.get("Content-Type") or "application/octet-stream")
             self.send_header("Cache-Control", "public, max-age=86400")
-            self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
@@ -2818,7 +3011,6 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Cache-Control", "public, max-age=86400")
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -2832,7 +3024,6 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -2853,9 +3044,10 @@ def main():
     global DOWNLOAD_BUFFER_MANAGER
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8012
     bind_address = resolve_bind_address()
-    validate_panel_auth_configuration()
+    validate_runtime_security(bind_address)
     suwayomi_auth_credentials()
     normalize_suwayomi_base_url(os.environ.get("SUWAYOMI_INTERNAL_URL", "http://localhost:4567"))
+    os.umask(0o077)
     static_root = resolve_static_root()
     DOWNLOAD_BUFFER_MANAGER = DownloadBufferManager()
     DOWNLOAD_BUFFER_MANAGER.start()

@@ -53,6 +53,10 @@ docker compose build --pull
 docker image inspect panels:0.x.y
 ```
 
+The runtime uses UID/GID `10001`. For an upgrade from a root-running image,
+stop Panels and change `data/panels` ownership to `10001:10001` before starting
+the candidate, as documented in `DEPLOYMENT.md`.
+
 Record the resolved base-image and optional detector-image IDs with the
 release. The Docker base images and detector Python dependency ranges are not
 yet digest/lockfile pinned, so the complete container build is not guaranteed

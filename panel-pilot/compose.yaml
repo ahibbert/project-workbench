@@ -6,6 +6,15 @@ services:
       args:
         PANEL_PILOT_BUILD_ID: ${PANELS_BUILD_ID:-local}
     restart: unless-stopped
+    read_only: true
+    init: true
+    pids_limit: 256
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
     environment:
       PANEL_PILOT_BIND_ADDRESS: 0.0.0.0
       PANEL_PILOT_AUTH_USER: ${PANEL_PILOT_AUTH_USER:?set PANEL_PILOT_AUTH_USER in .env}
@@ -36,6 +45,15 @@ services:
       context: .
       dockerfile: ml/Dockerfile
     restart: unless-stopped
+    read_only: true
+    init: true
+    pids_limit: 512
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
     environment:
       MANGA_SCORE_THRESHOLD: ${MANGA_SCORE_THRESHOLD:-0.25}
       MANGA_INPUT_SIZE: ${MANGA_INPUT_SIZE:-1024}

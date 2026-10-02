@@ -28,17 +28,30 @@ Create the local configuration:
 
 ```sh
 cp .env.example .env
+install -d -m 700 -o 10001 -g 10001 data/panels
 openssl rand -hex 32
 ```
 
 Put the generated value in `PANEL_PILOT_SESSION_SECRET`, then set a long,
-unique `PANEL_PILOT_AUTH_PASSWORD` in `.env`. Both are intentionally blank in
+unique `PANEL_PILOT_AUTH_PASSWORD` of at least 16 characters in `.env`. Both are intentionally blank in
 the example, and Compose refuses to start until they are set. Keep `.env`
 private; it is ignored by Git. Leave both `SUWAYOMI_AUTH_*` values empty unless
 the Suwayomi server uses Basic Auth; when it does, set both values.
 The recommended 64-character hexadecimal session secret is decoded as 32
-random bytes; older literal-hex and password-derived sessions are accepted
-during migration so an ordinary upgrade does not sign users out.
+random bytes. Sessions are bound to the current password, so rotating either
+the password or session secret signs every device out.
+
+The container runs as UID/GID `10001`, and `data/panels` must be writable by
+that account. Before upgrading an older root-running installation, stop Panels
+and migrate the existing data ownership once:
+
+```sh
+docker compose stop panels
+chown -R 10001:10001 data/panels
+chmod 700 data/panels
+find data/panels -type d -exec chmod 700 {} +
+find data/panels -type f -exec chmod 600 {} +
+```
 
 The important Suwayomi setting is `SUWAYOMI_INTERNAL_URL`. It is resolved by
 the Panels container, not by the phone:
