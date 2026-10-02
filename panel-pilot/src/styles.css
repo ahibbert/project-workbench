@@ -3864,16 +3864,24 @@ body.has-reading-miniplayer .app-toast {
 
   .chapter-actions {
     width: 100%;
-    flex-wrap: wrap;
-    justify-content: flex-start;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    justify-content: stretch;
   }
 
   #chapter-list .device-chapter-status {
-    margin-right: auto;
+    grid-column: 1 / -1;
+    width: fit-content;
+    margin-right: 0;
   }
 
   #chapter-list .chapter-actions button {
-    flex: 1 1 6.5rem;
+    width: 100%;
+    min-width: 0;
+  }
+
+  #chapter-list .chapter-actions .mark-earlier-read ~ [data-device-action] {
+    grid-column: 1 / -1;
   }
 
   .reader-topbar {
@@ -3935,21 +3943,6 @@ body.has-reading-miniplayer .app-toast {
     text-align: left;
   }
 
-  .chapter-actions {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  #chapter-list .device-chapter-status {
-    grid-column: 1 / -1;
-    width: fit-content;
-    margin-right: 0;
-  }
-
-  #chapter-list .chapter-actions button {
-    width: 100%;
-    min-width: 0;
-  }
 }
 
 @media (orientation: landscape) and (max-height: 540px) {

@@ -505,6 +505,52 @@ test("chapter details can change library group and mark every earlier chapter as
   await expect(selected.getByRole("button", { name: /Mark earlier/ })).toHaveCount(0);
 });
 
+test("chapter actions stay inside a 430px mobile viewport", async ({ page }) => {
+  const chapters = [5, 4, 3, 2, 1].map((number) => ({
+    ...chapterFor(801),
+    id: 81000 + number,
+    name: `Chapter ${number}`,
+    sourceOrder: number,
+    chapterNumber: number,
+    pageCount: 10 + number,
+    lastPageRead: 0,
+  }));
+  await installPolishFixture(page, { detailChapters: chapters });
+  await page.setViewportSize({ width: 430, height: 932 });
+  await page.goto("/");
+
+  const card = page.locator(".library-card").filter({ hasText: "Reading Fixture" });
+  await card.getByRole("button", { name: "Chapters", exact: true }).click();
+  const actions = page.locator('[data-chapter-id="81004"] .chapter-actions');
+  await expect(actions).toBeVisible();
+
+  const layout = await actions.evaluate((node) => {
+    const bounds = (selector) => {
+      const rect = node.querySelector(selector).getBoundingClientRect();
+      return { top: rect.top, right: rect.right, bottom: rect.bottom };
+    };
+    return {
+      viewportWidth: window.innerWidth,
+      documentWidth: document.documentElement.scrollWidth,
+      actionScrollWidth: node.scrollWidth,
+      actionClientWidth: node.clientWidth,
+      status: bounds(".device-chapter-status"),
+      read: bounds('[data-chapter-action="read"]'),
+      markEarlier: bounds('[data-chapter-action="mark-earlier-read"]'),
+      download: bounds('[data-device-action="download"]'),
+    };
+  });
+
+  expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth);
+  expect(layout.actionScrollWidth).toBeLessThanOrEqual(layout.actionClientWidth);
+  for (const control of [layout.status, layout.read, layout.markEarlier, layout.download]) {
+    expect(control.right).toBeLessThanOrEqual(layout.viewportWidth);
+  }
+  expect(layout.status.bottom).toBeLessThanOrEqual(layout.read.top);
+  expect(Math.abs(layout.read.top - layout.markEarlier.top)).toBeLessThan(1);
+  expect(layout.download.top).toBeGreaterThanOrEqual(layout.read.bottom);
+});
+
 test("the server-buffer sheet is modal, traps focus, closes, and restores focus to its pill", async ({ page }) => {
   await installPolishFixture(page);
   await page.goto("/");
