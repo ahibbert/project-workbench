@@ -4481,9 +4481,11 @@ function detectedMediaFormatFromMetadata(item) {
     item?.sourceName,
     item?.source?.name,
     item?.source?.displayName,
+    item?.extension?.pkgName,
+    item?.source?.extension?.pkgName,
     item?.realUrl,
   ].filter(Boolean).join(" ").toLowerCase();
-  if (/\bwebtoons?\b|webtoon\.com|toonily/.test(label)) return "webtoon";
+  if (/\bwebtoons?\b|webtoon\.com|toonily|asura\s*scans?|flame\s*comics?|comivex|mangamob|manhwa18/.test(label)) return "webtoon";
   if (/read\s*comics?\s*online|readcomiconline|xoxo\s*comics?|comic\s*extra|read\s*all\s*comics/.test(label)) return "comic";
   return "";
 }

@@ -35,6 +35,14 @@ test("Settings ranks private source health and filters by reading format", async
   await expect(page.locator(".source-intelligence-row")).toHaveCount(1);
   await expect(page.locator(".source-intelligence-row")).toContainText("Comic Stable");
   await expect(page.locator("#source-intelligence-state")).toHaveText("1 ranked");
+
+  const inferredFormats = await page.evaluate(() => [
+    window.PanelPilot.inferredMediaFormat({ source: { displayName: "Asura Scans (EN)" } }),
+    window.PanelPilot.inferredMediaFormat({ extension: { pkgName: "eu.kanade.tachiyomi.extension.en.flamecomics" } }),
+    window.PanelPilot.inferredMediaFormat({ source: { extension: { pkgName: "eu.kanade.tachiyomi.extension.en.mangamob" } } }),
+    window.PanelPilot.inferredMediaFormat({ extension: { pkgName: "eu.kanade.tachiyomi.extension.en.readcomicsonline" } }),
+  ]);
+  expect(inferredFormats).toEqual(["webtoon", "webtoon", "webtoon", "comic"]);
 });
 
 test("Browse exposes one Western-comics feed beside manga recommendations", async ({ page }) => {
