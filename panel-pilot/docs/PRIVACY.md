@@ -81,7 +81,8 @@ the server-side detector, Panels sends image bytes from Suwayomi or a selected
 adapter to that operator-controlled local service and caches normalized panel
 metadata on the Panels server. Runtime inference does not require a hosted
 inference provider. Building the optional detector image downloads a pinned
-model from Hugging Face, so the build host contacts that service.
+model from Hugging Face, so the build host contacts that service. The detector
+runs with ONNX Runtime telemetry disabled.
 
 ## Operator and user controls
 

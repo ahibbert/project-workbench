@@ -22,6 +22,7 @@ ENV MANGA_MODEL_PATH=/models/manga-panel-detector.onnx
 ENV BUBBLE_MODEL_PATH=/models/speech-bubble-detector.onnx
 ENV COMIC_MODEL_PATH=/models/comic-panel-detector.onnx
 ENV COMIC_ORDER_MODEL_PATH=/models/comic-panel-order.onnx
+ENV ORT_DISABLE_TELEMETRY=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8091

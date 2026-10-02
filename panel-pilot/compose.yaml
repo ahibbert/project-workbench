@@ -55,6 +55,7 @@ services:
     tmpfs:
       - /tmp:size=256m,mode=1777
     environment:
+      ORT_DISABLE_TELEMETRY: "1"
       MANGA_SCORE_THRESHOLD: ${MANGA_SCORE_THRESHOLD:-0.25}
       MANGA_INPUT_SIZE: ${MANGA_INPUT_SIZE:-1024}
       BUBBLE_SCORE_THRESHOLD: ${BUBBLE_SCORE_THRESHOLD:-0.25}
