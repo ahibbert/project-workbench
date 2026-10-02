@@ -38,6 +38,40 @@ test("Settings ranks private source health and filters by reading format", async
 });
 
 test("Browse exposes one Western-comics feed beside manga recommendations", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.addInitScript(() => {
+    localStorage.setItem("panel-pilot-settings", JSON.stringify({
+      baseUrl: "http://recommendations.invalid:4567",
+      readerMotion: "instant",
+    }));
+  });
+  await page.route("**/api/source-intelligence*", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(summary) });
+  });
+  await page.route("**/api/suwayomi/graphql*", async (route) => {
+    const payload = route.request().postDataJSON() || {};
+    const query = String(payload.query || "");
+    const sourceId = String(payload.variables?.input?.source || "");
+    let data = {};
+    if (query.includes("HEALTH")) {
+      data = { __schema: { queryType: { name: "Query" }, mutationType: { name: "Mutation" } } };
+    } else if (query.includes("GET_SOURCES_LIST")) {
+      data = { sources: { nodes: [
+        { id: "2", name: "comicstable", displayName: "Comic Stable", lang: "en", isNsfw: false },
+        { id: "4", name: "comicbackup", displayName: "Comic Backup", lang: "en", isNsfw: false },
+      ] } };
+    } else if (query.includes("GET_LIBRARY_MANGAS")) {
+      data = { mangas: { totalCount: 0, nodes: [] } };
+    } else if (query.includes("GET_SOURCE_MANGAS_FETCH")) {
+      data = { fetchSourceManga: { hasNextPage: false, mangas: payload.variables?.input?.type === "SEARCH" ? [{
+        id: sourceId === "2" ? 201 : 401,
+        title: "Paper Girls",
+        sourceId,
+        thumbnailUrl: "",
+      }] : [] } };
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data }) });
+  });
   await page.route("**/api/comic-recommendations*", async (route) => {
     await route.fulfill({
       status: 200,
@@ -71,4 +105,14 @@ test("Browse exposes one Western-comics feed beside manga recommendations", asyn
   await expect(page.locator("#comic-recommendation-results")).toContainText("Paper Girls");
   await expect(page.locator("#comic-recommendation-results")).toContainText("Because you read Saga");
   await expect(page.locator("#comic-recommendations-note")).toContainText("Based on 1 comic");
+  const headingBox = await page.locator("#comic-recommendations-title").boundingBox();
+  const firstCardBox = await page.locator("#comic-recommendation-results .recommendation-card").first().boundingBox();
+  expect(firstCardBox.x).toBeGreaterThanOrEqual(headingBox.x - 2);
+
+  await page.getByRole("button", { name: "Read this", exact: true }).click();
+  await expect(page.locator("#recommendation-context-title")).toHaveText("Choose a source for Paper Girls");
+  await expect(page.locator("#recommendation-context-note")).toContainText("image quality, and reliability");
+  await expect(page.locator("#manga-results .manga-card")).toHaveCount(2);
+  await expect(page.locator("#manga-results .manga-card").first()).toContainText("Comic Stable");
+  await expect(page.locator("#manga-results .manga-card").first()).toContainText("88/100 overall · Q 82 · R 93");
 });

@@ -2388,6 +2388,12 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/library":
                 self.handle_library_post()
                 return
+            if parsed.path == "/api/library/migrate":
+                try:
+                    self.handle_library_migrate_post()
+                except (ValueError, json.JSONDecodeError) as error:
+                    self.send_json({"error": str(error)}, status=400)
+                return
             if parsed.path == "/api/moments":
                 try:
                     self.handle_moments_post()
@@ -3070,6 +3076,17 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         stored = self.write_library_items(items)
         self.send_json({"items": stored})
 
+    def handle_library_migrate_post(self):
+        payload = self.read_json_request(2000000)
+        if not isinstance(payload, dict):
+            raise ValueError("Library migration payload must be an object")
+        previous = payload.get("from")
+        replacement = payload.get("item")
+        if not isinstance(previous, dict) or not isinstance(replacement, dict):
+            raise ValueError("Library migration requires from and item objects")
+        stored = self.migrate_library_item(previous, replacement)
+        self.send_json({"items": stored})
+
     def moments_root(self):
         root = Path(MOMENTS_PATH).expanduser().resolve()
         root.mkdir(parents=True, exist_ok=True)
@@ -3277,6 +3294,34 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             cleaned = self.merge_library_items(cleaned, existing)
             self._replace_library_items_locked(cleaned)
         return cleaned
+
+    def migrate_library_item(self, previous, replacement):
+        previous_source_id = str(previous.get("sourceId") or "").strip()
+        previous_manga_id = previous.get("mangaId")
+        if not previous_source_id or not isinstance(previous_manga_id, int) or previous_manga_id < 1:
+            raise ValueError("Previous library identity is invalid")
+        cleaned_replacement = self.clean_library_items([replacement])
+        if len(cleaned_replacement) != 1:
+            raise ValueError("Replacement library item is invalid")
+        replacement_item = cleaned_replacement[0]
+        previous_key = f"{previous_source_id}:{previous_manga_id}"
+        replacement_key = f"{replacement_item.get('sourceId', 'source')}:{replacement_item.get('mangaId', '')}"
+        with LIBRARY_LOCK:
+            try:
+                with open(LIBRARY_PATH, "r", encoding="utf-8") as handle:
+                    existing_payload = json.load(handle)
+                existing = self.clean_library_items(
+                    existing_payload.get("items", []) if isinstance(existing_payload, dict) else existing_payload
+                )
+            except (FileNotFoundError, json.JSONDecodeError, OSError):
+                existing = []
+            retained = [
+                item for item in existing
+                if f"{item.get('sourceId', 'source')}:{item.get('mangaId', '')}" not in (previous_key, replacement_key)
+            ]
+            stored = [replacement_item, *retained][:LIBRARY_LIMIT]
+            self._replace_library_items_locked(stored)
+        return stored
 
     def merge_library_items(self, incoming, existing):
         incoming_by_key = {

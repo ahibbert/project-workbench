@@ -1,4 +1,5 @@
 import pathlib
+import json
 import sys
 import tempfile
 import unittest
@@ -103,6 +104,36 @@ class LibraryMergeTests(unittest.TestCase):
         self.assertEqual(cleaned[0]["mangabakaAccountKey"], "user-123")
         self.assertEqual(cleaned[0]["completedChapter"], 486.5)
         self.assertEqual(cleaned[0]["serverUrl"], "http://suwayomi-a:4567")
+
+    def test_atomic_library_migration_replaces_old_and_existing_target_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            library_path = pathlib.Path(directory) / "library.json"
+            library_path.write_text(json.dumps({"items": [
+                {"sourceId": "old-source", "mangaId": 7, "mangaTitle": "Golden Kamuy", "pageIndex": 8, "updatedAt": "2026-10-01T00:00:00Z"},
+                {"sourceId": "new-source", "mangaId": 9, "mangaTitle": "Golden Kamuy", "pageIndex": 1, "updatedAt": "2026-09-01T00:00:00Z"},
+                {"sourceId": "other-source", "mangaId": 11, "mangaTitle": "Other", "updatedAt": "2026-10-01T00:00:00Z"},
+            ]}), encoding="utf-8")
+            replacement = {
+                "sourceId": "new-source",
+                "mangaId": 9,
+                "mangaTitle": "Golden Kamuy",
+                "libraryStatus": "reading",
+                "pageIndex": 8,
+                "updatedAt": "2026-10-02T00:00:00Z",
+            }
+
+            with mock.patch("server.LIBRARY_PATH", str(library_path)):
+                stored = self.handler.migrate_library_item(
+                    {"sourceId": "old-source", "mangaId": 7},
+                    replacement,
+                )
+
+            identities = [(item["sourceId"], item["mangaId"]) for item in stored]
+            self.assertEqual(identities.count(("new-source", 9)), 1)
+            self.assertNotIn(("old-source", 7), identities)
+            self.assertIn(("other-source", 11), identities)
+            persisted = json.loads(library_path.read_text(encoding="utf-8"))["items"]
+            self.assertEqual(persisted, stored)
 
 
 class SourceProfileTests(unittest.TestCase):

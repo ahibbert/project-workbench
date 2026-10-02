@@ -352,6 +352,7 @@ const el = {
   detailTitle: document.querySelector("#detail-title"),
   detailPrimary: document.querySelector("#detail-primary"),
   detailLibrary: document.querySelector("#detail-library"),
+  detailChangeSource: document.querySelector("#detail-change-source"),
   detailLibraryStatus: document.querySelector("#detail-library-status"),
   mangaId: document.querySelector("#manga-id"),
   fetchChapters: document.querySelector("#fetch-chapters"),
@@ -1986,8 +1987,12 @@ async function syncSourceIntelligenceInventory() {
   }
 }
 
+function hasFiniteSourceScore(value) {
+  return value !== null && value !== "" && Number.isFinite(Number(value));
+}
+
 function sourceScoreText(value) {
-  return Number.isFinite(Number(value)) ? `${Math.round(Number(value))}` : "—";
+  return hasFiniteSourceScore(value) ? `${Math.round(Number(value))}` : "—";
 }
 
 function renderSourceIntelligence() {
@@ -2414,10 +2419,10 @@ function updateRecommendationContext() {
   if (el.clearRecommendationContext) el.clearRecommendationContext.textContent = "Clear";
   if (!series) return;
   const title = mangaBakaTitle(series);
-  if (el.recommendationContextTitle) el.recommendationContextTitle.textContent = `Finding ${title}`;
+  if (el.recommendationContextTitle) el.recommendationContextTitle.textContent = `Choose a source for ${title}`;
   if (el.recommendationContextNote) {
     const reason = series.recommendationSource === "comic" ? comicRecommendationReason(series) : mangaBakaReason(series);
-    el.recommendationContextNote.textContent = `${reason} · Exact matches are shown first.`;
+    el.recommendationContextNote.textContent = `${reason} · Exact matches are ranked by format, image quality, and reliability.`;
   }
 }
 
@@ -2433,6 +2438,7 @@ async function continuePendingRecommendationSearch() {
   const series = state.pendingMangaBakaRecommendation;
   if (!series) return;
   el.searchQuery.value = mangaBakaTitle(series);
+  el.sourceSelect.value = allSourcesValue;
   el.searchQuery.scrollIntoView({ behavior: "smooth", block: "center" });
   await searchSource();
 }
@@ -3362,7 +3368,10 @@ async function searchSource() {
     showToast("Enter a manga title first.", "bad");
     return;
   }
-  if (state.sourceProfilesPromise) await state.sourceProfilesPromise.catch(() => null);
+  await Promise.all([
+    state.sourceProfilesPromise?.catch(() => null),
+    state.sourceIntelligence ? Promise.resolve(state.sourceIntelligence) : refreshSourceIntelligence().catch(() => null),
+  ]);
 
   const searchController = new AbortController();
   state.searchAbortController = searchController;
@@ -3411,11 +3420,11 @@ async function searchSource() {
         (data.fetchSourceManga?.mangas || []).forEach((manga) => {
           results.push({ ...manga, sourceId: manga.sourceId || source.id });
         });
-        observations.push(makeSourceObservation(source, "search", "success", startedAt));
+        observations.push(makeSourceObservation(source, "search", "success", startedAt, sourceChoiceMediaFormat()));
       } catch (error) {
         if (!isCurrentSearch() || error?.name === "ReaderLoadCancelled") return;
         failures.push(sourceLabel(source));
-        observations.push(makeSourceObservation(source, "search", "failure", startedAt));
+        observations.push(makeSourceObservation(source, "search", "failure", startedAt, sourceChoiceMediaFormat()));
       } finally {
         searched += 1;
         if (isCurrentSearch()) {
@@ -3585,10 +3594,7 @@ function uniqueMangaResults(results) {
 
 function sortMangaResults(results, query) {
   const normalizedQuery = normalizeTitle(query);
-  const desiredFormat = state.sourceMigration
-    ? inferredMediaFormat(state.sourceMigration.fromLibraryItem || state.sourceMigration.fromManga)
-    : state.pendingMangaBakaRecommendation?.recommendationSource === "comic" ? "comic"
-      : state.pendingMangaBakaRecommendation ? "manga" : "";
+  const desiredFormat = sourceChoiceMediaFormat();
   return results.sort((a, b) => {
     const aTitle = normalizeTitle(a.title);
     const bTitle = normalizeTitle(b.title);
@@ -3600,10 +3606,48 @@ function sortMangaResults(results, query) {
       const bFormat = resultSourceMediaFormat(b) === desiredFormat ? 0 : 1;
       if (aFormat !== bFormat) return aFormat - bFormat;
     }
+    const aIntelligence = sourceIntelligenceFor(a.sourceId, desiredFormat);
+    const bIntelligence = sourceIntelligenceFor(b.sourceId, desiredFormat);
+    const aSuitability = Number(aIntelligence?.suitability);
+    const bSuitability = Number(bIntelligence?.suitability);
+    if (Number.isFinite(aSuitability) || Number.isFinite(bSuitability)) {
+      const suitabilityDifference = (Number.isFinite(bSuitability) ? bSuitability : -1) - (Number.isFinite(aSuitability) ? aSuitability : -1);
+      if (suitabilityDifference) return suitabilityDifference;
+      const qualityDifference = Number(bIntelligence?.quality ?? -1) - Number(aIntelligence?.quality ?? -1);
+      if (qualityDifference) return qualityDifference;
+      const reliabilityDifference = Number(bIntelligence?.reliability ?? -1) - Number(aIntelligence?.reliability ?? -1);
+      if (reliabilityDifference) return reliabilityDifference;
+    }
     return sourceReliabilityScore(b.sourceId) - sourceReliabilityScore(a.sourceId)
       || sourceRank(a.sourceId) - sourceRank(b.sourceId)
       || aTitle.localeCompare(bTitle);
   });
+}
+
+function sourceChoiceMediaFormat() {
+  if (state.sourceMigration) {
+    return inferredMediaFormat(state.sourceMigration.fromLibraryItem || state.sourceMigration.fromManga);
+  }
+  if (state.pendingMangaBakaRecommendation?.recommendationSource === "comic") return "comic";
+  if (state.pendingMangaBakaRecommendation) return state.pendingMangaBakaRecommendation.mediaFormat || "manga";
+  return "";
+}
+
+function sourceIntelligenceFor(sourceId, mediaFormat = "") {
+  const scores = Array.isArray(state.sourceIntelligence?.scores) ? state.sourceIntelligence.scores : [];
+  const matches = scores.filter((score) => (
+    String(score.sourceId) === String(sourceId) &&
+    (!mediaFormats.includes(mediaFormat) || score.mediaFormat === mediaFormat) &&
+    score.installed !== false &&
+    !score.obsolete &&
+    !score.stale &&
+    hasFiniteSourceScore(score.suitability)
+  ));
+  if (!matches.length) return null;
+  return matches.sort((left, right) => (
+    Number(right.evidenceCount ?? 0) - Number(left.evidenceCount ?? 0) ||
+    Number(right.suitability) - Number(left.suitability)
+  ))[0] || null;
 }
 
 function resultSourceMediaFormat(manga) {
@@ -3612,7 +3656,8 @@ function resultSourceMediaFormat(manga) {
 }
 
 function sourceReliabilityScore(sourceId) {
-  return Number(state.sourceProfiles.get(String(sourceId))?.score) || 75;
+  const rawScore = state.sourceProfiles.get(String(sourceId))?.score;
+  return hasFiniteSourceScore(rawScore) ? Number(rawScore) : 75;
 }
 
 function sourceProfileResultMeta(manga, resultIndex, fallback) {
@@ -3622,6 +3667,14 @@ function sourceProfileResultMeta(manga, resultIndex, fallback) {
   if (resultIndex === 0) return `Recommended · ${profile.score}/100 · ${signal}`;
   if (profile.consecutiveFailures) return `Recent failures · ${profile.score}/100`;
   return `${profile.score}/100 reliability · ${signal}`;
+}
+
+function sourceChoiceResultMeta(manga, resultIndex, fallback) {
+  const score = sourceIntelligenceFor(manga.sourceId, sourceChoiceMediaFormat());
+  if (!score) return sourceProfileResultMeta(manga, resultIndex, fallback);
+  const prefix = resultIndex === 0 ? "Recommended · " : "";
+  const confidence = score.stale ? "version changed" : score.confidence;
+  return `${prefix}${sourceScoreText(score.suitability)}/100 overall · Q ${sourceScoreText(score.quality)} · R ${sourceScoreText(score.reliability)}${confidence ? ` · ${confidence}` : ""}`;
 }
 
 function sourceRank(sourceId) {
@@ -3695,14 +3748,13 @@ function renderMangaResults() {
       title: manga.title,
       eyebrow: sourceText || "Source",
       meta: state.sourceMigration
-        ? sourceProfileResultMeta(manga, resultIndex, "Use this source")
-        : exactRecommendationMatch
-        ? "Exact title match"
+        ? sourceChoiceResultMeta(manga, resultIndex, "Use this source")
         : state.pendingMangaBakaRecommendation
-          ? "Alternative source result"
+          ? sourceChoiceResultMeta(manga, resultIndex, exactRecommendationMatch ? "Exact title match" : "Alternative source result")
           : sourceProfileResultMeta(manga, resultIndex, "View chapters"),
     });
     button.addEventListener("click", async (event) => {
+      const recommendation = state.pendingMangaBakaRecommendation;
       const mangabaka = mangaBakaMatchForManga(manga);
       const accountScopedMangaBaka = mangabaka && mangabaka.recommendationSource !== "comic" && state.mangabakaConnected && state.mangabakaAccountKey
         ? mangabaka
@@ -3732,14 +3784,16 @@ function renderMangaResults() {
           mangabakaAccountKey: migrationItem?.mangabakaAccountKey,
         }, inferredMediaFormat(migrationItem || state.sourceMigration.fromManga), migrationItem?.mediaFormatSource || "automatic");
       } else {
-        const recommendationFormat = mangabaka?.recommendationSource === "comic" ? "comic" : "";
+        const recommendationFormat = recommendation?.recommendationSource === "comic"
+          ? "comic"
+          : mediaFormats.includes(recommendation?.mediaFormat) ? recommendation.mediaFormat : "";
         state.currentManga = taggedMediaItem(
           { ...state.currentManga, ...existingLibraryItem },
           existingLibraryItem?.mediaFormat || recommendationFormat || automaticMediaFormat(state.currentManga),
           existingLibraryItem?.mediaFormatSource || (existingLibraryItem?.mediaFormat ? "" : recommendationFormat ? "recommendation" : "automatic")
         );
       }
-      if (mangabaka) {
+      if (recommendation) {
         state.pendingMangaBakaRecommendation = null;
         updateRecommendationContext();
       }
@@ -3835,6 +3889,10 @@ function updateMangaDetailActions() {
   if (el.detailLibrary) {
     el.detailLibrary.textContent = migrationTarget ? "Switch to this source" : item ? "In library" : "Add to library";
     el.detailLibrary.disabled = migrationTarget ? false : Boolean(item);
+  }
+  if (el.detailChangeSource) {
+    el.detailChangeSource.hidden = !item || migrationTarget;
+    el.detailChangeSource.disabled = !state.currentManga?.sourceId;
   }
   if (el.detailLibraryStatus) {
     el.detailLibraryStatus.value = item ? normalizedLibraryStatus(item) : "";
@@ -3990,18 +4048,6 @@ async function migrateCurrentMangaSource() {
   try {
     const targetAdded = await ensureCurrentMangaInSuwayomiLibrary();
     if (!targetAdded) throw new Error("The replacement title could not be added to Suwayomi.");
-    const oldMangaId = Number(migration.fromManga?.id || migration.fromLibraryItem?.mangaId);
-    if (Number.isInteger(oldMangaId) && oldMangaId > 0 && oldMangaId !== Number(target.id)) {
-      const removed = await graphQL(
-        queries.updateManga,
-        { input: { id: oldMangaId, patch: { inLibrary: false } } },
-        { timeoutMs: 10000 }
-      );
-      if (removed.updateManga?.manga?.inLibrary !== false) {
-        throw new Error("The old Suwayomi source could not be detached.");
-      }
-    }
-
     const oldItem = migration.fromLibraryItem || {};
     const chapters = state.chapterView.length ? state.chapterView : visibleChapters();
     const matchingChapter = equivalentMigrationChapter(migration, chapters);
@@ -4026,24 +4072,53 @@ async function migrateCurrentMangaSource() {
         chapterTitle: undefined,
         pageIndex: 0,
         panelIndex: 0,
+        progressLabel: undefined,
       }),
       updatedAt: new Date().toISOString(),
     });
-    state.libraryItems = [
+    const nextLibraryItems = [
       migratedItem,
       ...state.libraryItems.filter((item) => {
         const key = libraryItemKey(item);
         return key !== oldKey && key !== targetKey;
       }),
     ];
-    saveLibraryItems();
+    if (state.librarySavePromise) await state.librarySavePromise;
+    const migrationPayload = await postLocalJson("/api/library/migrate", {
+      from: {
+        sourceId: String(migration.fromManga?.sourceId ?? oldItem.sourceId ?? ""),
+        mangaId: Number(migration.fromManga?.id || oldItem.mangaId),
+      },
+      item: migratedItem,
+    });
+    state.libraryItems = Array.isArray(migrationPayload.items)
+      ? sanitizeLibraryServerUrls(migrationPayload.items).map(normalizeLibraryItem)
+      : nextLibraryItems;
+    persistLibraryItemsLocally();
     renderLibrary({ preserveInteractions: false });
+
+    let oldSourceDetached = true;
+    const oldMangaId = Number(migration.fromManga?.id || oldItem.mangaId);
+    if (Number.isInteger(oldMangaId) && oldMangaId > 0 && oldMangaId !== Number(target.id)) {
+      try {
+        const removed = await graphQL(
+          queries.updateManga,
+          { input: { id: oldMangaId, patch: { inLibrary: false } } },
+          { timeoutMs: 10000 }
+        );
+        oldSourceDetached = removed.updateManga?.manga?.inLibrary === false;
+      } catch {
+        oldSourceDetached = false;
+      }
+    }
     state.sourceMigration = null;
     updateRecommendationContext();
     updateMangaDetailActions();
 
     if (!matchingChapter) {
-      showToast("Source switched. Choose the closest chapter from this source.", "good");
+      showToast(oldSourceDetached
+        ? "Source switched. Choose the closest chapter from this source."
+        : "Source switched. The previous Suwayomi entry could not be detached.", oldSourceDetached ? "good" : "");
       return;
     }
     state.pendingResume = {
@@ -4059,7 +4134,9 @@ async function migrateCurrentMangaSource() {
     updatePanelModeControls();
     el.chapterId.value = matchingChapter.id;
     el.chapterTitle.textContent = matchingChapter.name || `Chapter ${matchingChapter.chapterNumber || matchingChapter.id}`;
-    showToast(`Switched to ${target.sourceLabel || "the new source"}.`, "good");
+    showToast(oldSourceDetached
+      ? `Switched to ${target.sourceLabel || "the new source"}.`
+      : `Switched to ${target.sourceLabel || "the new source"}; the previous Suwayomi entry is still attached.`, oldSourceDetached ? "good" : "");
     await loadChapterPages({ chapter: matchingChapter, returnFocusTarget: el.detailLibrary });
   } catch (error) {
     showToast(`Could not switch source: ${friendlySourceErrorMessage(error)}`, "bad");
@@ -12794,6 +12871,7 @@ function wireEvents() {
     if (state.sourceMigration) void migrateCurrentMangaSource();
     else void addCurrentMangaToLibrary();
   });
+  el.detailChangeSource?.addEventListener("click", beginSourceMigration);
   el.detailLibraryStatus?.addEventListener("change", (event) => {
     const item = currentMangaLibraryItem();
     if (!item) {

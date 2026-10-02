@@ -1329,9 +1329,10 @@ body.webtoon-scroll .stage-strip {
   grid-auto-columns: minmax(9.2rem, 42%);
   grid-auto-flow: column;
   gap: 0.65rem;
-  margin-inline: calc(-1 * var(--app-gutter, 1rem));
-  padding: 0.1rem var(--app-gutter, 1rem) 0.65rem;
+  margin-inline: 0;
+  padding: 0.1rem 0 0.65rem;
   overflow-x: auto;
+  scroll-padding-inline: var(--app-gutter, 1rem);
   scroll-snap-type: x proximity;
 }
 

@@ -154,6 +154,20 @@ test("a failed chapter can migrate to another source without losing reading stat
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: sharedLibrary }) });
       return;
     }
+    if (url.pathname === "/api/library/migrate") {
+      const migration = request.postDataJSON() || {};
+      const previousKey = `${migration.from?.sourceId}:${migration.from?.mangaId}`;
+      const replacementKey = `${migration.item?.sourceId}:${migration.item?.mangaId}`;
+      sharedLibrary = [
+        migration.item,
+        ...sharedLibrary.filter((item) => ![
+          previousKey,
+          replacementKey,
+        ].includes(`${item.sourceId}:${item.mangaId}`)),
+      ];
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: sharedLibrary }) });
+      return;
+    }
     if (url.pathname === "/api/source-profiles") {
       await route.fulfill({
         status: 200,
@@ -186,6 +200,14 @@ test("a failed chapter can migrate to another source without losing reading stat
   await page.goto("/", { waitUntil: "networkidle" });
   const card = page.locator(".library-card").filter({ hasText: "Golden Kamuy" });
   await expect(card).toBeVisible();
+
+  await card.locator('[data-library-action="chapters"]').click();
+  await expect(page.locator("#detail-change-source")).toBeVisible();
+  await page.locator("#detail-change-source").click();
+  await expect(page.locator("#recommendation-context-title")).toHaveText("Move Golden Kamuy to another source");
+  await page.locator("#clear-recommendation-context").click();
+  await page.locator("#nav-library").click();
+
   await card.locator(".manga-cover-button").click();
 
   await expect(page.locator("#reader-error-title")).toContainText("Could not");
