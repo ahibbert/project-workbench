@@ -5,21 +5,132 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import secrets
 import sqlite3
+import tempfile
 import threading
 import time
 from typing import Any
+import zipfile
+from xml.etree import ElementTree
 
 from opds_client import OpdsClient, OpdsConfig, OpdsError
 from shelfmark_client import ShelfmarkClient, ShelfmarkConfig, ShelfmarkError
 
 
 BOOKS_SCHEMA_VERSION = 1
+
+
+class BookRequestError(ValueError):
+    def __init__(self, message: str, *, status: int = 400, code: str = "invalid_request", current=None):
+        super().__init__(message)
+        self.status = status
+        self.code = code
+        self.current = current
+
+
+def validate_epub_archive(path: Path) -> None:
+    try:
+        with zipfile.ZipFile(path, "r") as archive:
+            entries = archive.infolist()
+            if not 1 <= len(entries) <= 5000:
+                raise BookRequestError("EPUB contains an unsafe number of files", status=422, code="malformed_epub")
+            names = {entry.filename for entry in entries}
+            if "mimetype" not in names or "META-INF/container.xml" not in names:
+                raise BookRequestError("EPUB is missing required package files", status=422, code="malformed_epub")
+            mimetype = archive.read("mimetype")
+            if mimetype.strip() != b"application/epub+zip":
+                raise BookRequestError("EPUB has an invalid mimetype", status=422, code="malformed_epub")
+            total_uncompressed = 0
+            for entry in entries:
+                normalized = entry.filename.replace("\\", "/")
+                parts = [part for part in normalized.split("/") if part]
+                if normalized.startswith("/") or ".." in parts or entry.flag_bits & 0x1:
+                    raise BookRequestError("EPUB contains unsafe archive entries", status=422, code="malformed_epub")
+                total_uncompressed += max(0, entry.file_size)
+                if entry.file_size > 100_000_000:
+                    raise BookRequestError("EPUB contains an oversized resource", status=422, code="malformed_epub")
+                if entry.compress_size and entry.file_size / entry.compress_size > 500:
+                    raise BookRequestError("EPUB contains an unsafe compressed resource", status=422, code="malformed_epub")
+            if total_uncompressed > 1_000_000_000:
+                raise BookRequestError("EPUB expands beyond the safety limit", status=422, code="malformed_epub")
+    except BookRequestError:
+        raise
+    except (OSError, zipfile.BadZipFile, KeyError, RuntimeError):
+        raise BookRequestError("EPUB file is malformed", status=422, code="malformed_epub") from None
+
+
+_REMOTE_RESOURCE = re.compile(r"^\s*(?:https?:)?//", re.IGNORECASE)
+_CSS_REMOTE_URL = re.compile(r"url\(\s*(['\"]?)(?:https?:)?//.*?\1\s*\)", re.IGNORECASE)
+_CSS_REMOTE_IMPORT = re.compile(r"@import\s+(?:url\()?\s*(['\"]?)(?:https?:)?//.*?(?:\1|\))\s*;?", re.IGNORECASE)
+
+
+def _sanitize_xml_document(content: bytes) -> bytes:
+    try:
+        root = ElementTree.fromstring(content)
+    except ElementTree.ParseError:
+        raise BookRequestError("EPUB contains malformed HTML", status=422, code="malformed_epub") from None
+    dangerous = {"script", "iframe", "object", "embed", "form", "base"}
+    for parent in root.iter():
+        for child in list(parent):
+            if child.tag.split("}")[-1].lower() in dangerous:
+                parent.remove(child)
+        for name, value in list(parent.attrib.items()):
+            local_name = name.split("}")[-1].lower()
+            text = str(value or "").strip()
+            if local_name.startswith("on") or text.lower().startswith("javascript:"):
+                del parent.attrib[name]
+                continue
+            if local_name in ("src", "href", "poster", "action", "formaction", "xlink:href") and _REMOTE_RESOURCE.match(text):
+                del parent.attrib[name]
+                continue
+            if local_name == "style":
+                parent.attrib[name] = _CSS_REMOTE_IMPORT.sub("", _CSS_REMOTE_URL.sub("none", text))
+    if root.tag.split("}")[-1].lower() == "html":
+        namespace = root.tag[1:].split("}", 1)[0] if root.tag.startswith("{") else ""
+        head_tag = f"{{{namespace}}}head" if namespace else "head"
+        meta_tag = f"{{{namespace}}}meta" if namespace else "meta"
+        head = next((node for node in root if node.tag == head_tag), None)
+        if head is None:
+            head = ElementTree.Element(head_tag)
+            root.insert(0, head)
+        policy = ElementTree.Element(meta_tag, {
+            "http-equiv": "Content-Security-Policy",
+            "content": "default-src 'self' data: blob:; script-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'",
+        })
+        head.insert(0, policy)
+    return ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
+def sanitize_epub_archive(source: Path, destination: Path) -> None:
+    try:
+        with zipfile.ZipFile(source, "r") as incoming, zipfile.ZipFile(destination, "w") as outgoing:
+            mimetype = incoming.read("mimetype")
+            outgoing.writestr("mimetype", mimetype, compress_type=zipfile.ZIP_STORED)
+            for entry in incoming.infolist():
+                if entry.filename == "mimetype" or entry.is_dir():
+                    continue
+                content = incoming.read(entry)
+                suffix = Path(entry.filename).suffix.lower()
+                if suffix in (".xhtml", ".html", ".htm", ".svg"):
+                    if len(content) > 10_000_000:
+                        raise BookRequestError("EPUB contains oversized HTML", status=422, code="malformed_epub")
+                    content = _sanitize_xml_document(content)
+                elif suffix == ".css":
+                    if len(content) > 10_000_000:
+                        raise BookRequestError("EPUB contains oversized CSS", status=422, code="malformed_epub")
+                    text = content.decode("utf-8", errors="replace")
+                    content = _CSS_REMOTE_IMPORT.sub("", _CSS_REMOTE_URL.sub("none", text)).encode("utf-8")
+                outgoing.writestr(entry.filename, content, compress_type=zipfile.ZIP_DEFLATED)
+    except BookRequestError:
+        raise
+    except (OSError, zipfile.BadZipFile, KeyError, RuntimeError):
+        raise BookRequestError("EPUB sanitization failed", status=422, code="malformed_epub") from None
 
 
 def _enabled(value: str | None) -> bool:
@@ -309,6 +420,149 @@ class BookStore:
             ).fetchall()
         return {"books": [self._row_public(row) for row in rows], "total": total, "limit": limit, "offset": offset}
 
+    def progress_for_books(self, user_id: str, book_ids: list[int]) -> dict[int, dict[str, Any]]:
+        if not book_ids:
+            return {}
+        placeholders = ",".join("?" for _ in book_ids)
+        with self.lock, self.connection() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM book_progress WHERE user_id = ? AND book_id IN ({placeholders})",
+                (user_id, *book_ids),
+            ).fetchall()
+        return {int(row["book_id"]): self._progress_public(row) for row in rows}
+
+    @staticmethod
+    def _progress_public(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "bookId": int(row["book_id"]),
+            "locatorType": row["locator_type"],
+            "locator": row["locator"],
+            "resourceHref": row["resource_href"],
+            "progression": row["progression"],
+            "revision": int(row["revision"]),
+            "updatedAt": row["updated_at"],
+        }
+
+    def get_progress(self, user_id: str, book_id: int) -> dict[str, Any] | None:
+        with self.lock, self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM book_progress WHERE user_id = ? AND book_id = ?",
+                (str(user_id), int(book_id)),
+            ).fetchone()
+        return self._progress_public(row) if row else None
+
+    def save_progress(self, user_id: str, book_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise BookRequestError("Progress payload must be an object")
+        locator_type = str(payload.get("locatorType") or "")
+        locator = str(payload.get("locator") or "").strip()
+        if locator_type != "cfi" or not locator.startswith("epubcfi(") or len(locator) > 8192:
+            raise BookRequestError("Progress requires a valid EPUB CFI locator")
+        resource_href = str(payload.get("resourceHref") or "").replace("\x00", "").strip()[:2000]
+        progression = payload.get("progression")
+        if progression is not None:
+            try:
+                progression = float(progression)
+            except (TypeError, ValueError):
+                raise BookRequestError("Progression must be a number") from None
+            if not 0 <= progression <= 1:
+                raise BookRequestError("Progression must be between 0 and 1")
+        try:
+            base_revision = int(payload.get("revision") or 0)
+        except (TypeError, ValueError):
+            raise BookRequestError("Progress revision is invalid") from None
+        now = utc_now()
+        with self.lock, self.connection() as connection:
+            if not connection.execute("SELECT 1 FROM books WHERE id = ?", (int(book_id),)).fetchone():
+                raise BookRequestError("Book not found", status=404, code="not_found")
+            current = connection.execute(
+                "SELECT * FROM book_progress WHERE user_id = ? AND book_id = ?",
+                (str(user_id), int(book_id)),
+            ).fetchone()
+            current_revision = int(current["revision"]) if current else 0
+            if base_revision != current_revision:
+                raise BookRequestError(
+                    "Reading position changed on another device",
+                    status=409,
+                    code="progress_conflict",
+                    current=self._progress_public(current) if current else None,
+                )
+            next_revision = current_revision + 1
+            connection.execute("""
+                INSERT INTO book_progress (
+                    user_id, book_id, locator_type, locator, resource_href,
+                    progression, revision, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, book_id) DO UPDATE SET
+                    locator_type = excluded.locator_type,
+                    locator = excluded.locator,
+                    resource_href = excluded.resource_href,
+                    progression = excluded.progression,
+                    revision = excluded.revision,
+                    updated_at = excluded.updated_at
+            """, (
+                str(user_id), int(book_id), locator_type, locator, resource_href,
+                progression, next_revision, now,
+            ))
+        return self.get_progress(user_id, book_id)
+
+    @staticmethod
+    def default_preferences() -> dict[str, Any]:
+        return {
+            "theme": "light", "fontFamily": "publisher", "fontSize": 100,
+            "lineHeight": 1.5, "contentWidth": 720, "readingFlow": "paginated",
+            "textAlignment": "start",
+        }
+
+    def get_preferences(self, user_id: str) -> dict[str, Any]:
+        with self.lock, self.connection() as connection:
+            row = connection.execute("SELECT * FROM book_reader_preferences WHERE user_id = ?", (str(user_id),)).fetchone()
+        if not row:
+            return self.default_preferences()
+        return {
+            "theme": row["theme"], "fontFamily": row["font_family"], "fontSize": int(row["font_size"]),
+            "lineHeight": float(row["line_height"]), "contentWidth": int(row["content_width"]),
+            "readingFlow": row["reading_flow"], "textAlignment": row["text_alignment"],
+        }
+
+    def save_preferences(self, user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise BookRequestError("Reader preferences must be an object")
+        unknown = set(payload) - set(self.default_preferences())
+        if unknown:
+            raise BookRequestError(f"Unknown reader preferences: {', '.join(sorted(unknown))}")
+        values = {**self.get_preferences(user_id), **payload}
+        if values["theme"] not in ("light", "dark", "sepia"):
+            raise BookRequestError("Invalid book theme")
+        if values["fontFamily"] not in ("publisher", "serif", "sans"):
+            raise BookRequestError("Invalid font family")
+        if values["readingFlow"] not in ("paginated", "scrolled"):
+            raise BookRequestError("Invalid reading flow")
+        if values["textAlignment"] not in ("start", "left", "justify"):
+            raise BookRequestError("Invalid text alignment")
+        try:
+            values["fontSize"] = max(75, min(180, int(values["fontSize"])))
+            values["lineHeight"] = max(1.1, min(2.2, float(values["lineHeight"])))
+            values["contentWidth"] = max(480, min(1200, int(values["contentWidth"])))
+        except (TypeError, ValueError):
+            raise BookRequestError("Reader preference values are invalid") from None
+        with self.lock, self.connection() as connection:
+            connection.execute("""
+                INSERT INTO book_reader_preferences (
+                    user_id, theme, font_family, font_size, line_height,
+                    content_width, reading_flow, text_alignment, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    theme = excluded.theme, font_family = excluded.font_family,
+                    font_size = excluded.font_size, line_height = excluded.line_height,
+                    content_width = excluded.content_width, reading_flow = excluded.reading_flow,
+                    text_alignment = excluded.text_alignment, updated_at = excluded.updated_at
+            """, (
+                str(user_id), values["theme"], values["fontFamily"], values["fontSize"], values["lineHeight"],
+                values["contentWidth"], values["readingFlow"], values["textAlignment"], utc_now(),
+            ))
+        return self.get_preferences(user_id)
+
     def get_book(self, book_id: int, *, public: bool = True) -> dict[str, Any] | None:
         with self.lock, self.connection() as connection:
             row = connection.execute("SELECT * FROM books WHERE id = ?", (int(book_id),)).fetchone()
@@ -444,6 +698,7 @@ class BooksService:
         self._release_tokens: dict[str, tuple[float, dict[str, Any]]] = {}
         self._book_tokens: dict[str, tuple[float, dict[str, Any]]] = {}
         self._release_lock = threading.Lock()
+        self._epub_lock = threading.Lock()
 
     def shelfmark_client(self) -> ShelfmarkClient:
         if not self.config.shelfmark_configured:
@@ -505,11 +760,64 @@ class BooksService:
                     pass
             delay = self.config.sync_interval_seconds
 
-    def list_books(self, query: str = "", limit: int = 100, offset: int = 0) -> dict[str, Any]:
-        return self.store.list_books(query, limit, offset)
+    def list_books(self, user_id: str, query: str = "", limit: int = 100, offset: int = 0) -> dict[str, Any]:
+        result = self.store.list_books(query, limit, offset)
+        progress = self.store.progress_for_books(user_id, [book["id"] for book in result["books"]])
+        for book in result["books"]:
+            book["progress"] = progress.get(book["id"])
+        return result
 
     def get_book(self, book_id: int) -> dict[str, Any] | None:
         return self.store.get_book(book_id)
+
+    def progress(self, user_id: str, book_id: int) -> dict[str, Any] | None:
+        return self.store.get_progress(user_id, book_id)
+
+    def save_progress(self, user_id: str, book_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.store.save_progress(user_id, book_id, payload)
+
+    def preferences(self, user_id: str) -> dict[str, Any]:
+        return self.store.get_preferences(user_id)
+
+    def save_preferences(self, user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.store.save_preferences(user_id, payload)
+
+    def epub_path(self, book_id: int) -> Path:
+        book = self.store.get_book(book_id, public=False)
+        if not book:
+            raise BookRequestError("Book not found", status=404, code="not_found")
+        if not book["acquisition_href"]:
+            raise BookRequestError("This book has no EPUB acquisition link", status=404, code="epub_unavailable")
+        cache_root = Path(self.config.cache_path).expanduser().resolve()
+        cache_root.mkdir(parents=True, exist_ok=True)
+        target = cache_root / f"{int(book_id)}.epub"
+        with self._epub_lock:
+            if target.exists() and target.is_file() and target.stat().st_size >= 4:
+                return target
+            temporary_path = None
+            sanitized_path = None
+            try:
+                with tempfile.NamedTemporaryFile("wb", dir=cache_root, prefix=f".{int(book_id)}-", suffix=".epub", delete=False) as temporary:
+                    temporary_path = Path(temporary.name)
+                    self.opds_client().download_epub(book["acquisition_href"], temporary)
+                validate_epub_archive(temporary_path)
+                with tempfile.NamedTemporaryFile("wb", dir=cache_root, prefix=f".{int(book_id)}-sanitized-", suffix=".epub", delete=False) as sanitized:
+                    sanitized_path = Path(sanitized.name)
+                sanitize_epub_archive(temporary_path, sanitized_path)
+                validate_epub_archive(sanitized_path)
+                digest = hashlib.sha256()
+                with open(sanitized_path, "rb") as handle:
+                    while chunk := handle.read(1024 * 1024):
+                        digest.update(chunk)
+                os.replace(sanitized_path, target)
+                sanitized_path = None
+                self.store.update_content_hash(book_id, digest.hexdigest())
+                return target
+            finally:
+                if temporary_path and temporary_path.exists():
+                    temporary_path.unlink()
+                if sanitized_path and sanitized_path.exists():
+                    sanitized_path.unlink()
 
     def cover(self, book_id: int) -> tuple[bytes, str]:
         book = self.store.get_book(book_id, public=False)

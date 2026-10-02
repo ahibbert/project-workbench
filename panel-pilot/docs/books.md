@@ -13,6 +13,18 @@ does not change the Suwayomi library, chapter data, manga progress, or reader.
 4. Panels indexes OPDS metadata and proxies covers and EPUB files. Panels owns
    reading position and reader preferences in `books.sqlite3`.
 
+Before an EPUB reaches the browser, Panels validates its ZIP structure and
+expanded size, rejects encrypted/path-traversal entries, strips scripts and
+active embedded content, removes remote resource references, and injects a
+restrictive document CSP. The reader uses a sandboxed epub.js rendition with
+scripted content disabled. The downloaded sanitized EPUB is cached separately
+from CWA and addressed only through an authenticated same-origin Panels route.
+
+Reading progress is stored as an exact EPUB CFI plus its resource href and an
+optional display percentage. Revisions prevent silent cross-device overwrites.
+Theme, typography, line spacing, alignment, content width, and page/scroll flow
+preferences are stored in the book database rather than browser storage.
+
 Shelfmark is only an acquisition provider. Panels does not install or configure
 Shelfmark download sources and does not handle DRM-protected files.
 

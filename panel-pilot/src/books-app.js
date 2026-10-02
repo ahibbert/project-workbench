@@ -29,6 +29,8 @@ export function createBooksApp({ root, navigate }) {
   let selectedBook = null;
   let releaseResults = [];
   let downloadPoll = 0;
+  let readerController = null;
+  let readerGeneration = 0;
 
   function shell() {
     if (initialized) return;
@@ -131,6 +133,22 @@ export function createBooksApp({ root, navigate }) {
         renderEmpty(content);
         return;
       }
+      const continuing = payload.books
+        .filter((book) => book.progress?.locator)
+        .sort((left, right) => String(right.progress.updatedAt).localeCompare(String(left.progress.updatedAt)));
+      if (continuing.length) {
+        const section = element("section", "books-continue");
+        section.append(element("h2", "", "Continue Reading"));
+        const recent = continuing[0];
+        const resume = element("button", "book-continue-card");
+        resume.type = "button";
+        resume.addEventListener("click", () => navigate("book-read", { id: recent.id }));
+        const copy = element("span");
+        copy.append(element("strong", "", recent.title), element("small", "", recent.progress.progression == null ? "Return to your exact position" : `${Math.round(recent.progress.progression * 100)}% read`));
+        resume.append(copy, element("span", "", "Continue ›"));
+        section.append(resume);
+        content.append(section);
+      }
       const summary = element("p", "books-summary", `${payload.total} book${payload.total === 1 ? "" : "s"}`);
       const grid = element("div", "books-grid");
       for (const book of payload.books) {
@@ -148,6 +166,9 @@ export function createBooksApp({ root, navigate }) {
         }
         const copy = element("span", "book-card-copy");
         copy.append(element("strong", "", book.title), element("small", "", bookByline(book)));
+        if (book.progress?.locator) {
+          copy.append(element("small", "book-card-progress", book.progress.progression == null ? "In progress" : `${Math.round(book.progress.progression * 100)}% read`));
+        }
         button.append(copy);
         grid.append(button);
       }
@@ -161,7 +182,7 @@ export function createBooksApp({ root, navigate }) {
     const content = root.querySelector("#books-content");
     content.replaceChildren(element("p", "books-loading", "Loading book…"));
     try {
-      const { book } = await request(`/api/books/${encodeURIComponent(id)}`);
+      const { book, progress } = await request(`/api/books/${encodeURIComponent(id)}`);
       const back = element("button", "text-button books-back", "‹ Books");
       back.type = "button";
       back.dataset.booksAction = "back";
@@ -177,7 +198,7 @@ export function createBooksApp({ root, navigate }) {
       if (book.subtitle) copy.append(element("p", "book-subtitle", book.subtitle));
       copy.append(element("p", "book-authors", bookByline(book)));
       if (book.description) copy.append(element("p", "book-description", book.description));
-      const read = element("button", "primary-button", "Read book");
+      const read = element("button", "primary-button", progress?.locator ? "Continue reading" : "Read book");
       read.type = "button";
       read.disabled = !book.hasEpub;
       read.addEventListener("click", () => navigate("book-read", { id: book.id }));
@@ -187,6 +208,42 @@ export function createBooksApp({ root, navigate }) {
     } catch (error) {
       content.replaceChildren(element("p", "books-error", error.message));
     }
+  }
+
+  async function renderReader(id) {
+    const generation = ++readerGeneration;
+    document.body.classList.add("book-reader-active");
+    const content = root.querySelector("#books-content");
+    content.replaceChildren(element("div", "epub-reader-state books-reader-loading", "Preparing reader…"));
+    try {
+      const [{ book, progress }, { preferences }, module] = await Promise.all([
+        request(`/api/books/${encodeURIComponent(id)}`),
+        request("/api/books/preferences"),
+        import("./epub-reader.js"),
+      ]);
+      if (generation !== readerGeneration) return;
+      readerController?.destroy?.();
+      readerController = await module.createEpubReader({
+        root: content,
+        book,
+        progress,
+        preferences,
+        onExit: () => navigate("book-detail", { id: book.id }),
+      });
+    } catch (error) {
+      if (generation !== readerGeneration) return;
+      const back = element("button", "text-button books-back", "‹ Book details");
+      back.type = "button";
+      back.addEventListener("click", () => navigate("book-detail", { id }));
+      content.replaceChildren(back, element("p", "books-error", error.message));
+    }
+  }
+
+  function leaveReader() {
+    readerGeneration += 1;
+    readerController?.destroy?.();
+    readerController = null;
+    document.body.classList.remove("book-reader-active");
   }
 
   function humanSize(bytes) {
@@ -381,6 +438,7 @@ export function createBooksApp({ root, navigate }) {
     async show(route) {
       window.clearTimeout(downloadPoll);
       shell();
+      if (route.bookRoute !== "book-read") leaveReader();
       await loadStatus().catch((error) => {
         root.querySelector("#books-connection-copy").textContent = error.message;
       });
@@ -391,8 +449,12 @@ export function createBooksApp({ root, navigate }) {
         scheduleDownloadPoll();
         return;
       }
-      if (route.bookRoute === "book-read") return renderDetail(id);
+      if (route.bookRoute === "book-read" && id) return renderReader(id);
       return renderLibrary();
+    },
+    hide() {
+      window.clearTimeout(downloadPoll);
+      leaveReader();
     },
   };
 }

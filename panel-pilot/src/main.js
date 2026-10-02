@@ -1484,6 +1484,7 @@ function recordNavigationState(mode = "push", detail = false) {
 function setActiveView(view, options = {}) {
   if (!isAppView(view)) return;
   const previous = state.activeView;
+  if (previous === "books" && view !== "books") state.booksController?.hide?.();
   if (previous && previous !== "reader") state.viewScrollPositions[previous] = window.scrollY;
   if (view === "reader" && previous !== "reader") {
     state.previousView = previous;

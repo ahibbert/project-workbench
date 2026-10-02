@@ -213,6 +213,46 @@ class OpdsClient:
             raise OpdsError("CWA cover response was not an image", code="invalid_cover")
         return content, content_type.split(";", 1)[0]
 
+    def download_epub(self, url: str, destination, *, maximum: int = 300_000_000) -> tuple[int, str]:
+        safe_url = self._safe_url(url)
+        request = Request(
+            safe_url,
+            headers={**self._headers, "Accept": "application/epub+zip,application/octet-stream"},
+            method="GET",
+        )
+        try:
+            with self._opener.open(request, timeout=max(60, self.config.timeout_seconds)) as response:
+                self._safe_url(response.geturl())
+                content_type = response.headers.get("Content-Type", "application/octet-stream").split(";", 1)[0].lower()
+                if content_type not in ("application/epub+zip", "application/octet-stream", "application/zip"):
+                    raise OpdsError("CWA acquisition response was not an EPUB", code="invalid_epub")
+                try:
+                    declared = int(response.headers.get("Content-Length", "0") or 0)
+                except ValueError:
+                    declared = 0
+                if declared > maximum:
+                    raise OpdsError("EPUB is larger than the configured safety limit", code="epub_too_large")
+                total = 0
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > maximum:
+                        raise OpdsError("EPUB is larger than the configured safety limit", code="epub_too_large")
+                    destination.write(chunk)
+                if total < 4:
+                    raise OpdsError("CWA returned an empty EPUB", code="invalid_epub")
+                return total, content_type
+        except OpdsError:
+            raise
+        except HTTPError as error:
+            status = 401 if error.code in (401, 403) else 502
+            code = "authentication_failed" if status == 401 else "acquisition_unavailable"
+            raise OpdsError(f"CWA EPUB acquisition failed (HTTP {error.code})", code=code, status=status) from None
+        except (URLError, TimeoutError, OSError):
+            raise OpdsError("CWA EPUB acquisition is unavailable", code="acquisition_unavailable") from None
+
     def health(self) -> dict[str, Any]:
         page = self.page()
         return {"ok": True, "title": page["title"], "bookCount": len(page["books"])}

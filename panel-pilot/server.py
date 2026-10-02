@@ -25,7 +25,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from source_intelligence import SourceIntelligenceError, SourceIntelligenceStore
-from books import BooksConfig, BooksService
+from books import BookRequestError, BooksConfig, BooksService
 from opds_client import OpdsError
 from shelfmark_client import ShelfmarkError
 from comic_recommendations import (
@@ -2726,6 +2726,13 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/books/downloads":
                 self.handle_books_download_post()
                 return
+            if parsed.path == "/api/books/preferences":
+                self.handle_books_preferences_post()
+                return
+            book_progress = re.fullmatch(r"/api/books/(\d+)/progress", parsed.path)
+            if book_progress:
+                self.handle_book_progress_post(int(book_progress.group(1)))
+                return
             if parsed.path == "/api/library":
                 self.handle_library_post()
                 return
@@ -2786,6 +2793,12 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
                 except (SourceIntelligenceError, ValueError, json.JSONDecodeError) as error:
                     self.send_json({"error": str(error)}, status=400)
                 return
+        except BookRequestError as error:
+            payload = {"error": str(error), "code": error.code}
+            if error.current is not None:
+                payload["current"] = error.current
+            self.send_json(payload, status=error.status)
+            return
         except (ShelfmarkError, OpdsError) as error:
             self.send_json({"error": str(error), "code": error.code}, status=error.status)
             return
@@ -2944,6 +2957,17 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/books/downloads":
                 self.handle_books_downloads_get()
                 return
+            if parsed.path == "/api/books/preferences":
+                self.handle_books_preferences_get()
+                return
+            book_progress = re.fullmatch(r"/api/books/(\d+)/progress", parsed.path)
+            if book_progress:
+                self.handle_book_progress_get(int(book_progress.group(1)))
+                return
+            book_epub = re.fullmatch(r"/api/books/(\d+)/epub", parsed.path)
+            if book_epub:
+                self.handle_book_epub(int(book_epub.group(1)))
+                return
             book_cover = re.fullmatch(r"/api/books/(\d+)/cover", parsed.path)
             if book_cover:
                 self.handle_book_cover(int(book_cover.group(1)))
@@ -3019,6 +3043,12 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
                     f"panels-reading-stats-{datetime.now(timezone.utc).date().isoformat()}.json",
                 )
                 return
+        except BookRequestError as error:
+            payload = {"error": str(error), "code": error.code}
+            if error.current is not None:
+                payload["current"] = error.current
+            self.send_json(payload, status=error.status)
+            return
         except (ShelfmarkError, OpdsError) as error:
             self.send_json({"error": str(error), "code": error.code}, status=error.status)
             return
@@ -3052,6 +3082,10 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             return
         self.send_json(self.books_service().status())
 
+    def book_user_id(self):
+        username, _ = self.auth_credentials()
+        return username or "local"
+
     def handle_books_connection_test(self):
         config = self.books_config()
         if not config.enabled:
@@ -3073,6 +3107,7 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             return
         params = parse_qs(parsed.query)
         self.send_json(self.books_service().list_books(
+            self.book_user_id(),
             params.get("q", [""])[0],
             params.get("limit", [100])[0],
             params.get("offset", [0])[0],
@@ -3086,7 +3121,7 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         if not book:
             self.send_json({"error": "Book not found"}, status=404)
             return
-        self.send_json({"book": book})
+        self.send_json({"book": book, "progress": self.books_service().progress(self.book_user_id(), book_id)})
 
     def handle_book_cover(self, book_id):
         if not self.books_config().enabled:
@@ -3142,6 +3177,54 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             self.send_json({"error": "Books are disabled", "code": "feature_disabled"}, status=404)
             return
         self.send_json({"downloads": self.books_service().refresh_downloads()})
+
+    def handle_book_progress_get(self, book_id):
+        if not self.books_config().enabled:
+            self.send_json({"error": "Books are disabled", "code": "feature_disabled"}, status=404)
+            return
+        if not self.books_service().get_book(book_id):
+            self.send_json({"error": "Book not found"}, status=404)
+            return
+        self.send_json({"progress": self.books_service().progress(self.book_user_id(), book_id)})
+
+    def handle_book_progress_post(self, book_id):
+        if not self.books_config().enabled:
+            self.send_json({"error": "Books are disabled", "code": "feature_disabled"}, status=404)
+            return
+        payload = self.read_json_request(16384)
+        self.send_json({"progress": self.books_service().save_progress(self.book_user_id(), book_id, payload)})
+
+    def handle_books_preferences_get(self):
+        if not self.books_config().enabled:
+            self.send_json({"error": "Books are disabled", "code": "feature_disabled"}, status=404)
+            return
+        self.send_json({"preferences": self.books_service().preferences(self.book_user_id())})
+
+    def handle_books_preferences_post(self):
+        if not self.books_config().enabled:
+            self.send_json({"error": "Books are disabled", "code": "feature_disabled"}, status=404)
+            return
+        payload = self.read_json_request(16384)
+        self.send_json({"preferences": self.books_service().save_preferences(self.book_user_id(), payload)})
+
+    def handle_book_epub(self, book_id):
+        if not self.books_config().enabled:
+            self.send_error(404, "Not found")
+            return
+        path = self.books_service().epub_path(book_id)
+        size = path.stat().st_size
+        self.send_response(200)
+        self.send_header("Content-Type", "application/epub+zip")
+        self.send_header("Content-Disposition", f'inline; filename="book-{int(book_id)}.epub"')
+        self.send_header("Cache-Control", "private, max-age=3600")
+        self.send_header("Content-Length", str(size))
+        self.end_headers()
+        try:
+            with open(path, "rb") as handle:
+                while chunk := handle.read(1024 * 1024):
+                    self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
     def mangabaka_json(self, path, method="GET", payload=None, token=None):
         if not path.startswith("/") or path.startswith("//"):

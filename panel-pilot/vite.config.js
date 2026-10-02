@@ -37,6 +37,11 @@ export default defineConfig({
         entryFileNames: "assets/[name]-[hash].js",
         chunkFileNames: "assets/[name]-[hash].js",
         assetFileNames: "assets/[name]-[hash][extname]",
+        manualChunks(id) {
+          if (id.includes("node_modules/epubjs") || id.includes("node_modules/jszip") || id.includes("node_modules/@xmldom")) {
+            return "epub-reader-engine";
+          }
+        },
       },
     },
   },
@@ -92,6 +97,7 @@ export default defineConfig({
           "assets/reader-clarity-worker-*.js",
           "assets/books-app-*.*",
           "assets/books-*.*",
+          "assets/epub-reader-*.*",
         ],
       },
     }),

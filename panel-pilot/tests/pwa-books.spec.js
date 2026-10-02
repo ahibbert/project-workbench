@@ -1,6 +1,12 @@
 import { expect, test } from "@playwright/test";
+import { readFileSync } from "node:fs";
 
 test.use({ serviceWorkers: "block" });
+
+const epubFixture = Buffer.from(
+  readFileSync(new URL("./fixtures/alice-public-domain.epub.b64", import.meta.url), "utf8").trim(),
+  "base64",
+);
 
 const book = {
   id: 1,
@@ -15,7 +21,7 @@ const book = {
   lastSyncedAt: "2026-10-02T00:00:00Z",
 };
 
-async function stubApp(page, { booksEnabled, queued = [] }) {
+async function stubApp(page, { booksEnabled, queued = [], progressState = { current: null }, progressWrites = [] }) {
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     if (url.pathname === "/api/books/status") {
@@ -38,8 +44,27 @@ async function stubApp(page, { booksEnabled, queued = [] }) {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ books: [book], total: 1, limit: 200, offset: 0 }) });
       return;
     }
+    if (url.pathname === "/api/books/1/progress" && route.request().method() === "POST") {
+      const incoming = route.request().postDataJSON();
+      progressWrites.push(incoming);
+      progressState.current = { ...incoming, bookId: 1, revision: (progressState.current?.revision || 0) + 1, updatedAt: new Date().toISOString() };
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ progress: progressState.current }) });
+      return;
+    }
+    if (url.pathname === "/api/books/1/epub") {
+      await route.fulfill({ status: 200, contentType: "application/epub+zip", body: epubFixture });
+      return;
+    }
+    if (url.pathname === "/api/books/preferences") {
+      const preferences = route.request().method() === "POST" ? route.request().postDataJSON() : {
+        theme: "light", fontFamily: "publisher", fontSize: 100, lineHeight: 1.5,
+        contentWidth: 720, readingFlow: "paginated", textAlignment: "start",
+      };
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ preferences }) });
+      return;
+    }
     if (url.pathname === "/api/books/1") {
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ book }) });
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ book, progress: progressState.current }) });
       return;
     }
     if (url.pathname === "/api/books/search") {
@@ -122,4 +147,31 @@ test("Shelfmark acquisition offers only normalized EPUB choices and queues an op
   expect(queued[0].bookToken).toBe("opaque-book-token");
   expect(JSON.stringify(queued[0])).not.toContain("download_url");
   expect(queued[0].book).toBeUndefined();
+});
+
+test("EPUB reader opens a public-domain fixture and persists an exact CFI", async ({ page }) => {
+  const progressWrites = [];
+  const progressState = { current: null };
+  await stubApp(page, { booksEnabled: true, progressWrites, progressState });
+  await page.goto("/", { waitUntil: "networkidle" });
+  await page.locator("#nav-books").click();
+  await page.locator(".book-card").click();
+  await page.getByRole("button", { name: "Read book" }).click();
+  await expect(page).toHaveURL(/#book-read\?id=1$/);
+  await expect(page.locator(".epub-reader")).toBeVisible();
+  await expect(page.locator(".epub-reader-title")).toHaveText("Alice's Adventures in Wonderland");
+  await expect(page.frameLocator(".epub-viewport iframe").locator("body")).toContainText("Alice was beginning to get very tired");
+  await expect.poll(() => progressWrites.length, { timeout: 10_000 }).toBeGreaterThan(0);
+  expect(progressWrites.at(-1).locatorType).toBe("cfi");
+  expect(progressWrites.at(-1).locator).toMatch(/^epubcfi\(/);
+  expect(progressWrites.at(-1).revision).toBe(0);
+
+  await page.getByRole("button", { name: "Books", exact: false }).first().click();
+  await expect(page).toHaveURL(/#book-detail\?id=1$/);
+  await expect(page.getByRole("button", { name: "Continue reading" })).toBeVisible();
+  const writesBeforeReopen = progressWrites.length;
+  await page.getByRole("button", { name: "Continue reading" }).click();
+  await expect(page.frameLocator(".epub-viewport iframe").locator("body")).toContainText("Alice was beginning to get very tired");
+  await expect.poll(() => progressWrites.length, { timeout: 10_000 }).toBeGreaterThan(writesBeforeReopen);
+  expect(progressWrites.at(-1).revision).toBe(1);
 });

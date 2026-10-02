@@ -3,13 +3,17 @@ import pathlib
 import tempfile
 import unittest
 from unittest import mock
+import zipfile
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 import sys
 sys.path.insert(0, str(ROOT))
 
-from books import BookStore, BooksConfig, BooksService  # noqa: E402
+from books import (  # noqa: E402
+    BookRequestError, BookStore, BooksConfig, BooksService,
+    sanitize_epub_archive, validate_epub_archive,
+)
 from opds_client import OpdsClient, OpdsError, parse_opds_feed  # noqa: E402
 from shelfmark_client import normalize_metadata_results, normalize_releases  # noqa: E402
 from server import PanelPilotHandler  # noqa: E402
@@ -127,6 +131,39 @@ class BooksConfigurationTests(unittest.TestCase):
             self.assertEqual(private["acquisition_href"], "http://cwa/new.epub")
             self.assertNotIn("acquisition_href", result["books"][0])
 
+    def test_exact_cfi_progress_uses_optimistic_revisions(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = BookStore(str(pathlib.Path(temporary) / "books.sqlite3"))
+            store.sync_books([{
+                "stableIdentifier": "urn:alice", "title": "Alice", "authors": ["Lewis Carroll"],
+                "isbn": "", "acquisitionHref": "http://cwa/alice.epub", "coverHref": "",
+            }])
+            book_id = store.list_books()["books"][0]["id"]
+            first = store.save_progress("reader", book_id, {
+                "locatorType": "cfi", "locator": "epubcfi(/6/2!/4/2/1:0)",
+                "resourceHref": "chapter-1.xhtml", "progression": 0.125, "revision": 0,
+            })
+            self.assertEqual(first["revision"], 1)
+            self.assertEqual(store.get_progress("reader", book_id)["locator"], "epubcfi(/6/2!/4/2/1:0)")
+            with self.assertRaises(BookRequestError) as raised:
+                store.save_progress("reader", book_id, {
+                    "locatorType": "cfi", "locator": "epubcfi(/6/4!/4/2/1:0)", "revision": 0,
+                })
+            self.assertEqual(raised.exception.status, 409)
+            self.assertEqual(raised.exception.current["revision"], 1)
+
+    def test_reader_preferences_are_validated_and_persisted(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = BookStore(str(pathlib.Path(temporary) / "books.sqlite3"))
+            saved = store.save_preferences("reader", {
+                "theme": "sepia", "fontSize": 125, "lineHeight": 1.8, "readingFlow": "scrolled",
+            })
+            self.assertEqual(saved["theme"], "sepia")
+            self.assertEqual(saved["fontSize"], 125)
+            self.assertEqual(saved["readingFlow"], "scrolled")
+            with self.assertRaisesRegex(BookRequestError, "Invalid book theme"):
+                store.save_preferences("reader", {"theme": "neon"})
+
 
 class ShelfmarkNormalizationTests(unittest.TestCase):
     def test_metadata_search_normalizes_documented_shape(self):
@@ -233,6 +270,54 @@ class OpdsParsingTests(unittest.TestCase):
             [book["stableIdentifier"] for book in client.catalog()],
             ["one", "two"],
         )
+
+
+class EpubValidationTests(unittest.TestCase):
+    def test_minimal_public_domain_epub_fixture_is_accepted(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = pathlib.Path(temporary) / "alice-excerpt.epub"
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+                archive.writestr("META-INF/container.xml", """<?xml version='1.0'?><container xmlns='urn:oasis:names:tc:opendocument:xmlns:container'><rootfiles><rootfile full-path='EPUB/package.opf' media-type='application/oebps-package+xml'/></rootfiles></container>""")
+                archive.writestr("EPUB/package.opf", """<?xml version='1.0'?><package xmlns='http://www.idpf.org/2007/opf' version='3.0'><metadata xmlns:dc='http://purl.org/dc/elements/1.1/'><dc:title>Alice excerpt</dc:title><dc:language>en</dc:language><dc:identifier>public-domain-fixture</dc:identifier></metadata><manifest><item id='c1' href='c1.xhtml' media-type='application/xhtml+xml'/></manifest><spine><itemref idref='c1'/></spine></package>""")
+                archive.writestr("EPUB/c1.xhtml", "<html xmlns='http://www.w3.org/1999/xhtml'><body><p>Alice was beginning to get very tired.</p></body></html>")
+            validate_epub_archive(path)
+
+    def test_malformed_and_path_traversal_epubs_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            malformed = pathlib.Path(temporary) / "malformed.epub"
+            malformed.write_bytes(b"not a zip")
+            with self.assertRaises(BookRequestError) as raised:
+                validate_epub_archive(malformed)
+            self.assertEqual(raised.exception.code, "malformed_epub")
+
+            traversal = pathlib.Path(temporary) / "traversal.epub"
+            with zipfile.ZipFile(traversal, "w") as archive:
+                archive.writestr("mimetype", "application/epub+zip")
+                archive.writestr("META-INF/container.xml", "container")
+                archive.writestr("../escape.xhtml", "unsafe")
+            with self.assertRaisesRegex(BookRequestError, "unsafe archive"):
+                validate_epub_archive(traversal)
+
+    def test_epub_sanitizer_removes_scripts_handlers_and_remote_resources(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = pathlib.Path(temporary) / "source.epub"
+            destination = pathlib.Path(temporary) / "sanitized.epub"
+            with zipfile.ZipFile(source, "w") as archive:
+                archive.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+                archive.writestr("META-INF/container.xml", "container")
+                archive.writestr("EPUB/c1.xhtml", """<html xmlns='http://www.w3.org/1999/xhtml'><head/><body onload='steal()'><script>alert(1)</script><img src='https://tracker.invalid/pixel'/><a href='javascript:steal()'>Safe text</a></body></html>""")
+                archive.writestr("EPUB/book.css", "@import 'https://tracker.invalid/style.css'; p{background:url(//tracker.invalid/pixel)}")
+            sanitize_epub_archive(source, destination)
+            with zipfile.ZipFile(destination) as archive:
+                html = archive.read("EPUB/c1.xhtml").decode("utf-8")
+                css = archive.read("EPUB/book.css").decode("utf-8")
+            self.assertNotIn("<script", html)
+            self.assertNotIn("onload", html)
+            self.assertNotIn("tracker.invalid", html)
+            self.assertNotIn("javascript:", html)
+            self.assertIn("Content-Security-Policy", html)
+            self.assertNotIn("tracker.invalid", css)
 
 
 if __name__ == "__main__":
