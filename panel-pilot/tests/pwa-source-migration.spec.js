@@ -33,6 +33,7 @@ function pageImage(number) {
 }
 
 test("a failed chapter can migrate to another source without losing reading state", async ({ page }) => {
+  await page.setViewportSize({ width: 430, height: 932 });
   const oldChapter = chapter(oldManga.id, 80142);
   const newChapter = chapter(newManga.id, 90142);
   const mangaLibraryState = new Map([[oldManga.id, true], [newManga.id, false]]);
@@ -202,6 +203,23 @@ test("a failed chapter can migrate to another source without losing reading stat
   await expect(card).toBeVisible();
 
   await card.locator('[data-library-action="chapters"]').click();
+  await expect(page.locator("#detail-compare-source")).toBeVisible();
+  await page.locator("#detail-compare-source").click();
+  const qualityDialog = page.locator(".source-quality-dialog");
+  await expect(qualityDialog).toBeVisible();
+  await expect(qualityDialog.locator(".source-quality-summary")).toContainText("Comparison complete", { timeout: 15_000 });
+  await expect.poll(() => qualityDialog.evaluate((dialog) => dialog.scrollWidth <= dialog.clientWidth)).toBe(true);
+  const recommendedSource = qualityDialog.locator('.source-quality-card[data-recommended="true"]');
+  await expect(recommendedSource).toContainText("Reliable Manga");
+  await expect(recommendedSource.locator(".source-quality-sample")).toHaveCount(2);
+  await expect(recommendedSource).toContainText("Migrate to this source");
+  await recommendedSource.locator(".source-quality-sample").first().click();
+  await expect(qualityDialog.locator(".source-quality-preview")).toBeVisible();
+  await expect(qualityDialog.locator(".source-quality-preview img")).toHaveAttribute("src", /^blob:/);
+  await qualityDialog.locator('.source-quality-preview [aria-label="Close full-resolution preview"]').click();
+  await qualityDialog.locator('[aria-label="Close source comparison"]').click();
+  await expect(qualityDialog).toBeHidden();
+
   await expect(page.locator("#detail-change-source")).toBeVisible();
   await page.locator("#detail-change-source").click();
   await expect(page.locator("#recommendation-context-title")).toHaveText("Move Golden Kamuy to another source");
@@ -222,9 +240,13 @@ test("a failed chapter can migrate to another source without losing reading stat
   await expect(replacement).toBeVisible();
   await expect(page.locator("#manga-results .manga-card").first()).toContainText("Reliable Manga");
   await expect(replacement).toContainText("Recommended · 92/100 · established");
-  await replacement.locator(".manga-cover-button").click();
-  await expect(page.locator("#detail-library")).toHaveText("Switch to this source");
-  await page.locator("#detail-library").click();
+  await page.locator("#clear-recommendation-context").click();
+  await page.locator("#nav-library").click();
+  await page.locator(".library-card").filter({ hasText: "Golden Kamuy" }).locator('[data-library-action="chapters"]').click();
+  await page.locator("#detail-compare-source").click();
+  const migrationChoice = page.locator('.source-quality-card[data-recommended="true"]').filter({ hasText: "Reliable Manga" });
+  await expect(migrationChoice).toBeVisible();
+  await migrationChoice.locator(".source-quality-migrate").click();
 
   await expect(page.locator("#reader-view")).toHaveClass(/\bactive\b/);
   await expect(page.locator("#reader-error")).toBeHidden();

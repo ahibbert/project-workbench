@@ -1,6 +1,6 @@
 {
   "name": "panels",
-  "version": "0.130.1",
+  "version": "0.131.0",
   "private": true,
   "type": "module",
   "description": "A mobile-first Suwayomi manga reader with guided panel navigation.",
@@ -22,7 +22,7 @@
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0",
     "test:reproducible": "node tests/verify-reproducible-build.mjs",
-    "test": "npm run test:reproducible && node --test tests/build-contract.test.mjs tests/detection-quality.test.mjs tests/lanczos-resampler.test.mjs tests/moments-rediscovery.test.mjs tests/page-spread.test.mjs tests/panel-calibration.test.mjs tests/progress-reconciliation.test.mjs tests/reader-clarity.test.mjs tests/reading-session.test.mjs tests/reading-stats.test.mjs tests/server-buffer-retention.test.mjs && playwright test"
+    "test": "npm run test:reproducible && node --test tests/build-contract.test.mjs tests/detection-quality.test.mjs tests/lanczos-resampler.test.mjs tests/moments-rediscovery.test.mjs tests/page-spread.test.mjs tests/panel-calibration.test.mjs tests/progress-reconciliation.test.mjs tests/reader-clarity.test.mjs tests/reading-session.test.mjs tests/reading-stats.test.mjs tests/server-buffer-retention.test.mjs tests/source-quality.test.mjs && playwright test"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",

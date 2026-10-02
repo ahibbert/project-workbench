@@ -86,6 +86,10 @@ export default defineConfig({
           "login.html",
           "panel-test.html",
           "assets/panel-test-*.js",
+          // Source comparison always needs live Suwayomi access. The clarity
+          // worker is an optional enhancement with a native-render fallback.
+          "assets/source-quality-comparison-*.*",
+          "assets/reader-clarity-worker-*.js",
         ],
       },
     }),
