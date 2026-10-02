@@ -59,6 +59,12 @@ Create the initial CWA account, enable OPDS authentication, and use that account
 for `CWA_USERNAME` and `CWA_PASSWORD`. Panels never returns these values, the
 Shelfmark key, or upstream acquisition URLs to the client.
 
+In Shelfmark, open **Settings → Metadata Providers** and enable **Open Library**
+(or another metadata provider you operate). Open Library needs no API key and
+only supplies search metadata; enabling it does not configure a release or
+download source. Panel Pilot deliberately leaves download-source selection to
+the Shelfmark operator.
+
 ## Shared-volume permissions
 
 Both book containers must run with the same `BOOKS_PUID` and `BOOKS_PGID`. The
@@ -126,6 +132,9 @@ the `books` profile.
 
 - **Shelfmark test fails with 401:** verify both containers have the exact same
   API key and restart Shelfmark after changing it.
+- **Book search says no metadata provider is configured:** enable Open Library
+  under Shelfmark's Metadata Providers settings. This is independent of any
+  release/download source.
 - **CWA test fails with 401:** verify the OPDS user can open `/opds` using Basic
   authentication.
 - **Downloads never import:** check ownership of the shared volume and CWA's
