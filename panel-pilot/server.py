@@ -1459,7 +1459,8 @@ class DownloadBufferManager:
             requested = list(self.requested_chapter_ids)
             requested_set = set(requested)
             task_by_id = {item["chapterId"]: dict(item) for item in self.tasks if item["chapterId"] in requested_set}
-            failure_by_id = {item["chapterId"]: dict(item) for item in self.failures if item["chapterId"] in requested_set}
+            failure_records = [dict(item) for item in self.failures]
+            failure_by_id = {item["chapterId"]: item for item in failure_records if item["chapterId"] in requested_set}
             prepared_chapters = set(self.prepared_chapters)
         status.update({
             "windowSize": len(requested),
@@ -1470,10 +1471,25 @@ class DownloadBufferManager:
             "failedInWindow": len(failure_by_id),
             "panelReady": len(requested_set & prepared_chapters),
             "windowChapters": [],
+            "failedChapters": [
+                {
+                    "chapterId": failure["chapterId"],
+                    "state": "failed",
+                    "attempts": failure.get("attempts", 0),
+                    "lastError": str(failure.get("lastError") or "")[:500],
+                    "failedAt": failure.get("failedAt", 0),
+                    "panelReady": failure["chapterId"] in prepared_chapters,
+                }
+                for failure in reversed(failure_records)
+            ],
         })
-        if requested:
+        detail_ids = list(dict.fromkeys([
+            *requested,
+            *(failure["chapterId"] for failure in reversed(failure_records)),
+        ]))
+        if detail_ids:
             try:
-                details = self.chapter_download_details(requested)
+                details = self.chapter_download_details(detail_ids)
                 status["windowChapters"] = []
                 for chapter_id in requested:
                     detail = details.get(chapter_id, {"chapterId": chapter_id})
@@ -1500,6 +1516,17 @@ class DownloadBufferManager:
                     })
                 status["downloaded"] = sum(1 for detail in status["windowChapters"] if detail.get("isDownloaded"))
                 status["downloadStateKnown"] = True
+                status["failedChapters"] = [
+                    {
+                        **details.get(failure["chapterId"], {"chapterId": failure["chapterId"]}),
+                        "state": "failed",
+                        "attempts": failure.get("attempts", 0),
+                        "lastError": str(failure.get("lastError") or "")[:500],
+                        "failedAt": failure.get("failedAt", 0),
+                        "panelReady": failure["chapterId"] in prepared_chapters,
+                    }
+                    for failure in reversed(failure_records)
+                ]
             except Exception as error:
                 status["statusError"] = str(error)[:300]
         return status

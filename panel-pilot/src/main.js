@@ -219,6 +219,7 @@ const el = {
   downloadStatQueued: document.querySelector("#download-stat-queued"),
   downloadStatRetrying: document.querySelector("#download-stat-retrying"),
   downloadStatFailed: document.querySelector("#download-stat-failed"),
+  downloadStatFailedFilter: document.querySelector("#download-stat-failed-filter"),
   downloadChapterList: document.querySelector("#download-chapter-list"),
   downloadStatusIssue: document.querySelector("#download-status-issue"),
   downloadStatusRetry: document.querySelector("#download-status-retry"),
@@ -536,6 +537,7 @@ const state = {
   downloadStatus: null,
   downloadStatusSheetOpen: false,
   downloadStatusReturnFocus: null,
+  downloadStatusFilter: "all",
   libraryOfflineWindows: new Map(),
   libraryOfflineReadiness: new Map(),
   libraryDeferredRenderPending: false,
@@ -1602,7 +1604,7 @@ async function graphQL(query, variables = {}, options = {}) {
 }
 
 function friendlySourceErrorMessage(error) {
-  const message = error?.message || "Unknown error";
+  const message = typeof error === "string" ? error : (error?.message || "Unknown error");
   if (/^Suwayomi URL\b/i.test(message)) return message;
   if (/urlopen error|winerror\s*10061|connection refused|actively refused|failed to fetch/i.test(message)) {
     return "The reading server is unavailable right now. Check the connection and try again.";
@@ -5218,6 +5220,36 @@ function downloadChapterStateLabel(chapter) {
   return "Pending";
 }
 
+function setDownloadStatusFilter(filter) {
+  const nextFilter = filter === "failed" ? "failed" : "all";
+  state.downloadStatusFilter = state.downloadStatusFilter === nextFilter && nextFilter !== "all"
+    ? "all"
+    : nextFilter;
+  renderDownloadStatus(state.downloadStatus);
+  requestAnimationFrame(() => el.downloadStatFailedFilter?.focus({ preventScroll: true }));
+}
+
+async function retryFailedChapter(chapter, button) {
+  const chapterId = Number(chapter?.chapterId ?? chapter?.id);
+  if (!Number.isInteger(chapterId) || chapterId < 1) return;
+  setBusy(button, true, "Retrying");
+  try {
+    const status = await postLocalJson("/api/download-buffer", {
+      chapterIds: [chapterId],
+      priority: "background",
+    });
+    if ((status.failedChapters || []).some((failedChapter) => Number(failedChapter?.chapterId) === chapterId)) {
+      throw new Error("This chapter could not be returned to the queue. It may no longer belong to a library title.");
+    }
+    renderDownloadStatus(status);
+    showToast(`${downloadChapterLabel(chapter)} returned to the download queue.`, "good");
+  } catch (error) {
+    showToast(`Could not retry ${downloadChapterLabel(chapter)}: ${friendlySourceErrorMessage(error)}`, "bad");
+  } finally {
+    setBusy(button, false);
+  }
+}
+
 function renderDownloadStatus(status) {
   state.downloadStatus = status || null;
   updateLibraryOfflineReadiness(status);
@@ -5233,6 +5265,8 @@ function renderDownloadStatus(status) {
   const visible = Boolean(status && (total || globalFailed || Number(status?.queued) || active));
   const working = Boolean(active || queued || retrying);
   const tone = failed || globalFailed ? "bad" : (working ? "working" : "good");
+  if (globalFailed < 1) state.downloadStatusFilter = "all";
+  const failedFilterActive = state.downloadStatusFilter === "failed";
 
   el.downloadStatusButton.hidden = !visible;
   document.body.classList.toggle("has-download-status", visible);
@@ -5248,13 +5282,19 @@ function renderDownloadStatus(status) {
   el.downloadStatusCount.textContent = total ? `${downloaded}/${total} ready` : (globalFailed ? `${globalFailed} failed` : "Checking…");
   el.downloadStatusButton.setAttribute("aria-label", `Suwayomi server buffer: ${el.downloadStatusLabel.textContent}, ${el.downloadStatusCount.textContent}. Open details.`);
 
-  const chapters = Array.isArray(status?.windowChapters) ? status.windowChapters : [];
+  const chapters = failedFilterActive
+    ? (Array.isArray(status?.failedChapters) ? status.failedChapters : [])
+    : (Array.isArray(status?.windowChapters) ? status.windowChapters : []);
   const mangaTitle = chapters.find((chapter) => chapter.mangaTitle)?.mangaTitle || "";
   if (el.downloadStatusTitle) {
-    el.downloadStatusTitle.textContent = mangaTitle ? `${mangaTitle} · server buffer` : "Server chapter buffer";
+    el.downloadStatusTitle.textContent = failedFilterActive
+      ? "Failed server downloads"
+      : (mangaTitle ? `${mangaTitle} · server buffer` : "Server chapter buffer");
   }
   if (el.downloadStatusSummary) {
-    el.downloadStatusSummary.textContent = downloadBufferStatusText(status).replace(/^Server chapter buffer:\s*/i, "");
+    el.downloadStatusSummary.textContent = failedFilterActive
+      ? `${globalFailed} failed chapter${globalFailed === 1 ? "" : "s"}. Retry one below or return them all to the queue.`
+      : downloadBufferStatusText(status).replace(/^Server chapter buffer:\s*/i, "");
   }
   if (el.downloadProgressTrack) {
     el.downloadProgressTrack.setAttribute("aria-valuemax", String(Math.max(1, total)));
@@ -5264,10 +5304,24 @@ function renderDownloadStatus(status) {
   if (el.downloadStatDownloaded) el.downloadStatDownloaded.textContent = String(downloaded);
   if (el.downloadStatQueued) el.downloadStatQueued.textContent = String(queued + (active ? 1 : 0));
   if (el.downloadStatRetrying) el.downloadStatRetrying.textContent = String(retrying);
-  if (el.downloadStatFailed) el.downloadStatFailed.textContent = String(failed || globalFailed);
+  if (el.downloadStatFailed) el.downloadStatFailed.textContent = String(globalFailed);
+  if (el.downloadStatFailedFilter) {
+    el.downloadStatFailedFilter.disabled = globalFailed < 1;
+    el.downloadStatFailedFilter.setAttribute("aria-pressed", failedFilterActive ? "true" : "false");
+    el.downloadStatFailedFilter.setAttribute(
+      "aria-label",
+      failedFilterActive ? "Show all server downloads" : `Show ${globalFailed} failed download${globalFailed === 1 ? "" : "s"}`,
+    );
+  }
 
   if (el.downloadChapterList) {
     el.downloadChapterList.replaceChildren();
+    if (!chapters.length && failedFilterActive) {
+      const empty = document.createElement("p");
+      empty.className = "download-chapter-empty";
+      empty.textContent = "No failed chapters remain.";
+      el.downloadChapterList.append(empty);
+    }
     chapters.forEach((chapter) => {
       const row = document.createElement("div");
       row.className = "download-chapter-row";
@@ -5281,11 +5335,27 @@ function renderDownloadStatus(status) {
       title.textContent = downloadChapterLabel(chapter);
       const source = document.createElement("small");
       source.textContent = [chapter.mangaTitle, chapter.sourceLabel].filter(Boolean).join(" · ") || "Suwayomi";
-      const badge = document.createElement("span");
-      badge.className = "download-chapter-badge";
-      badge.textContent = downloadChapterStateLabel(chapter);
       copy.append(title, source);
-      row.append(marker, copy, badge);
+      if (failedFilterActive && chapter.lastError) {
+        const error = document.createElement("small");
+        error.className = "download-chapter-error";
+        error.textContent = friendlySourceErrorMessage(chapter.lastError);
+        copy.append(error);
+      }
+      let trailing;
+      if (failedFilterActive && chapter.state === "failed") {
+        trailing = document.createElement("button");
+        trailing.type = "button";
+        trailing.className = "download-chapter-retry";
+        trailing.textContent = "Retry";
+        trailing.setAttribute("aria-label", `Retry ${downloadChapterLabel(chapter)}`);
+        trailing.addEventListener("click", () => void retryFailedChapter(chapter, trailing));
+      } else {
+        trailing = document.createElement("span");
+        trailing.className = "download-chapter-badge";
+        trailing.textContent = downloadChapterStateLabel(chapter);
+      }
+      row.append(marker, copy, trailing);
       el.downloadChapterList.append(row);
     });
   }
@@ -11849,6 +11919,7 @@ function wireEvents() {
   el.downloadStatusButton?.addEventListener("click", (event) => setDownloadStatusSheet(!state.downloadStatusSheetOpen, event.currentTarget));
   el.downloadStatusBackdrop?.addEventListener("click", () => setDownloadStatusSheet(false));
   el.downloadStatusClose?.addEventListener("click", () => setDownloadStatusSheet(false));
+  el.downloadStatFailedFilter?.addEventListener("click", () => setDownloadStatusFilter("failed"));
   el.downloadStatusRetry?.addEventListener("click", retryFailedDownloads);
   window.addEventListener("keydown", (event) => {
     if (!state.downloadStatusSheetOpen) return;

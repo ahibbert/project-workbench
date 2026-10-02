@@ -3292,21 +3292,52 @@ body.has-reading-miniplayer .download-status-button {
   margin-top: 0.7rem;
 }
 
-.download-status-stats span {
+.download-status-stats > span,
+.download-status-stats > button {
   min-width: 0;
   display: grid;
   gap: 0.08rem;
+  min-height: 3.65rem;
+  margin: 0;
+  border: 1px solid transparent;
   border-radius: 10px;
   padding: 0.48rem 0.25rem;
   background: var(--panel-strong);
   color: var(--muted);
   font-size: 0.75rem;
+  font-weight: inherit;
   text-align: center;
 }
 
 .download-status-stats strong {
   color: var(--ink);
   font-size: 0.88rem;
+}
+
+.download-status-stats .download-stat-filter {
+  cursor: pointer;
+}
+
+.download-status-stats .download-stat-filter:not(:disabled):hover,
+.download-status-stats .download-stat-filter:not(:disabled):focus-visible {
+  border-color: rgba(182, 77, 67, 0.36);
+  background: #fff8f7;
+}
+
+.download-status-stats .download-stat-filter[aria-pressed="true"] {
+  border-color: rgba(182, 77, 67, 0.56);
+  background: #fff1ef;
+  color: #943f37;
+  box-shadow: inset 0 0 0 1px rgba(182, 77, 67, 0.08);
+}
+
+.download-status-stats .download-stat-filter[aria-pressed="true"] strong {
+  color: #943f37;
+}
+
+.download-status-stats .download-stat-filter:disabled {
+  cursor: default;
+  opacity: 0.64;
 }
 
 .download-chapter-list {
@@ -3355,6 +3386,33 @@ body.has-reading-miniplayer .download-status-button {
 
 .download-chapter-copy strong { font-size: 0.75rem; }
 .download-chapter-copy small { color: var(--muted); font-size: 0.75rem; }
+
+.download-chapter-copy .download-chapter-error {
+  margin-top: 0.12rem;
+  color: #943f37;
+  white-space: normal;
+}
+
+.download-chapter-retry {
+  min-width: 4.4rem;
+  min-height: 2.75rem;
+  margin: 0;
+  border: 1px solid rgba(182, 77, 67, 0.34);
+  border-radius: 999px;
+  padding: 0.35rem 0.65rem;
+  background: #fff8f7;
+  color: #943f37;
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.download-chapter-empty {
+  margin: 0;
+  padding: 1rem 0.25rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-align: center;
+}
 
 body.download-sheet-open {
   overflow: hidden;

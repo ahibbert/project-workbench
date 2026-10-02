@@ -76,6 +76,45 @@ class DownloadBufferManagerTests(unittest.TestCase):
             self.assertEqual(status["failed"], 0)
             self.assertEqual(manager.tasks[0]["chapterId"], 30)
 
+    def test_status_includes_failed_chapter_details_outside_the_active_window(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = self.make_manager(directory)
+            manager.requested_chapter_ids = [40]
+            manager.failures = [{
+                "chapterId": 30,
+                "attempts": manager.MAX_ATTEMPTS,
+                "lastError": "rate limited",
+                "failedAt": 2_000,
+            }]
+            manager.chapter_download_details = lambda chapter_ids: {
+                chapter_id: {
+                    "chapterId": chapter_id,
+                    "name": f"Chapter {chapter_id}",
+                    "mangaTitle": "Fixture title",
+                    "sourceLabel": "Fixture source",
+                    "isDownloaded": chapter_id == 40,
+                }
+                for chapter_id in chapter_ids
+            }
+
+            status = manager.status()
+
+            self.assertEqual(status["failed"], 1)
+            self.assertEqual(status["failedInWindow"], 0)
+            self.assertEqual(status["windowChapters"][0]["state"], "downloaded")
+            self.assertEqual(status["failedChapters"], [{
+                "chapterId": 30,
+                "name": "Chapter 30",
+                "mangaTitle": "Fixture title",
+                "sourceLabel": "Fixture source",
+                "isDownloaded": False,
+                "state": "failed",
+                "attempts": manager.MAX_ATTEMPTS,
+                "lastError": "rate limited",
+                "failedAt": 2_000,
+                "panelReady": False,
+            }])
+
     def test_background_enqueue_retains_foreground_window_and_all_tasks(self):
         with tempfile.TemporaryDirectory() as directory:
             manager = self.make_manager(directory)

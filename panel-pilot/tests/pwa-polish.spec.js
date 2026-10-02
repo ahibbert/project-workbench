@@ -110,12 +110,12 @@ function searchManga(query, id) {
 function failedBufferStatus() {
   return {
     activeChapterId: null,
-    downloaded: 0,
+    downloaded: 1,
     downloadStateKnown: true,
-    failed: 1,
-    failedInWindow: 1,
-    panelReady: 0,
-    preparedChapterIds: [],
+    failed: 2,
+    failedInWindow: 0,
+    panelReady: 1,
+    preparedChapterIds: [80101],
     queued: 0,
     queuedFresh: 0,
     retrying: 0,
@@ -129,10 +129,37 @@ function failedBufferStatus() {
       sourceLabel: source.displayName,
       name: "Chapter 1",
       chapterNumber: 1,
+      state: "downloaded",
+      panelReady: true,
+      isDownloaded: true,
+      lastError: "",
+    }],
+    failedChapters: [{
+      chapterId: 80201,
+      id: 80201,
+      mangaId: 802,
+      mangaTitle: "Planned Fixture",
+      sourceId: source.id,
+      sourceLabel: source.displayName,
+      name: "Chapter 8",
+      chapterNumber: 8,
       state: "failed",
       panelReady: false,
       isDownloaded: false,
       lastError: "The fixture source is temporarily unavailable",
+    }, {
+      chapterId: 80102,
+      id: 80102,
+      mangaId: 801,
+      mangaTitle: "Reading Fixture",
+      sourceId: source.id,
+      sourceLabel: source.displayName,
+      name: "Chapter 2",
+      chapterNumber: 2,
+      state: "failed",
+      panelReady: false,
+      isDownloaded: false,
+      lastError: "Rate limited",
     }],
   };
 }
@@ -146,6 +173,7 @@ async function installPolishFixture(page, { holdStoredChapters = false, detailCh
   let storedQueries = 0;
   let searchRequests = 0;
   const progressMutations = [];
+  const downloadBufferRequests = [];
 
   await page.addInitScript(({ baseUrl, library }) => {
     try { delete Navigator.prototype.serviceWorker; } catch { /* PWA lifecycle is outside this suite. */ }
@@ -236,7 +264,15 @@ async function installPolishFixture(page, { holdStoredChapters = false, detailCh
     }
 
     if (url.pathname === "/api/download-buffer") {
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(failedBufferStatus()) });
+      const payload = request.postDataJSON() || {};
+      downloadBufferRequests.push(payload);
+      const response = failedBufferStatus();
+      if (Array.isArray(payload.chapterIds)) {
+        const retried = new Set(payload.chapterIds.map(Number));
+        response.failedChapters = response.failedChapters.filter((chapter) => !retried.has(Number(chapter.chapterId)));
+        response.failed = response.failedChapters.length;
+      }
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(response) });
       return;
     }
 
@@ -259,6 +295,7 @@ async function installPolishFixture(page, { holdStoredChapters = false, detailCh
     releaseStoredChapters: () => releaseStored.resolve(),
     searchRequests: () => searchRequests,
     progressMutations,
+    downloadBufferRequests,
     storedQueries: () => storedQueries,
     storedStarted: () => storedStarted.promise,
   };
@@ -575,6 +612,37 @@ test("the server-buffer sheet is modal, traps focus, closes, and restores focus 
   await page.keyboard.press("Escape");
   await expect(sheet).toBeHidden();
   await expect(pill).toBeFocused();
+});
+
+test("the failed download total filters to actionable failed chapters", async ({ page }) => {
+  const fixture = await installPolishFixture(page);
+  await page.setViewportSize({ width: 430, height: 932 });
+  await page.goto("/");
+  await page.locator("#download-status-button").click();
+
+  const filter = page.locator("#download-stat-failed-filter");
+  await expect(filter).toContainText("2");
+  await expect(filter).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator(".download-chapter-row")).toHaveCount(1);
+  await expect(page.locator(".download-chapter-row")).toHaveAttribute("data-state", "downloaded");
+
+  await filter.click();
+  await expect(filter).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#download-status-title")).toHaveText("Failed server downloads");
+  await expect(page.locator(".download-chapter-row")).toHaveCount(2);
+  await expect(page.locator('.download-chapter-row[data-state="failed"]')).toHaveCount(2);
+  await expect(page.locator(".download-chapter-error").first()).toContainText("temporarily unavailable");
+
+  await page.getByRole("button", { name: "Retry Chapter 8" }).click();
+  await expect.poll(() => fixture.downloadBufferRequests).toContainEqual({
+    chapterIds: [80201],
+    priority: "background",
+  });
+
+  await filter.click();
+  await expect(filter).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator(".download-chapter-row")).toHaveCount(1);
+  await expect(page.locator(".download-chapter-row")).toHaveAttribute("data-state", "downloaded");
 });
 
 test("the server-buffer sheet locks scrolling and restores focus after touch-style activation", async ({ page }) => {
