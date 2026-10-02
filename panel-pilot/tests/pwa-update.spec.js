@@ -14,8 +14,9 @@ const contentTypes = {
   ".png": "image/png",
   ".webmanifest": "application/manifest+json; charset=utf-8",
 };
-const legacyWorker = `
-  const cacheName = "panel-pilot-v103";
+function legacyWorker(cacheName) {
+  return `
+  const cacheName = ${JSON.stringify(cacheName)};
   self.addEventListener("install", (event) => {
     event.waitUntil(caches.open(cacheName).then((cache) => cache.put(
       "/legacy-cache-marker",
@@ -25,8 +26,9 @@ const legacyWorker = `
   });
   self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
 `;
+}
 
-function startMigrationServer({ failWorker = false } = {}) {
+function startMigrationServer({ failWorker = false, legacyCacheName = "panel-pilot-v103", serverBuildId = "" } = {}) {
   let servePhaseOneWorker = false;
   const server = createServer((request, response) => {
     const url = new URL(request.url, "http://127.0.0.1");
@@ -35,6 +37,28 @@ function startMigrationServer({ failWorker = false } = {}) {
     if (request.method === "POST" && url.pathname === "/__switch-to-phase-one") {
       servePhaseOneWorker = true;
       response.writeHead(204).end();
+      return;
+    }
+
+    if (url.pathname === "/api/app-version") {
+      if (!serverBuildId) {
+        response.writeHead(404).end("Not found");
+        return;
+      }
+      response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({ buildId: serverBuildId, minimumLifecycleProtocol: 2 }));
+      return;
+    }
+
+    if (url.pathname === "/api/expired") {
+      response.writeHead(401, { "Content-Type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({ error: "Authentication required", login: "/login" }));
+      return;
+    }
+
+    if (url.pathname === "/login") {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      response.end(readFileSync(join(projectRoot, "login.html")));
       return;
     }
 
@@ -64,7 +88,7 @@ function startMigrationServer({ failWorker = false } = {}) {
         "Content-Type": "text/javascript; charset=utf-8",
         "Service-Worker-Allowed": "/",
       });
-      response.end(legacyWorker);
+      response.end(legacyWorker(legacyCacheName));
       return;
     }
 
@@ -93,7 +117,10 @@ function startMigrationServer({ failWorker = false } = {}) {
       const address = server.address();
       resolveServer({
         origin: `http://127.0.0.1:${address.port}`,
-        close: () => new Promise((done, fail) => server.close((error) => error ? fail(error) : done())),
+        close: () => new Promise((done, fail) => {
+          server.close((error) => error ? fail(error) : done());
+          server.closeAllConnections?.();
+        }),
       });
     });
   });
@@ -220,6 +247,145 @@ test("a v103 worker waits for consent, preserves state, and reloads exactly once
       legacyCachePresent: false,
       controllerPresent: true,
     });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("a legacy v52 shell is repaired without deleting downloaded chapters or device data", async ({ page }) => {
+  const fixture = await startMigrationServer({
+    legacyCacheName: "panel-pilot-v52",
+    serverBuildId: "server-build-newer-than-client",
+  });
+  try {
+    await page.goto(`${fixture.origin}/legacy.html`);
+    await page.evaluate(async () => {
+      await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+      await navigator.serviceWorker.ready;
+      if (!navigator.serviceWorker.controller) {
+        await new Promise((resolveController) => {
+          navigator.serviceWorker.addEventListener("controllerchange", resolveController, { once: true });
+        });
+      }
+      const serverUrl = location.origin;
+      const chapterKey = JSON.stringify([serverUrl, "52"]);
+      const chapterPath = `/__panels_device_chapters/v1/${encodeURIComponent(chapterKey)}/fixture/0`;
+      const chapterBody = "downloaded-page-52";
+      const chapterCache = await caches.open("panels-device-chapters-v1");
+      await chapterCache.put(
+        chapterPath,
+        new Response(chapterBody, { headers: { "Content-Type": "image/jpeg" } }),
+      );
+      const deviceDatabase = await new Promise((resolveDatabase, rejectDatabase) => {
+        const request = indexedDB.open("panels-device-library", 1);
+        request.onupgradeneeded = () => request.result.createObjectStore("chapters", { keyPath: "key" });
+        request.onerror = () => rejectDatabase(request.error);
+        request.onsuccess = () => resolveDatabase(request.result);
+      });
+      const timestamp = new Date().toISOString();
+      await new Promise((resolveRecord, rejectRecord) => {
+        const transaction = deviceDatabase.transaction("chapters", "readwrite");
+        transaction.objectStore("chapters").put({
+          key: chapterKey,
+          serverUrl,
+          chapterId: 52,
+          mangaId: 52,
+          title: "Legacy downloaded chapter",
+          chapterTitle: "Chapter 52",
+          pageUrls: ["/fixture/page-52.jpg"],
+          pages: [{
+            index: 0,
+            sourceUrl: "/fixture/page-52.jpg",
+            cacheUrl: chapterPath,
+            contentType: "image/jpeg",
+            size: chapterBody.length,
+            completedAt: timestamp,
+          }],
+          status: "ready",
+          totalPages: 1,
+          downloadedPages: 1,
+          storedBytes: chapterBody.length,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          readyAt: timestamp,
+          error: null,
+        });
+        transaction.oncomplete = resolveRecord;
+        transaction.onerror = () => rejectRecord(transaction.error);
+        transaction.onabort = () => rejectRecord(transaction.error);
+      });
+      deviceDatabase.close();
+      sessionStorage.setItem("legacy-chapter-path", chapterPath);
+      localStorage.setItem("panel-pilot-library", JSON.stringify([{ mangaId: 52, pageIndex: 8 }]));
+      await new Promise((resolveDatabase, rejectDatabase) => {
+        const request = indexedDB.open("panels-v52-preservation", 1);
+        request.onupgradeneeded = () => request.result.createObjectStore("reader");
+        request.onerror = () => rejectDatabase(request.error);
+        request.onsuccess = () => {
+          const transaction = request.result.transaction("reader", "readwrite");
+          transaction.objectStore("reader").put({ pageIndex: 8 }, "position");
+          transaction.oncomplete = () => {
+            request.result.close();
+            resolveDatabase();
+          };
+          transaction.onerror = () => rejectDatabase(transaction.error);
+        };
+      });
+      await fetch("/__switch-to-phase-one", { method: "POST" });
+    });
+
+    await page.goto(`${fixture.origin}/`, { waitUntil: "load" });
+    await expect(page.locator("#app-update")).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator("#app-update-note")).toContainText(/older|newer|update/i);
+    const updatedNavigation = page.waitForEvent("load");
+    await page.locator("#app-update").click();
+    await updatedNavigation;
+    await page.waitForTimeout(750);
+    await expect.poll(() => page.evaluate(async () => (await caches.keys()).includes("panel-pilot-v52"))).toBe(false);
+
+    const preserved = await page.evaluate(async () => {
+      const cached = await (await caches.open("panels-device-chapters-v1")).match(
+        sessionStorage.getItem("legacy-chapter-path"),
+      );
+      const position = await new Promise((resolvePosition, rejectPosition) => {
+        const request = indexedDB.open("panels-v52-preservation");
+        request.onerror = () => rejectPosition(request.error);
+        request.onsuccess = () => {
+          const transaction = request.result.transaction("reader");
+          const get = transaction.objectStore("reader").get("position");
+          get.onsuccess = () => resolvePosition(get.result);
+          get.onerror = () => rejectPosition(get.error);
+        };
+      });
+      return {
+        chapter: await cached?.text(),
+        library: JSON.parse(localStorage.getItem("panel-pilot-library")),
+        position,
+        caches: await caches.keys(),
+      };
+    });
+    expect(preserved.chapter).toBe("downloaded-page-52");
+    expect(preserved.library).toEqual([expect.objectContaining({ mangaId: 52, pageIndex: 8 })]);
+    expect(preserved.position).toEqual({ pageIndex: 8 });
+    expect(preserved.caches).toContain("panels-device-chapters-v1");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("an expired API session redirects globally to a friendly sign-in state", async ({ page }) => {
+  const fixture = await startMigrationServer();
+  const pageErrors = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  try {
+    await page.goto(`${fixture.origin}/#settings`, { waitUntil: "load" });
+    await page.evaluate(() => fetch("/api/expired").catch(() => null));
+    await page.waitForURL(/\/login\?reason=expired&next=/);
+    await expect(page.locator(".expired")).toBeVisible();
+    await expect(page.locator(".expired")).toContainText(/session expired.*continue where you left off/i);
+    const next = new URL(page.url()).searchParams.get("next");
+    expect(next).toContain("#settings");
+    expect(pageErrors).toEqual([]);
   } finally {
     await fixture.close();
   }

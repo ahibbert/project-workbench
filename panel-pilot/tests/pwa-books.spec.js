@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 
 test.use({ serviceWorkers: "block" });
 
@@ -7,6 +7,8 @@ const epubFixture = Buffer.from(
   readFileSync(new URL("./fixtures/alice-public-domain.epub.b64", import.meta.url), "utf8").trim(),
   "base64",
 );
+const epubReaderAsset = readdirSync(new URL("../dist/assets", import.meta.url))
+  .find((name) => /^epub-reader-(?!engine).+\.js$/.test(name));
 
 const book = {
   id: 1,
@@ -30,6 +32,9 @@ async function stubApp(page, {
   progressWrites = [],
   downloads = [],
   recommendations = null,
+  bookSearchQueries = [],
+  preferenceResponder = null,
+  preferenceWrites = [],
 }) {
   let currentBook = { ...book, libraryStatus: progressState.current ? "reading" : book.libraryStatus };
   let currentPreferences = {
@@ -75,7 +80,21 @@ async function stubApp(page, {
       return;
     }
     if (url.pathname === "/api/books/preferences") {
-      if (route.request().method() === "POST") currentPreferences = { ...currentPreferences, ...route.request().postDataJSON() };
+      if (route.request().method() === "POST") {
+        const incoming = route.request().postDataJSON();
+        preferenceWrites.push(incoming);
+        if (preferenceResponder) {
+          const response = await preferenceResponder({ incoming, index: preferenceWrites.length - 1 });
+          if (response?.delay) await new Promise((resolve) => setTimeout(resolve, response.delay));
+          if (response?.status && response.status >= 400) {
+            await route.fulfill({ status: response.status, contentType: "application/json", body: JSON.stringify({ error: response.error || "Preferences unavailable" }) });
+            return;
+          }
+          currentPreferences = { ...currentPreferences, ...(response?.preferences || incoming) };
+        } else {
+          currentPreferences = { ...currentPreferences, ...incoming };
+        }
+      }
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ preferences: currentPreferences }) });
       return;
     }
@@ -89,6 +108,7 @@ async function stubApp(page, {
       return;
     }
     if (url.pathname === "/api/books/search") {
+      bookSearchQueries.push(url.searchParams.get("query"));
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ books: [{
         provider: "openlibrary", providerBookId: "OL123W", token: "opaque-book-token", title: "The Mercy of Gods",
         authors: ["James S. A. Corey"], isbn: "9780356517759", language: "en", publishedDate: "2024",
@@ -99,7 +119,8 @@ async function stubApp(page, {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
         configured: true, status: "ready", mode: "personalized", results: recommendations ?? [{
           id: "librarything:mercy", title: "The Mercy of Gods", authors: ["James S. A. Corey"],
-          coverUrl: "", reason: { type: "because_you_read", seedTitles: ["Leviathan Wakes"] },
+          coverUrl: "", identifiers: { isbn: ["9780356517759"] },
+          reason: { type: "because_you_read", seedTitles: ["Leviathan Wakes"] },
         }],
       }) });
       return;
@@ -136,6 +157,15 @@ async function stubApp(page, {
     }
     await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
   });
+}
+
+async function openEpubReader(page) {
+  await page.goto("/", { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: /^Books$/ }).first().click();
+  await page.getByRole("button", { name: /^Plan/ }).click();
+  await page.locator(".book-library-card").getByRole("button", { name: /Alice's Adventures/ }).click();
+  await page.getByRole("button", { name: "Read book" }).click();
+  await expect(page.frameLocator(".epub-viewport iframe").locator("body")).toContainText("Alice was beginning");
 }
 
 test("books navigation disappears completely while the feature is disabled", async ({ page }) => {
@@ -175,6 +205,19 @@ test("books join the main Library filters without entering manga storage", async
   await expect(card).toContainText("Plan to read");
   await card.getByRole("button", { name: /Alice's Adventures in Wonderland/ }).click();
   await expect(page).toHaveURL(/#book-detail\?id=1$/);
+});
+
+test("the unified Library search finds books by title or author", async ({ page }) => {
+  await stubApp(page, { booksEnabled: true });
+  await page.goto("/", { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: /^Plan/ }).click();
+  const search = page.getByRole("searchbox", { name: "Search library" });
+  await search.fill("Lewis Carroll");
+  await expect(page.locator(".book-library-card")).toHaveCount(1);
+  await expect(page.locator("#library-count")).toHaveText("1 match");
+  await search.fill("unrelated author");
+  await expect(page.locator(".book-library-card")).toHaveCount(0);
+  await expect(page.locator("#library-list")).toContainText("No matching titles");
 });
 
 test("global Continue Reading resumes the most recent EPUB position", async ({ page }) => {
@@ -220,13 +263,15 @@ test("Shelfmark acquisition offers only normalized EPUB choices and queues an op
 });
 
 test("Books for you enters the normal Shelfmark edition and release flow", async ({ page }) => {
-  await stubApp(page, { booksEnabled: true });
+  const bookSearchQueries = [];
+  await stubApp(page, { booksEnabled: true, bookSearchQueries });
   await page.goto("/", { waitUntil: "networkidle" });
   await page.locator("#nav-browse").click();
   await page.locator(".browse-media-switch").getByRole("button", { name: "Books" }).click();
   await expect(page.locator(".book-recommendation-card")).toContainText("Because you read Leviathan Wakes");
   await page.locator(".book-recommendation-card").getByRole("button", { name: "Read this" }).click();
   await expect(page.getByRole("searchbox", { name: "Book title or author" })).toHaveValue("The Mercy of Gods");
+  await expect.poll(() => bookSearchQueries.at(-1)).toBe("9780356517759");
   await expect(page.getByRole("button", { name: /The Mercy of Gods/ })).toBeVisible();
 });
 
@@ -263,6 +308,8 @@ test("book Browse keeps recommendations separate and shows only useful acquisiti
   await expect(page.locator(".books-downloads")).toContainText("Downloading · 42%");
   await expect(page.locator(".books-downloads")).toContainText("Recent Book");
   await expect(page.locator(".books-downloads")).toContainText("Failed Book");
+  await page.getByRole("button", { name: "Find another release" }).click();
+  await expect(page.getByRole("searchbox", { name: "Book title or author" })).toHaveValue("Failed Book");
   await expect(page.locator(".books-downloads")).not.toContainText("Old Ready Book");
   await expect(page.locator(".books-downloads")).not.toContainText("Cancelled Book");
 });
@@ -510,4 +557,182 @@ test("fullscreen falls back to distraction-free controls on unsupported browsers
   await fullscreen.click();
   await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "false");
   await expect(page.locator(".epub-time-remaining")).not.toContainText("not available");
+});
+
+test("EPUB mobile chrome meets touch targets and themed dialogs remain readable", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await stubApp(page, { booksEnabled: true });
+  await openEpubReader(page);
+
+  const targetHeights = await page.locator(".epub-toolbar .epub-tool").evaluateAll((items) => items.map((item) => item.getBoundingClientRect().height));
+  expect(targetHeights.every((height) => height >= 44)).toBe(true);
+
+  await page.locator(".epub-settings summary").click();
+  await page.getByLabel("Theme").selectOption("dark");
+  await expect(page.locator(".epub-reader")).toHaveAttribute("data-theme", "dark");
+  await page.locator(".epub-settings summary").click();
+  await page.getByRole("button", { name: "Contents" }).click();
+  await expect.poll(() => page.locator(".epub-toc").evaluate((dialog) => ({
+    background: getComputedStyle(dialog).backgroundColor,
+    color: getComputedStyle(dialog).color,
+  }))).toEqual({ background: "rgb(23, 25, 24)", color: "rgb(228, 229, 223)" });
+  await page.getByRole("button", { name: "Close" }).click();
+
+  const fullscreen = page.locator(".epub-fullscreen");
+  await fullscreen.evaluate((button) => {
+    Object.defineProperty(button.closest(".epub-reader"), "requestFullscreen", { value: undefined, configurable: true });
+    Object.defineProperty(button.closest(".epub-reader"), "webkitRequestFullscreen", { value: undefined, configurable: true });
+  });
+  await fullscreen.click();
+  await expect(fullscreen).toHaveText("Focus");
+  await expect(fullscreen).toHaveAttribute("aria-label", "Enter distraction-free reading");
+});
+
+test("nested EPUB contents preserve their hierarchy", async ({ page }) => {
+  await page.goto("/panel-test.html");
+  await page.evaluate(async (asset) => {
+    const { renderEpubToc } = await import(`/assets/${asset}`);
+    const host = document.createElement("nav");
+    host.id = "toc-test-host";
+    document.body.append(host);
+    renderEpubToc([{ label: "Part one", href: "part.xhtml", subitems: [
+      { label: "Chapter one", href: "chapter.xhtml", subitems: [{ label: "Scene one", href: "scene.xhtml" }] },
+    ] }], host, () => {});
+  }, epubReaderAsset);
+  await expect(page.locator("#toc-test-host > .epub-toc-root > .epub-toc-item > .epub-toc-children")).toHaveCount(1);
+  await expect(page.locator("#toc-test-host .epub-toc-children .epub-toc-children")).toHaveCount(1);
+  await expect(page.locator("#toc-test-host .epub-toc-link")).toHaveText(["Part one", "Chapter one", "Scene one"]);
+});
+
+test("EPUB preferences are latest-wins and failed changes revert without blocking reading", async ({ page }) => {
+  let failNext = false;
+  const preferenceWrites = [];
+  await stubApp(page, {
+    booksEnabled: true,
+    preferenceWrites,
+    preferenceResponder: async ({ incoming, index }) => {
+      if (failNext) {
+        failNext = false;
+        return { status: 503, error: "Temporarily unavailable" };
+      }
+      return { delay: index === 0 ? 350 : 0, preferences: incoming };
+    },
+  });
+  await openEpubReader(page);
+  await page.locator(".epub-settings summary").click();
+  await page.getByLabel("Theme").selectOption("dark");
+  await page.getByLabel("Theme").selectOption("sepia");
+  await expect(page.locator(".epub-reader")).toHaveAttribute("data-theme", "sepia");
+  await page.waitForTimeout(450);
+  await expect(page.getByLabel("Theme")).toHaveValue("sepia");
+
+  failNext = true;
+  await page.getByLabel("Text size").selectOption("130");
+  await expect(page.getByLabel("Text size")).toHaveValue("100");
+  await expect(page.locator(".epub-reader-notice")).toContainText("previous setting has been restored");
+  await expect(page.locator(".epub-reader-state")).toBeHidden();
+
+  await page.getByLabel("Theme").focus();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".epub-settings")).not.toHaveAttribute("open", "");
+  await expect(page.locator(".epub-settings summary")).toBeFocused();
+});
+
+test("EPUB iframe keyboard navigation, cancelled gestures, and lifecycle flush stay reliable", async ({ page }) => {
+  const progressWrites = [];
+  await stubApp(page, { booksEnabled: true, progressWrites });
+  await openEpubReader(page);
+  await expect.poll(() => progressWrites.length).toBeGreaterThan(0);
+  progressWrites.length = 0;
+  const body = page.frameLocator(".epub-viewport iframe").locator("body");
+  await body.press("ArrowRight");
+  await expect.poll(() => progressWrites.length, { timeout: 3000 }).toBeGreaterThan(0);
+
+  await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "true");
+  await body.evaluate((element) => {
+    const view = element.ownerDocument.defaultView;
+    const options = { bubbles: true, clientX: view.innerWidth / 2, clientY: view.innerHeight / 2, pointerId: 5 };
+    element.dispatchEvent(new PointerEvent("pointerdown", options));
+    element.dispatchEvent(new PointerEvent("pointercancel", options));
+    element.dispatchEvent(new PointerEvent("pointerup", options));
+  });
+  await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "true");
+
+  progressWrites.length = 0;
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true })));
+  await expect.poll(() => progressWrites.length).toBeGreaterThan(0);
+  expect(progressWrites.at(-1).locator).toMatch(/^epubcfi\(/);
+
+  progressWrites.length = 0;
+  await page.evaluate(() => document.dispatchEvent(new Event("freeze")));
+  await expect.poll(() => progressWrites.length).toBeGreaterThan(0);
+  expect(progressWrites.at(-1).locator).toMatch(/^epubcfi\(/);
+});
+
+test("external EPUB links require an explicit safe handoff", async ({ page }) => {
+  await stubApp(page, { booksEnabled: true });
+  await page.addInitScript(() => {
+    window.__openedExternal = [];
+    window.open = (...args) => { window.__openedExternal.push(args); return null; };
+  });
+  await openEpubReader(page);
+  const body = page.frameLocator(".epub-viewport iframe").locator("body");
+  await body.evaluate((element) => {
+    const link = element.ownerDocument.createElement("a");
+    link.textContent = "Publisher website";
+    link.dataset.externalHref = "https://example.com/about";
+    element.prepend(link);
+    link.click();
+  });
+  await expect(page.locator(".epub-external-link")).toBeVisible();
+  await expect(page.locator(".epub-external-copy")).toContainText("example.com");
+  expect(await page.evaluate(() => window.__openedExternal.length)).toBe(0);
+  await page.getByRole("button", { name: "Open in browser" }).click();
+  expect(await page.evaluate(() => window.__openedExternal)).toEqual([["https://example.com/about", "_blank", "noopener,noreferrer"]]);
+});
+
+test("iOS-style content touches always escape distraction-free reading in both flows", async ({ page }) => {
+  await stubApp(page, { booksEnabled: true });
+  await openEpubReader(page);
+
+  const tapContent = async () => {
+    const body = page.frameLocator(".epub-viewport iframe").locator("body");
+    await body.evaluate((element) => {
+      const view = element.ownerDocument.defaultView;
+      const target = element.querySelector("p") || element;
+      const touch = { identifier: 7, target, clientX: view.innerWidth / 2, clientY: view.innerHeight / 2 };
+      const dispatch = (type, touches, changedTouches) => {
+        const event = new Event(type, { bubbles: true, cancelable: true, composed: false });
+        Object.defineProperty(event, "touches", { value: touches });
+        Object.defineProperty(event, "targetTouches", { value: touches });
+        Object.defineProperty(event, "changedTouches", { value: changedTouches });
+        target.dispatchEvent(event);
+      };
+      dispatch("touchstart", [touch], [touch]);
+      dispatch("touchend", [], [touch]);
+      target.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: touch.clientX, clientY: touch.clientY }));
+    });
+  };
+
+  for (const flow of ["paginated", "scrolled"]) {
+    if (flow === "scrolled") {
+      await page.locator(".epub-settings summary").click();
+      await page.getByLabel("Reading flow").selectOption(flow);
+      await expect(page.locator(".epub-reader")).toHaveAttribute("data-flow", flow);
+      await expect(page.frameLocator(".epub-viewport iframe").locator("body")).toContainText("Alice was beginning");
+      await page.locator(".epub-settings summary").click();
+    }
+    await tapContent();
+    await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "false");
+    await expect(page.getByRole("button", { name: "Show reader controls" })).toBeVisible();
+    await page.waitForTimeout(400);
+    await tapContent();
+    await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "true");
+    await page.waitForTimeout(400);
+  }
+
+  await tapContent();
+  await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "false");
+  await page.getByRole("button", { name: "Show reader controls" }).click();
+  await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "true");
 });

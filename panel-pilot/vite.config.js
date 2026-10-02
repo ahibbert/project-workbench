@@ -98,6 +98,9 @@ export default defineConfig({
           "assets/books-app-*.*",
           "assets/books-*.*",
           "assets/epub-reader-*.*",
+          // Stale-client checks are online-only and must never rely on the shell
+          // cache they are responsible for repairing.
+          "assets/app-lifecycle-*.*",
         ],
       },
     }),

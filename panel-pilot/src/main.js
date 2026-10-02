@@ -35,6 +35,11 @@ import {
   clarityAwarePanelRect,
   normalizeHighZoomClarity,
 } from "./reader-clarity.js";
+import {
+  installAuthenticationBoundary,
+  redirectForExpiredSession,
+  SessionExpiredError,
+} from "./auth-boundary.js";
 
 const storeKey = "panel-pilot-settings";
 const panelModeStoreKey = "panel-pilot-panel-mode";
@@ -46,6 +51,7 @@ const sourceIndexRequestTimeoutMs = 12000;
 const packageAppVersion = typeof __APP_VERSION__ === "string" ? __APP_VERSION__ : "";
 const appVersion = packageAppVersion ? `v${packageAppVersion}` : "source";
 const buildId = typeof __BUILD_ID__ === "string" ? __BUILD_ID__ : "source";
+installAuthenticationBoundary();
 const detectorVersion = "detector v19-ml-manga-comic";
 const pageImageRetryDelaysMs = [0, 350];
 const chapterFetchRetryDelaysMs = [0, 400];
@@ -72,6 +78,8 @@ const defaultSuwayomiUrl = "http://localhost:4567";
 const suwayomiCredentialsError = "Suwayomi URL must not include a username or password. Configure credentials on the server instead.";
 const libraryStatuses = ["reading", "plan_to_read", "paused", "completed", "dropped", "rereading", "considering"];
 const libraryFilterValues = ["reading", "plan_to_read", "paused", "completed", "other", "all"];
+const librarySortValues = ["recent", "title", "added", "progress"];
+const chapterFilterValues = ["all", "unread", "downloaded"];
 const mediaFormats = ["manga", "comic", "webtoon"];
 const libraryFormatFilterValues = ["all", ...mediaFormats, "book"];
 const mediaFormatLabels = { manga: "Manga", comic: "Comic", webtoon: "Webtoon", book: "Book" };
@@ -368,6 +376,8 @@ const el = {
   libraryBody: document.querySelector("#library-body"),
   libraryList: document.querySelector("#library-list"),
   libraryCount: document.querySelector("#library-count"),
+  librarySearch: document.querySelector("#library-search"),
+  librarySort: document.querySelector("#library-sort"),
   libraryFilters: [...document.querySelectorAll("[data-library-filter]")],
   libraryFilterCounts: [...document.querySelectorAll("[data-library-count]")],
   libraryFormatFilters: [...document.querySelectorAll("[data-library-format-filter]")],
@@ -415,6 +425,9 @@ const el = {
   chapterList: document.querySelector("#chapter-list"),
   chapterCount: document.querySelector("#chapter-count"),
   scanlatorSelect: document.querySelector("#scanlator-select"),
+  chapterFilters: [...document.querySelectorAll("[data-chapter-filter]")],
+  chapterOrder: document.querySelector("#chapter-order"),
+  chapterJumpCurrent: document.querySelector("#chapter-jump-current"),
   chapterId: document.querySelector("#chapter-id"),
   loadChapterPages: document.querySelector("#load-chapter-pages"),
   connectionDot: document.querySelector("#connection-dot"),
@@ -538,6 +551,11 @@ const state = {
   readerLoadController: null,
   libraryFilter: "reading",
   libraryFormatFilter: "all",
+  libraryQuery: "",
+  librarySort: "recent",
+  librarySearchRenderFrame: 0,
+  chapterFilter: "all",
+  chapterOrder: "desc",
   chapterPageUrls: [],
   pages: [],
   pageIndex: 0,
@@ -930,6 +948,9 @@ function loadSettings() {
     if (["smooth", "quick", "instant"].includes(saved.readerMotion)) state.readerMotion = saved.readerMotion;
     if (libraryFilterValues.includes(saved.libraryFilter)) state.libraryFilter = saved.libraryFilter;
     if (libraryFormatFilterValues.includes(saved.libraryFormatFilter)) state.libraryFormatFilter = saved.libraryFormatFilter;
+    if (librarySortValues.includes(saved.librarySort)) state.librarySort = saved.librarySort;
+    if (chapterFilterValues.includes(saved.chapterFilter)) state.chapterFilter = saved.chapterFilter;
+    if (["asc", "desc"].includes(saved.chapterOrder)) state.chapterOrder = saved.chapterOrder;
     if (Number.isFinite(saved.panelPadding)) state.panelPadding = clamp(saved.panelPadding, 0, 25);
     if (typeof saved.bubbleAwareFraming === "boolean") state.bubbleAwareFraming = saved.bubbleAwareFraming;
     state.highZoomClarity = normalizeHighZoomClarity(saved.highZoomClarity);
@@ -947,6 +968,7 @@ function loadSettings() {
   el.serverUrl.value = state.baseUrl;
   if (el.showNsfwSources) el.showNsfwSources.checked = state.showNsfwSources;
   updateHiddenLibraryToggle();
+  if (el.librarySort) el.librarySort.value = state.librarySort;
   updateSuwayomiSetupPanel();
   updateCollapsiblePanel(el.libraryBody, el.toggleLibraryPanel, state.libraryOpen);
   updateCollapsiblePanel(el.browseBody, el.toggleBrowsePanel, state.browseOpen);
@@ -981,6 +1003,9 @@ function saveSettings() {
       readerMotion: state.readerMotion,
       libraryFilter: state.libraryFilter,
       libraryFormatFilter: state.libraryFormatFilter,
+      librarySort: state.librarySort,
+      chapterFilter: state.chapterFilter,
+      chapterOrder: state.chapterOrder,
       panelPadding: state.panelPadding,
       bubbleAwareFraming: state.bubbleAwareFraming,
       highZoomClarity: state.highZoomClarity,
@@ -3050,10 +3075,8 @@ function completeMangaBakaChapter() {
 
 function handleAuthenticationResponse(response, payload) {
   if (response.status !== 401) return;
-  const login = payload?.login || "/login";
-  const next = `${location.pathname}${location.search}${location.hash}`;
-  location.assign(`${login}?next=${encodeURIComponent(next)}`);
-  throw new Error("Your Panels session expired. Redirecting to sign in.");
+  redirectForExpiredSession(payload?.login);
+  throw new SessionExpiredError();
 }
 
 function appUrl(path) {
@@ -4889,6 +4912,22 @@ function setLibraryFormatFilter(filter) {
   renderLibrary();
 }
 
+function setLibrarySort(sort) {
+  if (!librarySortValues.includes(sort)) return;
+  state.librarySort = sort;
+  saveSettings();
+  renderLibrary({ preserveInteractions: false });
+}
+
+function setLibraryQuery(query) {
+  state.libraryQuery = String(query || "").trim();
+  window.cancelAnimationFrame(state.librarySearchRenderFrame);
+  state.librarySearchRenderFrame = window.requestAnimationFrame(() => {
+    state.librarySearchRenderFrame = 0;
+    renderLibrary({ preserveInteractions: false });
+  });
+}
+
 function mergeLibraryItems(...lists) {
   const merged = [];
   const seen = new Map();
@@ -5017,11 +5056,62 @@ function visibleBookLibraryItems() {
       if (state.libraryFilter === "other") return ["dropped", "considering"].includes(status);
       return status === state.libraryFilter;
     })
-    .slice()
-    .sort((left, right) => {
-      const activity = Date.parse(right.progress?.updatedAt || right.dateAdded || 0) - Date.parse(left.progress?.updatedAt || left.dateAdded || 0);
-      return activity || String(left.title || "").localeCompare(String(right.title || ""));
-    });
+    .filter((book) => libraryQueryMatches([book.title, ...(Array.isArray(book.authors) ? book.authors : [])]));
+}
+
+function libraryQueryMatches(values) {
+  const query = normalizeTitle(state.libraryQuery);
+  if (!query) return true;
+  return normalizeTitle(values.filter(Boolean).join(" ")).includes(query);
+}
+
+function mangaLibraryProgress(item) {
+  const status = normalizedLibraryStatus(item);
+  if (status === "completed") return 1;
+  if (status === "plan_to_read" || (!item.chapterId && !item.started)) return 0;
+  const labelPercent = String(item.progressLabel || "").match(/(\d+(?:\.\d+)?)\s*%/);
+  if (labelPercent) return Math.max(0, Math.min(1, Number(labelPercent[1]) / 100));
+  return 0.5 + Math.min(0.49, Math.max(0, Number(item.pageIndex || 0)) / 10000);
+}
+
+function libraryViewEntry(domain, item) {
+  const isBook = domain === "book";
+  const title = String(isBook ? item.title : item.mangaTitle || "Untitled");
+  const activity = isBook ? item.progress?.updatedAt || item.dateAdded : item.updatedAt || item.dateAdded;
+  const bookProgression = Number(item.progress?.progression);
+  const progress = isBook
+    ? Number.isFinite(bookProgression)
+      ? Math.max(0, Math.min(1, bookProgression))
+      : normalizedBookLibraryStatus(item) === "completed"
+        ? 1
+        : item.progress?.locator ? 0.5 : 0
+    : mangaLibraryProgress(item);
+  return {
+    domain,
+    item,
+    key: isBook ? `book:${item.id}` : libraryItemKey(item),
+    title,
+    pinned: !isBook && Boolean(item.pinned),
+    activity: Date.parse(activity || 0) || 0,
+    added: Date.parse(item.dateAdded || item.createdAt || activity || 0) || 0,
+    progress,
+  };
+}
+
+function sortedLibraryViewEntries(mangaItems, books) {
+  const entries = [
+    ...mangaItems.map((item) => libraryViewEntry("manga", item)),
+    ...books.map((book) => libraryViewEntry("book", book)),
+  ];
+  return entries.sort((left, right) => {
+    if (left.pinned !== right.pinned) return left.pinned ? -1 : 1;
+    let order = 0;
+    if (state.librarySort === "title") order = left.title.localeCompare(right.title, undefined, { sensitivity: "base", numeric: true });
+    if (state.librarySort === "added") order = right.added - left.added;
+    if (state.librarySort === "progress") order = right.progress - left.progress;
+    if (state.librarySort === "recent") order = right.activity - left.activity;
+    return order || left.title.localeCompare(right.title, undefined, { sensitivity: "base", numeric: true });
+  });
 }
 
 function bookLibraryCardSignature(book) {
@@ -5091,12 +5181,18 @@ function renderLibrary({ preserveInteractions = true } = {}) {
   });
   if (el.toggleHiddenLibrary) el.toggleHiddenLibrary.hidden = hiddenCount === 0 && !state.showHiddenLibrary;
   const visibleCount = visibleItems.length + visibleBooks.length;
-  el.libraryCount.textContent = `${visibleCount} title${visibleCount === 1 ? "" : "s"}${hiddenCount ? ` · ${hiddenCount} hidden` : ""}`;
+  const visibleNoun = state.libraryQuery
+    ? (visibleCount === 1 ? "match" : "matches")
+    : (visibleCount === 1 ? "title" : "titles");
+  el.libraryCount.textContent = `${visibleCount} ${visibleNoun}${hiddenCount ? ` · ${hiddenCount} hidden` : ""}`;
   updateReaderNav();
   if (!visibleCount) {
-    const showHiddenAction = !state.showHiddenLibrary && hiddenCount > 0 && state.libraryFilter === "all";
-    const message = showHiddenAction
-      ? "Your current titles are hidden. Show hidden titles to bring them back."
+    const hasQuery = Boolean(state.libraryQuery);
+    const showHiddenAction = !hasQuery && !state.showHiddenLibrary && hiddenCount > 0 && state.libraryFilter === "all";
+    const message = hasQuery
+      ? `No titles match “${state.libraryQuery}” in this view.`
+      : showHiddenAction
+        ? "Your current titles are hidden. Show hidden titles to bring them back."
       : `No titles are currently marked ${state.libraryFilter === "all" ? "for this view" : state.libraryFilter === "other" ? "dropped or considering" : (libraryStatusLabels[state.libraryFilter] || state.libraryFilter).toLowerCase()}.`;
     const empty = document.createElement("div");
     empty.className = "app-empty-state";
@@ -5105,14 +5201,18 @@ function renderLibrary({ preserveInteractions = true } = {}) {
     art.setAttribute("aria-hidden", "true");
     art.textContent = "▤";
     const heading = document.createElement("strong");
-    heading.textContent = "Nothing in this view";
+    heading.textContent = hasQuery ? "No matching titles" : "Nothing in this view";
     const copy = document.createElement("span");
     copy.textContent = message;
     const action = document.createElement("button");
     action.type = "button";
-    action.textContent = showHiddenAction ? "Show hidden titles" : state.libraryFormatFilter === "book" ? "Find books" : "Browse titles";
+    action.textContent = hasQuery ? "Clear search" : showHiddenAction ? "Show hidden titles" : state.libraryFormatFilter === "book" ? "Find books" : "Browse titles";
     action.addEventListener("click", () => {
-      if (showHiddenAction) setShowHiddenLibrary(true);
+      if (hasQuery) {
+        state.libraryQuery = "";
+        if (el.librarySearch) el.librarySearch.value = "";
+        renderLibrary({ preserveInteractions: false });
+      } else if (showHiddenAction) setShowHiddenLibrary(true);
       else if (state.libraryFormatFilter === "book") navigateBookRoute("books-search");
       else setActiveView("browse");
     });
@@ -5122,7 +5222,7 @@ function renderLibrary({ preserveInteractions = true } = {}) {
     return;
   }
 
-  const renderedCards = [];
+  const renderedCardsByKey = new Map();
   let deferredCardUpdate = false;
   visibleItems.forEach((item) => {
     const itemSignature = libraryCardSignature(item);
@@ -5133,7 +5233,7 @@ function renderLibrary({ preserveInteractions = true } = {}) {
     ));
     if (existingCard && (existingCard.dataset.libraryCardSignature === itemSignature || cardIsInUse)) {
       if (cardIsInUse && existingCard.dataset.libraryCardSignature !== itemSignature) deferredCardUpdate = true;
-      renderedCards.push(existingCard);
+      renderedCardsByKey.set(libraryItemKey(item), existingCard);
       return;
     }
     const card = document.createElement("article");
@@ -5248,18 +5348,21 @@ function renderLibrary({ preserveInteractions = true } = {}) {
     actions.append(chapters, more);
 
     card.append(cover, badges, actions);
-    renderedCards.push(card);
+    renderedCardsByKey.set(libraryItemKey(item), card);
   });
   visibleBooks.forEach((book) => {
     const key = `book:${book.id}`;
     const signature = bookLibraryCardSignature(book);
     const existingCard = existingCards.get(key);
     if (existingCard && existingCard.dataset.libraryCardSignature === signature) {
-      renderedCards.push(existingCard);
+      renderedCardsByKey.set(key, existingCard);
     } else {
-      renderedCards.push(createBookLibraryCard(book));
+      renderedCardsByKey.set(key, createBookLibraryCard(book));
     }
   });
+  const renderedCards = sortedLibraryViewEntries(visibleItems, visibleBooks)
+    .map((entry) => renderedCardsByKey.get(entry.key))
+    .filter(Boolean);
   renderedCards.forEach((card, index) => {
     const current = el.libraryList.children[index];
     if (current !== card) el.libraryList.insertBefore(card, current || null);
@@ -5429,24 +5532,25 @@ async function hydrateLibraryCovers() {
 }
 
 function visibleLibraryItems() {
-  return sortLibraryItems(
-    libraryItemsAllowedByNsfw()
-      .filter((item) => state.showHiddenLibrary || !item.hidden)
-      .filter((item) => state.libraryFormatFilter === "all" || inferredMediaFormat(item) === state.libraryFormatFilter)
-      .filter((item) => {
-        const status = normalizedLibraryStatus(item);
-        if (state.libraryFilter === "all") return true;
-        if (state.libraryFilter === "reading") return status === "reading" || status === "rereading";
-        if (state.libraryFilter === "other") return status === "dropped" || status === "considering";
-        return status === state.libraryFilter;
-      })
-  );
+  return libraryItemsAllowedByNsfw()
+    .filter((item) => state.showHiddenLibrary || !item.hidden)
+    .filter((item) => state.libraryFormatFilter === "all" || inferredMediaFormat(item) === state.libraryFormatFilter)
+    .filter((item) => {
+      const status = normalizedLibraryStatus(item);
+      if (state.libraryFilter === "all") return true;
+      if (state.libraryFilter === "reading") return status === "reading" || status === "rereading";
+      if (state.libraryFilter === "other") return status === "dropped" || status === "considering";
+      return status === state.libraryFilter;
+    })
+    .filter((item) => libraryQueryMatches([item.mangaTitle]));
 }
 
 function libraryRenderSignature(items = state.libraryItems) {
   return JSON.stringify({
     filter: state.libraryFilter,
     formatFilter: state.libraryFormatFilter,
+    query: state.libraryQuery,
+    sort: state.librarySort,
     showHidden: state.showHiddenLibrary,
     showPrivate: state.showNsfwSources,
     items: sortLibraryItems(items).map((item) => ({
@@ -8153,6 +8257,96 @@ function visibleChapters() {
     });
 }
 
+function chapterIsDownloaded(chapter) {
+  if (chapter.isDownloaded) return true;
+  const serverUrl = chapter.serverUrl || currentDeviceServerUrl();
+  return devicePackageForChapter(chapter.id, serverUrl)?.status === "ready";
+}
+
+function chaptersForList(chapters = visibleChapters()) {
+  const filtered = chapters.filter((chapter) => {
+    if (state.chapterFilter === "unread") return !chapter.isRead;
+    if (state.chapterFilter === "downloaded") return chapterIsDownloaded(chapter);
+    return true;
+  });
+  const direction = state.chapterOrder === "asc" ? 1 : -1;
+  return filtered.slice().sort((left, right) => {
+    const leftPosition = chapterPosition(left);
+    const rightPosition = chapterPosition(right);
+    if (Number.isFinite(leftPosition) && Number.isFinite(rightPosition) && leftPosition !== rightPosition) {
+      return (leftPosition - rightPosition) * direction;
+    }
+    return (Number(left.sourceOrder || left.id || 0) - Number(right.sourceOrder || right.id || 0)) * direction;
+  });
+}
+
+function currentChapterListId() {
+  const libraryChapterId = Number(currentMangaLibraryItem()?.chapterId);
+  if (Number.isInteger(libraryChapterId) && libraryChapterId > 0) return libraryChapterId;
+  const activeChapterId = Number(state.activeChapter?.chapterId);
+  return Number.isInteger(activeChapterId) && activeChapterId > 0 ? activeChapterId : 0;
+}
+
+function updateChapterListToolbar(chapters) {
+  const counts = {
+    all: chapters.length,
+    unread: chapters.filter((chapter) => !chapter.isRead).length,
+    downloaded: chapters.filter(chapterIsDownloaded).length,
+  };
+  el.chapterFilters.forEach((button) => {
+    const filter = button.dataset.chapterFilter;
+    const active = filter === state.chapterFilter;
+    const label = filter === "all" ? "All" : filter === "unread" ? "Unread" : "Downloaded";
+    button.textContent = `${label} ${counts[filter]}`;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+  if (el.chapterOrder) {
+    const ascending = state.chapterOrder === "asc";
+    el.chapterOrder.innerHTML = `<span aria-hidden="true">${ascending ? "↑" : "↓"}</span> ${ascending ? "Oldest" : "Newest"}`;
+    el.chapterOrder.setAttribute("aria-pressed", ascending ? "true" : "false");
+    el.chapterOrder.setAttribute("aria-label", ascending ? "Show newest chapters first" : "Show oldest chapters first");
+  }
+  if (el.chapterJumpCurrent) el.chapterJumpCurrent.disabled = !currentChapterListId();
+}
+
+function setChapterFilter(filter) {
+  if (!chapterFilterValues.includes(filter)) return;
+  state.chapterFilter = filter;
+  saveSettings();
+  renderChapters();
+}
+
+function toggleChapterOrder() {
+  state.chapterOrder = state.chapterOrder === "asc" ? "desc" : "asc";
+  saveSettings();
+  renderChapters();
+}
+
+function jumpToCurrentChapter() {
+  const targetId = currentChapterListId();
+  if (!targetId) return;
+  const exact = state.chapters.find((chapter) => Number(chapter.id) === targetId);
+  const visibleTarget = state.chapterView.find((chapter) => (
+    Number(chapter.id) === targetId || (exact && chapterGroupKey(chapter) === chapterGroupKey(exact))
+  ));
+  if (!visibleTarget) {
+    showToast("The current chapter is outside the selected release group.");
+    return;
+  }
+  if (!chaptersForList(state.chapterView).some((chapter) => Number(chapter.id) === Number(visibleTarget.id))) {
+    state.chapterFilter = "all";
+    saveSettings();
+    renderChapters();
+  }
+  window.requestAnimationFrame(() => {
+    const row = [...el.chapterList.querySelectorAll("[data-chapter-id]")]
+      .find((candidate) => Number(candidate.dataset.chapterId) === Number(visibleTarget.id));
+    row?.scrollIntoView({ block: "center", behavior: "smooth" });
+    row?.querySelector('[data-chapter-action="read"]')?.focus({ preventScroll: true });
+  });
+}
+
 function chooseChapterVariant(items, counts) {
   return items.slice().sort((a, b) => {
     const aScanlator = scanlatorName(a);
@@ -8203,18 +8397,20 @@ function renderChapters() {
   const focusedAction = focusedControl?.dataset.deviceAction || focusedControl?.dataset.chapterAction || "";
   el.chapterList.replaceChildren();
   state.chapterView = visibleChapters();
+  const listedChapters = chaptersForList(state.chapterView);
+  updateChapterListToolbar(state.chapterView);
   updateMangaDetailActions();
   el.chapterCount.textContent =
-    state.chapterView.length === state.chapters.length
+    listedChapters.length === state.chapters.length
       ? `${state.chapters.length} chapters`
-      : `${state.chapterView.length} of ${state.chapters.length}`;
+      : `${listedChapters.length} of ${state.chapters.length}`;
 
-  if (!state.chapterView.length) {
-    el.chapterList.append(emptyLine("No chapters loaded."));
+  if (!listedChapters.length) {
+    el.chapterList.append(emptyLine(state.chapterFilter === "all" ? "No chapters loaded." : `No ${state.chapterFilter} chapters in this release group.`));
     return;
   }
 
-  state.chapterView.forEach((chapter) => {
+  listedChapters.forEach((chapter) => {
     const item = document.createElement("div");
     item.className = "result-item";
     item.dataset.chapterId = String(chapter.id);
@@ -14268,6 +14464,9 @@ function wireEvents() {
   el.toggleHiddenLibrary?.addEventListener("click", () => setShowHiddenLibrary(!state.showHiddenLibrary));
   el.libraryFilters.forEach((button) => button.addEventListener("click", () => setLibraryFilter(button.dataset.libraryFilter)));
   el.libraryFormatFilters.forEach((button) => button.addEventListener("click", () => setLibraryFormatFilter(button.dataset.libraryFormatFilter)));
+  el.librarySearch?.addEventListener("input", (event) => setLibraryQuery(event.target.value));
+  el.librarySearch?.addEventListener("search", (event) => setLibraryQuery(event.target.value));
+  el.librarySort?.addEventListener("change", (event) => setLibrarySort(event.target.value));
   el.libraryList?.addEventListener("focusout", flushDeferredLibraryRender);
   el.libraryList?.addEventListener("toggle", flushDeferredLibraryRender, true);
   el.toggleBrowsePanel?.addEventListener("click", toggleBrowsePanel);
@@ -14310,6 +14509,9 @@ function wireEvents() {
     saveSettings();
     renderChapters();
   });
+  el.chapterFilters.forEach((button) => button.addEventListener("click", () => setChapterFilter(button.dataset.chapterFilter)));
+  el.chapterOrder?.addEventListener("click", toggleChapterOrder);
+  el.chapterJumpCurrent?.addEventListener("click", jumpToCurrentChapter);
   el.loadChapterPages.addEventListener("click", (event) => {
     void loadChapterPages({ returnFocusTarget: event.currentTarget });
   });
@@ -14630,6 +14832,12 @@ if (el.stage) {
   loadLibraryItems();
   state.sourceProfilesPromise = loadSourceProfiles();
   wireEvents();
+  void import("./app-lifecycle.js").then(({ initializeAppLifecycle }) => initializeAppLifecycle({
+    clientBuildId: buildId,
+    onStatus: setAppUpdateMessage,
+    onUpdateReady: showAppUpdate,
+  })).catch(() => null);
+  window.addEventListener("panelpilot:session-expired", preserveReaderStateForUpdate, { once: true });
   void initializeBooksFeature();
   startBackgroundHealthChecks();
   setActiveView(state.activeView, { history: false });

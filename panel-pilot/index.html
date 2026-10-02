@@ -181,6 +181,7 @@
           </div>
         </header>
         <section class="library-content">
+          <div class="library-tools"><input class="library-search" id="library-search" type="search" aria-label="Search library" placeholder="Search your library"><label class="library-sort"><span>Sort</span><select id="library-sort"><option value="recent">Recently read</option><option value="title">Title</option><option value="added">Date added</option><option value="progress">Progress</option></select></label></div>
           <div class="library-format-filters" id="library-format-filters" role="group" aria-label="Filter library by format">
             <button class="library-format-filter active" type="button" aria-pressed="true" data-library-format-filter="all">All formats</button>
             <button class="library-format-filter" type="button" aria-pressed="false" data-library-format-filter="manga">Manga</button>
@@ -249,7 +250,7 @@
           </section>
           <div class="search-bar">
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>
-            <input id="search-query" type="search" placeholder="Search manga" aria-label="Search manga">
+            <input id="search-query" type="search" placeholder="Search manga or comics" aria-label="Search manga or comics">
             <button id="search-source" type="button" aria-label="Search">Search</button>
           </div>
           <label class="source-filter">
@@ -308,6 +309,7 @@
               </select>
             </label>
           </div>
+          <div class="chapter-list-toolbar" id="chapter-list-toolbar" aria-label="Chapter list controls"><div class="chapter-list-filters" role="group" aria-label="Filter chapters"><button data-chapter-filter="all">All</button><button data-chapter-filter="unread">Unread</button><button data-chapter-filter="downloaded">Downloaded</button></div><button class="chapter-order" id="chapter-order">↓ Newest</button><button class="chapter-jump-current" id="chapter-jump-current">Jump to current</button></div>
           <div class="list compact" id="chapter-list"></div>
           <details class="technical-tools">
             <summary>Advanced chapter tools</summary>

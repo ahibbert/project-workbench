@@ -1322,6 +1322,33 @@ body.reader-overview-restoring .stage-strip {
   padding-inline: 0.1rem;
 }
 
+.library-tools {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(9.5rem, 12rem);
+  align-items: end;
+  gap: 0.65rem;
+  margin-bottom: 0.8rem;
+}
+
+.library-search {
+  min-width: 0;
+  background: #f7f8f5;
+}
+
+.library-sort {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 750;
+}
+
+.library-sort select {
+  background: #f7f8f5;
+}
+
 .library-filters,
 .library-format-filters {
   display: flex;
@@ -2430,6 +2457,58 @@ body.has-network-status.reader-focus .reader-topbar {
 
 .chapter-controls .chapter-filter + .chapter-filter {
   margin-top: 0.7rem;
+}
+
+.chapter-list-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0.65rem -0.2rem 0;
+  border-block: 1px solid var(--line);
+  padding: 0.5rem 0.2rem;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 7px 14px rgba(35, 42, 37, 0.04);
+}
+
+.chapter-list-filters {
+  min-width: 0;
+  display: flex;
+  gap: 0.3rem;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.chapter-list-filters::-webkit-scrollbar {
+  display: none;
+}
+
+.chapter-list-toolbar button {
+  min-height: 2.5rem;
+  flex: 0 0 auto;
+  border-color: var(--line);
+  border-radius: 999px;
+  padding-inline: 0.7rem;
+  background: #f7f8f5;
+  color: var(--muted);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.chapter-list-filters button.active {
+  border-color: var(--accent-2);
+  background: #e5f1f0;
+  color: var(--ink);
+}
+
+.chapter-list-toolbar .chapter-order {
+  margin-left: auto;
+}
+
+.chapter-list-toolbar .chapter-jump-current {
+  color: var(--accent-2);
 }
 
 #chapter-list.compact {
@@ -4298,6 +4377,14 @@ body.has-reading-miniplayer .app-toast {
     gap: 0.28rem;
   }
 
+  .library-tools {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .library-sort {
+    grid-template-columns: 2.4rem minmax(0, 1fr);
+  }
+
   .manga-card-actions button,
   .manga-card-more summary {
     font-size: 0.75rem;
@@ -4328,6 +4415,22 @@ body.has-reading-miniplayer .app-toast {
 
   #chapter-list .chapter-actions .mark-earlier-read ~ [data-device-action] {
     grid-column: 1 / -1;
+  }
+
+  .chapter-list-toolbar {
+    flex-wrap: wrap;
+  }
+
+  .chapter-list-filters {
+    flex: 1 1 100%;
+  }
+
+  .chapter-list-toolbar .chapter-order {
+    margin-left: 0;
+  }
+
+  .chapter-list-toolbar .chapter-jump-current {
+    margin-left: auto;
   }
 
   .reader-topbar {

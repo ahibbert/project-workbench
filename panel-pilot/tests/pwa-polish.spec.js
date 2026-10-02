@@ -456,6 +456,46 @@ test("library filters expose truthful pressed-button semantics and work from the
   }
 });
 
+test("library title search and persisted sorting stay responsive and keyboard accessible", async ({ page }) => {
+  await installPolishFixture(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await page.locator('[data-library-filter="all"]').click();
+
+  const search = page.getByRole("searchbox", { name: "Search library" });
+  const sort = page.locator("#library-sort");
+  await expect(search).toBeVisible();
+  await expect(sort).toHaveValue("recent");
+  await expect(page.locator(".library-card .manga-cover-title").first()).toHaveText("Reading Fixture");
+
+  await sort.selectOption("title");
+  await expect(page.locator(".library-card .manga-cover-title")).toHaveText(["Planned Fixture", "Reading Fixture"]);
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("panel-pilot-settings") || "{}").librarySort)).toBe("title");
+
+  await search.fill("reading");
+  await expect(page.locator(".library-card")).toHaveCount(1);
+  await expect(page.locator("#library-list")).toContainText("Reading Fixture");
+  await expect(page.locator("#library-count")).toHaveText("1 match");
+  await search.fill("missing title");
+  await expect(page.locator("#library-list")).toContainText("No titles match “missing title”");
+  await page.getByRole("button", { name: "Clear search" }).click();
+  await expect(search).toHaveValue("");
+
+  const layout = await page.locator(".library-tools").evaluate((node) => ({
+    right: node.getBoundingClientRect().right,
+    scrollWidth: document.documentElement.scrollWidth,
+    viewportWidth: window.innerWidth,
+  }));
+  expect(layout.right).toBeLessThanOrEqual(layout.viewportWidth);
+  expect(layout.scrollWidth).toBeLessThanOrEqual(layout.viewportWidth);
+});
+
+test("Browse search names both manga and comics", async ({ page }) => {
+  await installPolishFixture(page);
+  await openReadyBrowse(page);
+  await expect(page.getByRole("searchbox", { name: "Search manga or comics" })).toHaveAttribute("placeholder", "Search manga or comics");
+});
+
 test("library formats filter titles, persist corrections, and detach comics from MangaBaka", async ({ page }) => {
   await installPolishFixture(page);
   await page.goto("/");
@@ -576,6 +616,53 @@ test("chapter details can change library group and mark every earlier chapter as
   await expect(selected.locator(".chapter-device-copy > span")).not.toContainText("Read");
   await expect(page.locator('[data-chapter-id="81003"] .chapter-device-copy > span')).toContainText("Read");
   await expect(selected.getByRole("button", { name: /Mark earlier/ })).toHaveCount(0);
+});
+
+test("long chapter lists filter, reorder, and jump to the saved chapter without changing reading data", async ({ page }) => {
+  const chapters = [8, 7, 6, 5, 4, 3, 2, 1].map((number) => ({
+    ...chapterFor(801),
+    id: 81000 + number,
+    name: `Chapter ${number}`,
+    sourceOrder: number,
+    chapterNumber: number,
+    isRead: number <= 3,
+    isDownloaded: number === 6,
+  }));
+  await installPolishFixture(page, { detailChapters: chapters });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await page.locator(".library-card").filter({ hasText: "Reading Fixture" }).getByRole("button", { name: "Chapters", exact: true }).click();
+
+  const toolbar = page.locator("#chapter-list-toolbar");
+  await expect(toolbar).toBeVisible();
+  await expect(toolbar).toHaveAccessibleName("Chapter list controls");
+  await page.getByRole("button", { name: /^Unread / }).click();
+  await expect(page.locator('[data-chapter-id="81003"]')).toHaveCount(0);
+  await expect(page.locator('[data-chapter-id="81008"]')).toBeVisible();
+
+  await page.getByRole("button", { name: /^Downloaded / }).click();
+  await expect(page.locator("#chapter-list [data-chapter-id]")).toHaveCount(1);
+  await expect(page.locator('[data-chapter-id="81006"]')).toBeVisible();
+
+  await page.getByRole("button", { name: /^All / }).click();
+  await page.locator("#chapter-order").click();
+  await expect(page.locator("#chapter-order")).toContainText("Oldest");
+  const positions = await page.locator("#chapter-list [data-chapter-id]").evaluateAll((rows) => rows.map((row) => Number(row.dataset.chapterId)));
+  expect(positions.indexOf(81001)).toBeLessThan(positions.indexOf(81008));
+  await expect.poll(() => page.evaluate(() => {
+    const settings = JSON.parse(localStorage.getItem("panel-pilot-settings") || "{}");
+    return { chapterFilter: settings.chapterFilter, chapterOrder: settings.chapterOrder };
+  })).toEqual({ chapterFilter: "all", chapterOrder: "asc" });
+
+  await page.locator("#chapter-jump-current").click();
+  await expect(page.locator('[data-chapter-id="80101"] [data-chapter-action="read"]')).toBeFocused();
+  const layout = await toolbar.evaluate((node) => ({
+    right: node.getBoundingClientRect().right,
+    documentWidth: document.documentElement.scrollWidth,
+    viewportWidth: window.innerWidth,
+  }));
+  expect(layout.right).toBeLessThanOrEqual(layout.viewportWidth);
+  expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth);
 });
 
 test("chapter actions stay inside a 430px mobile viewport", async ({ page }) => {

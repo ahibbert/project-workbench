@@ -72,6 +72,7 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
       if (action === "select-book") void loadReleases(Number(event.target.closest("button").dataset.resultIndex));
       if (action === "queue-release") void queueRelease(Number(event.target.closest("button").dataset.releaseIndex), event.target.closest("button"));
       if (action === "search") navigate("books-search");
+      if (action === "settings") navigate("settings");
       const card = event.target.closest("[data-book-id]");
       if (card) navigate("book-detail", { id: card.dataset.bookId });
       if (action === "back") navigate("library");
@@ -90,8 +91,12 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
       element("strong", "", "No EPUBs in your book library yet"),
       element("span", "", status?.cwaConfigured
         ? "Sync CWA, or search Shelfmark for your first book."
-        : "Configure CWA and Shelfmark on the server, then test the connections here."),
+        : "Configure CWA and Shelfmark, then test them under Book services in Settings."),
     );
+    const action = element("button", "primary-button", status?.cwaConfigured ? "Find a book" : "Open Book services");
+    action.type = "button";
+    action.dataset.booksAction = status?.cwaConfigured ? "search" : "settings";
+    empty.append(action);
     content.append(empty);
   }
 
@@ -332,6 +337,17 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
           read.type = "button";
           read.addEventListener("click", () => navigate("book-detail", { id: download.bookId }));
           row.append(read);
+        } else if (download.status === "failed") {
+          const findAnother = element("button", "mini-button", "Find another release");
+          findAnother.type = "button";
+          findAnother.addEventListener("click", () => {
+            const searchInput = root.querySelector(".books-search-form input");
+            if (!searchInput) return;
+            searchInput.value = download.title;
+            searchInput.form?.requestSubmit();
+            searchInput.scrollIntoView({ behavior: "smooth", block: "center" });
+          });
+          row.append(findAnother);
         } else {
           row.append(element("span", "book-status-pill", downloadLabel(download)));
         }
@@ -369,7 +385,7 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
     recommendationRail.append(element("p", "books-loading", "Finding book recommendations…"));
     recommendations.append(recommendationHeading, recommendationRail);
     const panel = element("section", "panel books-search-panel");
-    panel.append(element("h2", "", "Find a book"), element("p", "books-search-help", "Search Shelfmark metadata, then choose an EPUB release for CWA to import."));
+    panel.append(element("h2", "", "Find a book"), element("p", "books-search-help", "Search for a title or author, then choose the EPUB edition you want to add."));
     const form = element("form", "books-search-form");
     const input = element("input");
     input.type = "search";
@@ -384,12 +400,15 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
     form.append(input, submit);
     const results = element("div", "books-search-results");
     results.id = "books-search-results";
+    let recommendedQuery = "";
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       submit.disabled = true;
       results.replaceChildren(element("p", "books-loading", "Searching Shelfmark…"));
       try {
-        const payload = await request(`/api/books/search?query=${encodeURIComponent(input.value.trim())}`);
+        const query = recommendedQuery || input.value.trim();
+        recommendedQuery = "";
+        const payload = await request(`/api/books/search?query=${encodeURIComponent(query)}`);
         searchResults = payload.books || [];
         selectedBook = null;
         releaseResults = [];
@@ -454,6 +473,8 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
         readThis.type = "button";
         readThis.addEventListener("click", () => {
           input.value = recommendation.title;
+          recommendedQuery = recommendation.identifiers?.isbn?.[0]
+            || [recommendation.title, recommendation.authors?.[0]].filter(Boolean).join(" ");
           form.requestSubmit();
           panel.scrollIntoView({ behavior: "smooth", block: "start" });
         });

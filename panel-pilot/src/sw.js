@@ -7,6 +7,8 @@ import {
 const legacyAppCachePattern = /^panel-pilot-v\d+$/;
 const deviceChapterCacheName = "panels-device-chapters-v1";
 const deviceChapterPathPrefix = "/__panels_device_chapters/v1/";
+const lifecycleProtocolVersion = 2;
+const workerBuildId = typeof __BUILD_ID__ === "string" ? __BUILD_ID__ : "unknown";
 
 cleanupOutdatedCaches();
 precache(self.__WB_MANIFEST);
@@ -46,6 +48,13 @@ self.addEventListener("message", (event) => {
   if (event.data?.type === "SKIP_WAITING") self.skipWaiting();
   if (event.data?.type === "DEVICE_CHAPTER_CAPABILITY") {
     event.ports?.[0]?.postMessage({ supported: true, version: 1 });
+  }
+  if (event.data?.type === "APP_LIFECYCLE_CAPABILITY") {
+    event.ports?.[0]?.postMessage({
+      supported: true,
+      protocolVersion: lifecycleProtocolVersion,
+      buildId: workerBuildId,
+    });
   }
 });
 

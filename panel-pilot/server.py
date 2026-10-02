@@ -2976,6 +2976,12 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/login":
             self.serve_login(parsed)
             return
+        if parsed.path == "/api/app-version":
+            self.send_json({
+                "buildId": os.environ.get("PANEL_PILOT_BUILD_ID", "unknown"),
+                "minimumLifecycleProtocol": 2,
+            })
+            return
         if not self.require_auth(parsed):
             return
         try:

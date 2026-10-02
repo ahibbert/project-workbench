@@ -9,8 +9,9 @@ const distRoot = join(projectRoot, "dist");
 const iconSetBudgetBytes = 300_000;
 // Includes offline achievement artwork, reading sessions, source selection,
 // repair controls, the Detection Lab, calibration models, enhanced-reader UI,
-// and the feature-flagged Books filters/settings bootstrap (reader stays lazy).
-const installShellBudgetBytes = 790_000;
+// the feature-flagged Books bootstrap, and unified Library/chapter controls
+// (the EPUB reader and app lifecycle remain lazy).
+const installShellBudgetBytes = 800_000;
 
 function readSource(path) {
   return readFileSync(join(projectRoot, path), "utf8");
@@ -280,6 +281,24 @@ test("the app negotiates device chapter support with the controlling worker", ()
     /async function downloadChapterToDevice\([^)]*\)\s*\{[\s\S]*?await requireDeviceChapterWorker\(\)/,
     "downloading device chapters must require the capable worker",
   );
+});
+
+test("the server exposes an unauthenticated no-store build signal for stale-client recovery", () => {
+  const server = readSource("server.py");
+  const route = server.indexOf('parsed.path == "/api/app-version"');
+  const auth = server.indexOf("if not self.require_auth(parsed):", route);
+  assert.ok(route >= 0 && auth > route, "the build signal must be reachable before session authentication");
+  const routeSource = server.slice(route, auth);
+  assert.match(routeSource, /"buildId"\s*:\s*os\.environ\.get\("PANEL_PILOT_BUILD_ID"/);
+  assert.match(routeSource, /"minimumLifecycleProtocol"\s*:\s*2/);
+  const sendJsonStart = server.indexOf("def send_json(");
+  const nextMethod = server.indexOf("\n    def ", sendJsonStart + 10);
+  assert.match(server.slice(sendJsonStart, nextMethod), /send_header\("Cache-Control",\s*"no-store"\)/);
+
+  const worker = readSource("src/sw.js");
+  assert.match(worker, /APP_LIFECYCLE_CAPABILITY/);
+  assert.match(worker, /protocolVersion:\s*lifecycleProtocolVersion/);
+  assert.doesNotMatch(worker, /caches\.delete\(deviceChapterCacheName\)/);
 });
 
 test("dist is isolated from application source and server data", () => {

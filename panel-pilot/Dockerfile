@@ -15,6 +15,8 @@ RUN npm run build
 FROM python:3.12-slim
 
 WORKDIR /app
+ARG PANEL_PILOT_BUILD_ID=container
+ENV PANEL_PILOT_BUILD_ID=${PANEL_PILOT_BUILD_ID}
 RUN apt-get update \
     && apt-get install -y --no-install-recommends tzdata \
     && rm -rf /var/lib/apt/lists/* \

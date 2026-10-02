@@ -6,17 +6,20 @@ import { fileURLToPath } from "node:url";
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const distRoot = join(projectRoot, "dist");
 const budgets = {
-  // Includes the feature-flagged Books filters, Browse action, settings host, and view host.
-  indexHtml: 53 * 1024,
+  // Includes the feature-flagged Books host plus the unified Library search/sort
+  // and long-series chapter controls (a reviewed two-KiB interaction envelope).
+  indexHtml: 55 * 1024,
   // Includes offline milestones, source intelligence, the Detection Lab,
   // per-series calibration, spread handling, enhanced-reader controls, and
   // the small feature-flag/books lazy-loader bootstrap and shared navigation hooks.
   mainJavaScript: 400 * 1024,
   mainCss: 72 * 1024,
-  // Includes the integrated Books format control, cross-format resume bootstrap,
-  // and the lazy global library-removal action (one additional 1 KiB envelope).
-  criticalPath: 532 * 1024,
-  installShell: 771 * 1024,
+  // Includes the integrated Books controls, cross-format resume, authentication
+  // boundary, and the unified Library/chapter-list polish (reviewed 9 KiB envelope).
+  criticalPath: 541 * 1024,
+  // The installable shell precaches the authentication lifecycle and unified
+  // Library controls so both recovery and offline library management still work.
+  installShell: 781 * 1024,
   domContentLoadedMs: 1_500,
   loadMs: 2_000,
   applicationReadyMs: 2_500,

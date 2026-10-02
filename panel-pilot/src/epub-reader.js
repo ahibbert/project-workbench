@@ -7,6 +7,21 @@ function node(tag, className, text) {
   return item;
 }
 
+export function renderEpubToc(entries, parent, onSelect, depth = 0) {
+  if (!entries?.length) return;
+  const list = node("ol", depth ? "epub-toc-children" : "epub-toc-root");
+  for (const entry of entries) {
+    const item = node("li", "epub-toc-item");
+    const link = node("button", "epub-toc-link", entry.label?.trim() || "Untitled section");
+    link.type = "button";
+    link.addEventListener("click", () => onSelect(entry.href));
+    item.append(link);
+    renderEpubToc(entry.subitems || entry.children, item, onSelect, depth + 1);
+    list.append(item);
+  }
+  parent.append(list);
+}
+
 function safeProgression(value) {
   const number = Number(value);
   return Number.isFinite(number) ? Math.max(0, Math.min(1, number)) : null;
@@ -27,7 +42,12 @@ function sanitizeRenderedDocument(document) {
       const name = attribute.name.toLowerCase();
       const value = attribute.value.trim().toLowerCase();
       if (name.startsWith("on") || value.startsWith("javascript:")) item.removeAttribute(attribute.name);
-      if (["src", "href", "poster", "action", "formaction"].includes(name) && /^(?:https?:)?\/\//i.test(value)) {
+      if (name === "href" && item.matches?.("a") && (/^(?:https?:)?\/\//i.test(value) || value.startsWith("mailto:"))) {
+        item.dataset.externalHref = attribute.value.trim();
+        item.setAttribute("role", "link");
+        item.setAttribute("tabindex", "0");
+        item.removeAttribute(attribute.name);
+      } else if (["src", "href", "poster", "action", "formaction"].includes(name) && /^(?:https?:)?\/\//i.test(value)) {
         item.removeAttribute(attribute.name);
       }
     }
@@ -63,6 +83,9 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
   let locationsReady = false;
   let wakeLock = null;
   let gestureStart = null;
+  let preferenceRequest = 0;
+  let noticeTimer = 0;
+  let renditionFlow = "";
 
   root.replaceChildren();
   const reader = node("section", "epub-reader");
@@ -98,7 +121,11 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
   const next = node("button", "epub-page-control epub-next");
   next.type = "button";
   next.setAttribute("aria-label", "Next page");
-  stage.append(viewport, loading, previous, next);
+  const restoreControls = node("button", "epub-restore-controls", "•••");
+  restoreControls.type = "button";
+  restoreControls.setAttribute("aria-label", "Show reader controls");
+  restoreControls.title = "Show reader controls";
+  stage.append(viewport, loading, previous, next, restoreControls);
 
   const footer = node("footer", "epub-footer");
   const progressCopy = node("div", "epub-progress-copy");
@@ -123,15 +150,34 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
   tocClose.type = "button";
   tocHeader.append(tocClose);
   const tocList = node("nav", "epub-toc-list");
+  tocList.setAttribute("aria-label", "Book contents");
   toc.append(tocHeader, tocList);
-  reader.append(toolbar, stage, footer, toc);
+  const externalDialog = node("dialog", "epub-external-link");
+  const externalTitle = node("strong", "", "Open external link?");
+  const externalCopy = node("p", "epub-external-copy");
+  const externalActions = node("div", "epub-external-actions");
+  const externalCancel = node("button", "epub-tool", "Cancel");
+  const externalOpen = node("button", "primary-button", "Open in browser");
+  externalCancel.type = externalOpen.type = "button";
+  externalActions.append(externalCancel, externalOpen);
+  externalDialog.append(externalTitle, externalCopy, externalActions);
+  const notice = node("div", "epub-reader-notice");
+  notice.hidden = true;
+  notice.setAttribute("role", "status");
+  notice.setAttribute("aria-live", "polite");
+  reader.append(toolbar, stage, footer, toc, externalDialog, notice);
   root.append(reader);
 
   const nativeFullscreenAvailable = typeof reader.requestFullscreen === "function"
     || typeof reader.webkitRequestFullscreen === "function";
   if (!nativeFullscreenAvailable) {
-    fullscreenButton.setAttribute("aria-label", "Hide reading controls");
-    fullscreenButton.title = "Hide reading controls";
+    setDistractionFreeButton();
+  }
+
+  function setDistractionFreeButton() {
+    fullscreenButton.textContent = "Focus";
+    fullscreenButton.setAttribute("aria-label", "Enter distraction-free reading");
+    fullscreenButton.title = "Enter distraction-free reading";
   }
 
   function select(label, key, values) {
@@ -214,6 +260,13 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
     rendition?.getContents?.().forEach((contents) => applyDocumentPreferences(contents.document));
   }
 
+  function showNotice(message) {
+    window.clearTimeout(noticeTimer);
+    notice.textContent = message;
+    notice.hidden = false;
+    noticeTimer = window.setTimeout(() => { notice.hidden = true; }, 4500);
+  }
+
   function setControlsVisible(visible, linger = true) {
     window.clearTimeout(controlsTimer);
     if (!visible && settings.open) settings.open = false;
@@ -240,6 +293,7 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
       } else {
         const enter = reader.requestFullscreen || reader.webkitRequestFullscreen;
         if (!enter) {
+          setDistractionFreeButton();
           setControlsVisible(false, false);
           return;
         }
@@ -249,6 +303,7 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
       // iOS does not expose element fullscreen for normal web content. Falling
       // back to distraction-free mode is more useful than replacing progress
       // information with a persistent browser capability error.
+      setDistractionFreeButton();
       setControlsVisible(false, false);
     }
   }
@@ -285,6 +340,7 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
   }
 
   function makeRendition() {
+    renditionFlow = preferences.readingFlow;
     return publication.renderTo(viewport, {
       width: "100%",
       height: "100%",
@@ -294,10 +350,8 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
     });
   }
 
-  async function persistPreferences(changedKey) {
-    const payload = await jsonRequest("/api/books/preferences", { method: "POST", body: JSON.stringify(preferences) });
-    Object.assign(preferences, payload.preferences);
-    if (changedKey === "readingFlow") {
+  async function refreshPreferences(changedKey) {
+    if (changedKey === "readingFlow" || renditionFlow !== preferences.readingFlow) {
       const locator = pendingPosition?.cfi || currentProgress?.locator;
       rendition?.destroy();
       viewport.replaceChildren();
@@ -313,18 +367,36 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
     }
   }
 
-  async function savePosition(cfi, href, progression, retry = true) {
+  async function persistPreferences(changedKey, previousValue, control) {
+    const request = ++preferenceRequest;
+    const payload = { ...preferences };
+    try {
+      const response = await jsonRequest("/api/books/preferences", { method: "POST", body: JSON.stringify(payload) });
+      if (destroyed || request !== preferenceRequest) return;
+      Object.assign(preferences, response.preferences);
+      await refreshPreferences(changedKey);
+    } catch {
+      if (destroyed || request !== preferenceRequest) return;
+      preferences[changedKey] = previousValue;
+      control.value = String(previousValue);
+      await refreshPreferences(changedKey).catch(() => {});
+      showNotice("That reading option could not be saved. Your previous setting has been restored.");
+    }
+  }
+
+  async function savePosition(cfi, href, progression, retry = true, keepalive = false) {
     if (destroyed || !cfi?.startsWith("epubcfi(")) return;
     try {
       const payload = await jsonRequest(`/api/books/${book.id}/progress`, {
         method: "POST",
+        keepalive,
         body: JSON.stringify({ locatorType: "cfi", locator: cfi, resourceHref: href || "", progression, revision: currentProgress?.revision || 0 }),
       });
       currentProgress = payload.progress;
     } catch (error) {
       if (retry && error.status === 409 && error.payload?.current) {
         currentProgress = error.payload.current;
-        await savePosition(cfi, href, progression, false);
+        await savePosition(cfi, href, progression, false, keepalive);
       } else {
         timeRemaining.textContent = "Position not saved — retrying as you read";
       }
@@ -368,24 +440,44 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
       }
       lastHandledGesture = Date.now();
     };
-    document.addEventListener("pointerdown", (event) => { contentGesture = { x: event.clientX, y: event.clientY }; }, { passive: true });
-    document.addEventListener("pointerup", (event) => {
+    const clearGesture = () => { contentGesture = null; contentTouch = null; };
+    const captureOptions = { passive: true, capture: true };
+    contents.window.addEventListener("pointerdown", (event) => { contentGesture = { x: event.clientX, y: event.clientY }; }, captureOptions);
+    contents.window.addEventListener("pointerup", (event) => {
       finishGesture(contentGesture, event.clientX, event.clientY, event.target);
       contentGesture = null;
-    }, { passive: true });
-    document.addEventListener("touchstart", (event) => {
+    }, captureOptions);
+    contents.window.addEventListener("pointercancel", clearGesture, captureOptions);
+    contents.window.addEventListener("touchstart", (event) => {
       const touch = event.touches?.length === 1 ? event.touches[0] : null;
       contentTouch = touch ? { x: touch.clientX, y: touch.clientY } : null;
-    }, { passive: true });
-    document.addEventListener("touchend", (event) => {
+    }, captureOptions);
+    contents.window.addEventListener("touchend", (event) => {
       const touch = event.changedTouches?.[0];
       if (touch) finishGesture(contentTouch, touch.clientX, touch.clientY, event.target);
       contentTouch = null;
-    }, { passive: true });
-    document.addEventListener("touchcancel", () => { contentTouch = null; }, { passive: true });
+    }, captureOptions);
+    contents.window.addEventListener("touchcancel", clearGesture, captureOptions);
+    contents.window.addEventListener("blur", clearGesture, { passive: true });
     document.addEventListener("click", (event) => {
-      const link = event.target.closest?.("a[href]");
+      const link = event.target.closest?.("a[href], a[data-external-href]");
       if (link) {
+        const externalHref = link.dataset.externalHref;
+        if (externalHref) {
+          event.preventDefault();
+          try {
+            const url = new URL(externalHref, window.location.href);
+            if (!["http:", "https:", "mailto:"].includes(url.protocol)) return;
+            externalDialog.dataset.href = url.href;
+            externalCopy.textContent = url.protocol === "mailto:"
+              ? "This book contains an email link. Leave Panels to open it?"
+              : `This book links to ${url.hostname}. Leave Panels to open it in your browser?`;
+            externalDialog.showModal();
+          } catch {
+            showNotice("This external link is not valid and cannot be opened.");
+          }
+          return;
+        }
         const href = link.getAttribute("href") || "";
         if (/^(?:https?:)?\/\//i.test(href) || /^mailto:/i.test(href)) {
           event.preventDefault();
@@ -403,6 +495,15 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
       if (Date.now() - lastHandledGesture < 450) return;
       handleReaderTap(event.clientX / Math.max(1, contents.window.innerWidth));
       lastHandledGesture = Date.now();
+    });
+    document.addEventListener("keydown", (event) => {
+      const externalLink = event.target.closest?.("a[data-external-href]");
+      if (externalLink && (event.key === "Enter" || event.key === " ")) {
+        event.preventDefault();
+        externalLink.click();
+        return;
+      }
+      keyHandler(event);
     });
   }
 
@@ -455,12 +556,7 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
       applyPreferences();
       const navigation = await publication.loaded.navigation;
       tocList.replaceChildren();
-      for (const entry of navigation.toc || []) {
-        const link = node("button", "epub-toc-link", entry.label?.trim() || "Untitled section");
-        link.type = "button";
-        link.addEventListener("click", () => { toc.close(); void rendition.display(entry.href); });
-        tocList.append(link);
-      }
+      renderEpubToc(navigation.toc || [], tocList, (href) => { toc.close(); void rendition.display(href); });
       if (!tocList.children.length) tocList.append(node("p", "epub-toc-empty", "This EPUB does not include a table of contents."));
       await rendition.display(currentProgress?.locator || undefined);
       loading.hidden = true;
@@ -493,8 +589,10 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
     const control = event.target.closest("[data-preference]");
     if (!control) return;
     const key = control.dataset.preference;
+    const previousValue = preferences[key];
     preferences[key] = ["fontSize", "lineHeight", "contentWidth"].includes(key) ? Number(control.value) : control.value;
-    void persistPreferences(key).catch((error) => { loading.hidden = false; loading.textContent = error.message; });
+    applyPreferences();
+    void persistPreferences(key, previousValue, control);
   });
   settings.addEventListener("toggle", () => {
     if (settings.open) setControlsVisible(true, false);
@@ -502,11 +600,19 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
   back.addEventListener("click", onExit);
   previous.addEventListener("click", () => rendition?.prev());
   next.addEventListener("click", () => rendition?.next());
+  restoreControls.addEventListener("click", () => setControlsVisible(true, false));
   tocButton.addEventListener("click", () => { toc.showModal(); setControlsVisible(true, false); });
   fullscreenButton.addEventListener("click", () => { void toggleFullscreen(); });
   tocClose.addEventListener("click", () => toc.close());
   toc.addEventListener("click", (event) => { if (event.target === toc) toc.close(); });
   toc.addEventListener("close", () => setControlsVisible(true));
+  externalCancel.addEventListener("click", () => externalDialog.close());
+  externalOpen.addEventListener("click", () => {
+    const href = externalDialog.dataset.href;
+    externalDialog.close();
+    if (href) window.open(href, "_blank", "noopener,noreferrer");
+  });
+  externalDialog.addEventListener("click", (event) => { if (event.target === externalDialog) externalDialog.close(); });
   scrubber.addEventListener("input", () => { location.textContent = `${Math.round(Number(scrubber.value) / 10)}%`; });
   scrubber.addEventListener("change", () => {
     if (!locationsReady) return;
@@ -519,30 +625,43 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
   });
   stage.addEventListener("pointerdown", (event) => { gestureStart = { x: event.clientX, y: event.clientY }; }, { passive: true });
   stage.addEventListener("pointerup", (event) => {
-    if (!gestureStart || event.target.closest("button")) return;
+    if (!gestureStart || event.target.closest("button")) { gestureStart = null; return; }
     const deltaX = event.clientX - gestureStart.x;
     const deltaY = event.clientY - gestureStart.y;
     const moved = Math.hypot(deltaX, deltaY) > 12;
     if (!navigateFromGesture(deltaX, deltaY)) handleReaderTap(event.clientX / Math.max(1, stage.clientWidth), moved);
     gestureStart = null;
   }, { passive: true });
+  stage.addEventListener("pointercancel", () => { gestureStart = null; }, { passive: true });
+  stage.addEventListener("lostpointercapture", () => { gestureStart = null; }, { passive: true });
 
   const keyHandler = (event) => {
-    if (event.target.closest("input, select, button, summary") || toc.open) return;
+    if (event.key === "Escape") {
+      if (settings.open) {
+        event.preventDefault();
+        settings.open = false;
+        settingsSummary.focus();
+      } else if (externalDialog.open) externalDialog.close();
+      else if (toc.open) toc.close();
+      else onExit();
+      return;
+    }
+    if (event.target?.closest?.("input, select, button, summary, a") || toc.open || externalDialog.open) return;
     if (event.key === "ArrowRight" || event.key === "PageDown" || event.key === " ") {
       event.preventDefault();
       void rendition?.next();
     } else if (event.key === "ArrowLeft" || event.key === "PageUp") {
       event.preventDefault();
       void rendition?.prev();
-    } else if (event.key === "Escape") {
-      if (settings.open) settings.open = false;
-      else onExit();
     }
+  };
+  const flushPendingPosition = () => {
+    window.clearTimeout(saveTimer);
+    if (pendingPosition) void savePosition(pendingPosition.cfi, pendingPosition.href, pendingPosition.progression, true, true);
   };
   const visibilityHandler = () => {
     if (document.visibilityState === "visible") void requestWakeLock();
-    else if (pendingPosition) void savePosition(pendingPosition.cfi, pendingPosition.href, pendingPosition.progression);
+    else flushPendingPosition();
   };
   const resizeHandler = () => {
     window.clearTimeout(resizeTimer);
@@ -555,7 +674,9 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
   };
   window.addEventListener("keydown", keyHandler);
   window.addEventListener("resize", resizeHandler);
+  window.addEventListener("pagehide", flushPendingPosition);
   document.addEventListener("visibilitychange", visibilityHandler);
+  document.addEventListener("freeze", flushPendingPosition);
 
   void requestWakeLock();
   await openPublication();
@@ -565,15 +686,19 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
       window.clearTimeout(saveTimer);
       window.clearTimeout(resizeTimer);
       window.clearTimeout(controlsTimer);
+      window.clearTimeout(noticeTimer);
       window.cancelAnimationFrame(chromeResizeFrame);
       window.removeEventListener("keydown", keyHandler);
       window.removeEventListener("resize", resizeHandler);
+      window.removeEventListener("pagehide", flushPendingPosition);
       document.removeEventListener("visibilitychange", visibilityHandler);
-      if (pendingPosition) void savePosition(pendingPosition.cfi, pendingPosition.href, pendingPosition.progression);
+      document.removeEventListener("freeze", flushPendingPosition);
+      flushPendingPosition();
       wakeLock?.release?.().catch(() => {});
       rendition?.destroy();
       publication?.destroy();
       if (toc.open) toc.close();
+      if (externalDialog.open) externalDialog.close();
       destroyed = true;
     },
   };
