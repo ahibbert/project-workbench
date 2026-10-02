@@ -52,6 +52,9 @@ const chapterFetchRetryDelaysMs = [0, 400];
 const readerLoadingGraceMs = 180;
 const nextChapterPreparedPageCount = 3;
 const webtoonLiveImageCap = 8;
+const highZoomEnhancementMaxPixels = 3_200_000;
+const highZoomEnhancementMaxCanvasPixels = 4_200_000;
+const highZoomEnhancementTrigger = 1.12;
 const downloadAheadChapterCount = 10;
 const planBufferRetryDelaysMs = [1000, 4000, 15000];
 const progressOutboxStoreKey = "panel-pilot-progress-outbox";
@@ -260,6 +263,7 @@ const el = {
   readerBack: document.querySelector("#reader-back"),
   readerView: document.querySelector("#reader-view"),
   stageImage: document.querySelector("#stage-image"),
+  stageEnhancement: document.querySelector("#stage-enhancement"),
   stageImageWrap: document.querySelector("#stage-image-wrap"),
   readerOverviewHint: document.querySelector("#reader-overview-hint"),
   readerLoading: document.querySelector("#reader-loading"),
@@ -302,6 +306,8 @@ const el = {
   bubbleAwareFramingReader: document.querySelector("#bubble-aware-framing-reader"),
   highZoomClarity: document.querySelector("#high-zoom-clarity"),
   highZoomClarityReader: document.querySelector("#high-zoom-clarity-reader"),
+  highZoomEnhancement: document.querySelector("#high-zoom-enhancement"),
+  highZoomEnhancementReader: document.querySelector("#high-zoom-enhancement-reader"),
   pageReveal: document.querySelector("#page-reveal"),
   pageRevealReader: document.querySelector("#page-reveal-reader"),
   cinematicMotion: document.querySelector("#cinematic-motion"),
@@ -528,6 +534,7 @@ const state = {
   panelPadding: 8,
   bubbleAwareFraming: true,
   highZoomClarity: "balanced",
+  highZoomEnhancement: true,
   pageReveal: "off",
   pageRevealActive: false,
   readingDirection: "rtl",
@@ -536,6 +543,10 @@ const state = {
   readerCamera: null,
   readerCameraAnimation: null,
   readerCameraSettleTimer: 0,
+  highZoomEnhancementTimer: 0,
+  highZoomEnhancementRequestId: 0,
+  highZoomEnhancementWorker: null,
+  highZoomEnhancementCancel: null,
   readerOverview: null,
   readerOverviewRestoreTimer: 0,
   readerHoldTimer: 0,
@@ -900,6 +911,7 @@ function loadSettings() {
     if (Number.isFinite(saved.panelPadding)) state.panelPadding = clamp(saved.panelPadding, 0, 25);
     if (typeof saved.bubbleAwareFraming === "boolean") state.bubbleAwareFraming = saved.bubbleAwareFraming;
     state.highZoomClarity = normalizeHighZoomClarity(saved.highZoomClarity);
+    if (typeof saved.highZoomEnhancement === "boolean") state.highZoomEnhancement = saved.highZoomEnhancement;
     if (["off", "before", "after"].includes(saved.pageReveal)) state.pageReveal = saved.pageReveal;
     if (typeof saved.cinematicMotion === "boolean") state.cinematicMotion = saved.cinematicMotion;
     if (typeof saved.keepScreenAwake === "boolean") state.keepScreenAwake = saved.keepScreenAwake;
@@ -950,6 +962,7 @@ function saveSettings() {
       panelPadding: state.panelPadding,
       bubbleAwareFraming: state.bubbleAwareFraming,
       highZoomClarity: state.highZoomClarity,
+      highZoomEnhancement: state.highZoomEnhancement,
       pageReveal: state.pageReveal,
       cinematicMotion: state.cinematicMotion,
       keepScreenAwake: state.keepScreenAwake,
@@ -10869,6 +10882,7 @@ function clamp(value, min, max) {
 }
 
 function renderCurrentPage() {
+  cancelHighZoomEnhancement("page-change");
   const page = state.pages[state.pageIndex];
   if (!page) {
     el.stage.classList.remove("has-image");
@@ -11147,12 +11161,193 @@ function clearReaderCameraSettle() {
   state.readerCameraSettleTimer = 0;
 }
 
+function cancelHighZoomEnhancement(status = "idle") {
+  window.clearTimeout(state.highZoomEnhancementTimer);
+  state.highZoomEnhancementTimer = 0;
+  state.highZoomEnhancementRequestId += 1;
+  state.highZoomEnhancementCancel?.();
+  state.highZoomEnhancementCancel = null;
+  state.highZoomEnhancementWorker?.terminate();
+  state.highZoomEnhancementWorker = null;
+  if (!el.stageEnhancement) return;
+  el.stageEnhancement.hidden = true;
+  el.stageEnhancement.dataset.status = status;
+  const context = el.stageEnhancement.getContext("2d");
+  context?.clearRect(0, 0, el.stageEnhancement.width, el.stageEnhancement.height);
+}
+
+function highZoomEnhancementEligible(element, camera) {
+  if (
+    !state.highZoomEnhancement
+    || element !== el.stageImage
+    || state.fullPage
+    || state.pageRevealActive
+    || state.panelMode === "webtoon"
+    || state.readerOverview
+    || continuousWebtoonReading()
+  ) return false;
+  const deviceScale = camera.scale * Math.max(1, Number(window.devicePixelRatio) || 1);
+  return deviceScale >= highZoomEnhancementTrigger;
+}
+
+function highZoomEnhancementGeometry(page, camera) {
+  const stageRect = el.stage.getBoundingClientRect();
+  const target = camera.target;
+  if (!target || stageRect.width < 1 || stageRect.height < 1) return null;
+
+  const sourceX = clamp(Math.floor(target.x * page.naturalWidth), 0, page.naturalWidth - 1);
+  const sourceY = clamp(Math.floor(target.y * page.naturalHeight), 0, page.naturalHeight - 1);
+  const sourceRight = clamp(Math.ceil((target.x + target.w) * page.naturalWidth), sourceX + 1, page.naturalWidth);
+  const sourceBottom = clamp(Math.ceil((target.y + target.h) * page.naturalHeight), sourceY + 1, page.naturalHeight);
+  const sourceWidth = sourceRight - sourceX;
+  const sourceHeight = sourceBottom - sourceY;
+  const cropCssWidth = sourceWidth * camera.scale;
+  const cropCssHeight = sourceHeight * camera.scale;
+  let renderScale = Math.min(2, Math.max(1, Number(window.devicePixelRatio) || 1));
+  renderScale = Math.min(
+    renderScale,
+    Math.sqrt(highZoomEnhancementMaxPixels / Math.max(1, cropCssWidth * cropCssHeight)),
+    Math.sqrt(highZoomEnhancementMaxCanvasPixels / Math.max(1, stageRect.width * stageRect.height))
+  );
+  if (!Number.isFinite(renderScale) || renderScale < 0.75) return null;
+
+  const targetWidth = Math.max(1, Math.round(cropCssWidth * renderScale));
+  const targetHeight = Math.max(1, Math.round(cropCssHeight * renderScale));
+  if (targetWidth <= sourceWidth * 1.03 && targetHeight <= sourceHeight * 1.03) return null;
+  return {
+    sourceX,
+    sourceY,
+    sourceWidth,
+    sourceHeight,
+    targetWidth,
+    targetHeight,
+    canvasWidth: Math.max(1, Math.round(stageRect.width * renderScale)),
+    canvasHeight: Math.max(1, Math.round(stageRect.height * renderScale)),
+    destinationX: Math.round((camera.left + sourceX * camera.scale) * renderScale),
+    destinationY: Math.round((camera.top + sourceY * camera.scale) * renderScale),
+    renderScale,
+  };
+}
+
+function scheduleHighZoomEnhancement(element, camera) {
+  cancelHighZoomEnhancement(state.highZoomEnhancement ? "waiting" : "off");
+  if (!highZoomEnhancementEligible(element, camera)) return;
+  const requestId = state.highZoomEnhancementRequestId;
+  state.highZoomEnhancementTimer = window.setTimeout(() => {
+    state.highZoomEnhancementTimer = 0;
+    void renderHighZoomEnhancement(element, camera, requestId);
+  }, 45);
+}
+
+async function renderHighZoomEnhancement(element, camera, requestId) {
+  const page = state.pages[camera.pageIndex];
+  const canvas = el.stageEnhancement;
+  if (!page || !canvas || requestId !== state.highZoomEnhancementRequestId) return false;
+  const geometry = highZoomEnhancementGeometry(page, camera);
+  if (!geometry) {
+    canvas.dataset.status = "native";
+    return false;
+  }
+
+  const source = page.image || element;
+  const scratch = document.createElement("canvas");
+  scratch.width = geometry.sourceWidth;
+  scratch.height = geometry.sourceHeight;
+  const scratchContext = scratch.getContext("2d", { willReadFrequently: true });
+  if (!scratchContext) return false;
+  let sourcePixels;
+  try {
+    scratchContext.drawImage(
+      source,
+      geometry.sourceX,
+      geometry.sourceY,
+      geometry.sourceWidth,
+      geometry.sourceHeight,
+      0,
+      0,
+      geometry.sourceWidth,
+      geometry.sourceHeight
+    );
+    sourcePixels = scratchContext.getImageData(0, 0, geometry.sourceWidth, geometry.sourceHeight).data;
+  } catch {
+    canvas.dataset.status = "fallback";
+    return false;
+  }
+  if (requestId !== state.highZoomEnhancementRequestId) return false;
+
+  canvas.dataset.status = "processing";
+  let worker;
+  try {
+    worker = new Worker(new URL("./reader-clarity-worker.js", import.meta.url), { type: "module" });
+  } catch {
+    canvas.dataset.status = "fallback";
+    return false;
+  }
+  state.highZoomEnhancementWorker = worker;
+  const result = await new Promise((resolve) => {
+    let finished = false;
+    const finish = (value) => {
+      if (finished) return;
+      finished = true;
+      if (state.highZoomEnhancementCancel === cancel) state.highZoomEnhancementCancel = null;
+      resolve(value);
+    };
+    const cancel = () => finish({ error: "cancelled" });
+    state.highZoomEnhancementCancel = cancel;
+    worker.addEventListener("message", (event) => finish(event.data), { once: true });
+    worker.addEventListener("error", () => finish({ error: "worker" }), { once: true });
+    worker.postMessage({
+      id: requestId,
+      source: sourcePixels.buffer,
+      width: geometry.sourceWidth,
+      height: geometry.sourceHeight,
+      targetWidth: geometry.targetWidth,
+      targetHeight: geometry.targetHeight,
+    }, [sourcePixels.buffer]);
+  }).catch(() => ({ error: "worker" }));
+  worker.terminate();
+  if (state.highZoomEnhancementWorker === worker) state.highZoomEnhancementWorker = null;
+  if (
+    result?.error
+    || result?.id !== requestId
+    || requestId !== state.highZoomEnhancementRequestId
+    || state.readerCamera?.pageIndex !== camera.pageIndex
+    || state.readerCamera?.panelIndex !== camera.panelIndex
+  ) {
+    if (requestId === state.highZoomEnhancementRequestId) canvas.dataset.status = "fallback";
+    return false;
+  }
+
+  try {
+    const context = canvas.getContext("2d");
+    if (!context) return false;
+    canvas.width = geometry.canvasWidth;
+    canvas.height = geometry.canvasHeight;
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.putImageData(
+      new ImageData(new Uint8ClampedArray(result.pixels), result.width, result.height),
+      geometry.destinationX,
+      geometry.destinationY
+    );
+  } catch {
+    canvas.dataset.status = "fallback";
+    return false;
+  }
+  canvas.dataset.status = "ready";
+  canvas.dataset.renderScale = geometry.renderScale.toFixed(3);
+  canvas.dataset.sourceSize = `${geometry.sourceWidth}x${geometry.sourceHeight}`;
+  canvas.dataset.outputSize = `${geometry.targetWidth}x${geometry.targetHeight}`;
+  canvas.hidden = false;
+  return true;
+}
+
 function cameraBaseDimension(element, key, fallback = 1) {
   return Math.max(1, Number(element?.dataset?.[key]) || Number(fallback) || 1);
 }
 
 function prepareReaderCameraElement(element, camera, { pageChanged = false } = {}) {
   clearReaderCameraSettle();
+  cancelHighZoomEnhancement("moving");
   const baseWidth = cameraBaseDimension(element, "cameraBaseWidth");
   const baseHeight = cameraBaseDimension(element, "cameraBaseHeight");
   const previous = state.readerCamera;
@@ -11191,6 +11386,7 @@ function settleReaderCamera(element, camera) {
   element.style.height = `${baseHeight * camera.scale}px`;
   element.style.transform = settledCameraTransform(camera);
   element.dataset.cameraSettled = "true";
+  scheduleHighZoomEnhancement(element, camera);
   return true;
 }
 
@@ -11417,6 +11613,7 @@ function beginReaderOverview(kind = "hold") {
     : cameraForTarget(page, expandPanelRect(currentPanel(), state.panelPadding / 100), stageRect);
   const overviewCamera = cameraForTarget(page, fullPagePanel(page.naturalWidth, page.naturalHeight), stageRect);
   clearReaderCameraSettle();
+  cancelHighZoomEnhancement("overview");
   state.readerCameraAnimation?.cancel();
   state.readerCameraAnimation = null;
   prepareReaderCameraElement(element, camera);
@@ -11744,6 +11941,26 @@ function updateHighZoomClarityControls() {
   });
 }
 
+function updateHighZoomEnhancementControls() {
+  [el.highZoomEnhancement, el.highZoomEnhancementReader].forEach((control) => {
+    if (control) control.checked = state.highZoomEnhancement;
+  });
+}
+
+function setHighZoomEnhancement(enabled) {
+  state.highZoomEnhancement = Boolean(enabled);
+  updateHighZoomEnhancementControls();
+  saveSettings();
+  if (!state.highZoomEnhancement) {
+    cancelHighZoomEnhancement("off");
+    return;
+  }
+  const element = readerCameraElement();
+  if (state.activeView === "reader" && state.readerCamera && element?.dataset.cameraSettled === "true") {
+    scheduleHighZoomEnhancement(element, state.readerCamera);
+  }
+}
+
 function setHighZoomClarity(value) {
   state.highZoomClarity = normalizeHighZoomClarity(value);
   updateHighZoomClarityControls();
@@ -11759,6 +11976,7 @@ function updateReaderInteractionControls() {
     if (control) control.checked = state.cinematicMotion;
   });
   updateHighZoomClarityControls();
+  updateHighZoomEnhancementControls();
 }
 
 function setPageReveal(value) {
@@ -13710,6 +13928,8 @@ function wireEvents() {
   el.bubbleAwareFramingReader?.addEventListener("change", (event) => setBubbleAwareFraming(event.target.checked));
   el.highZoomClarity?.addEventListener("change", (event) => setHighZoomClarity(event.target.value));
   el.highZoomClarityReader?.addEventListener("change", (event) => setHighZoomClarity(event.target.value));
+  el.highZoomEnhancement?.addEventListener("change", (event) => setHighZoomEnhancement(event.target.checked));
+  el.highZoomEnhancementReader?.addEventListener("change", (event) => setHighZoomEnhancement(event.target.checked));
   el.pageReveal?.addEventListener("change", (event) => setPageReveal(event.target.value));
   el.pageRevealReader?.addEventListener("change", (event) => setPageReveal(event.target.value));
   el.cinematicMotion?.addEventListener("change", (event) => setCinematicMotion(event.target.checked));
@@ -13936,6 +14156,9 @@ window.PanelPilot = {
     pageRevealActive: state.pageRevealActive,
     cinematicMotion: state.cinematicMotion,
     highZoomClarity: state.highZoomClarity,
+    highZoomEnhancement: state.highZoomEnhancement,
+    highZoomEnhancementStatus: el.stageEnhancement?.dataset?.status || "idle",
+    highZoomEnhancementOutput: el.stageEnhancement?.dataset?.outputSize || "",
     camera: state.readerCamera ? {
       pageIndex: state.readerCamera.pageIndex,
       panelIndex: state.readerCamera.panelIndex,

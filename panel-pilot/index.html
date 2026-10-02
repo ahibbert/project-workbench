@@ -41,6 +41,7 @@
         <div class="stage" id="stage" tabindex="0" aria-label="Panel reading stage">
           <div class="stage-image-wrap" id="stage-image-wrap">
             <img id="stage-image" alt="Current manga page">
+            <canvas id="stage-enhancement" hidden></canvas>
           </div>
           <div class="reader-overview-hint" id="reader-overview-hint" role="status" aria-live="polite" hidden>
             Release to return to the panel
@@ -128,6 +129,10 @@
                   <option value="balanced" selected>Balanced</option>
                   <option value="maximum">Maximum clarity</option>
                 </select>
+              </label>
+              <label class="checkbox-field">
+                <input id="high-zoom-enhancement-reader" type="checkbox">
+                <span>Enhance enlarged panels</span>
               </label>
               <label class="reader-select-field" for="page-reveal-reader">
                 <span>Whole-page reveal</span>
@@ -579,6 +584,10 @@
               <option value="maximum">Maximum clarity</option>
             </select>
             <small>Includes a little more page when a crop would otherwise exceed the source resolution.</small>
+          </label>
+          <label class="checkbox-field">
+            <input id="high-zoom-enhancement" type="checkbox">
+            <span>Enhance enlarged panels</span>
           </label>
           <details class="settings-detail">
             <summary>Panel detection</summary>

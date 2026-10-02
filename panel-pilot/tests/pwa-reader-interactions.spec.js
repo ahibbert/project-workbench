@@ -160,12 +160,18 @@ test("cinematic motion adapts the pan and respects both its toggle and reduced-m
 });
 
 test("high-zoom clarity is mirrored and resting panels use settled-size rendering", async ({ page }) => {
-  await openDemo(page, { highZoomClarity: "maximum", readerMotion: "smooth" });
+  await openDemo(page, { highZoomClarity: "maximum", highZoomEnhancement: true, readerMotion: "smooth" });
 
   await expect.poll(() => page.evaluate(() => window.PanelPilot.getReaderInteractionDiagnostics().cameraSettled)).toBe(true);
   await expect(page.locator("#high-zoom-clarity")).toHaveValue("maximum");
   await page.locator(".reader-options > summary").click();
   await expect(page.locator("#high-zoom-clarity-reader")).toHaveValue("maximum");
+  await expect(page.locator("#high-zoom-enhancement-reader")).toBeChecked();
+  await expect.poll(
+    () => page.evaluate(() => window.PanelPilot.getReaderInteractionDiagnostics().highZoomEnhancementStatus),
+    { timeout: 20_000 }
+  ).toBe("ready");
+  await expect(page.locator("#stage-enhancement")).toBeVisible();
 
   const rendering = await page.locator("#stage-image").evaluate((image) => ({
     baseWidth: Number(image.dataset.cameraBaseWidth),
@@ -187,4 +193,9 @@ test("high-zoom clarity is mirrored and resting panels use settled-size renderin
   });
   const persisted = await page.evaluate(() => JSON.parse(localStorage.getItem("panel-pilot-settings")));
   expect(persisted.highZoomClarity).toBe("off");
+
+  await page.locator("#high-zoom-enhancement-reader").uncheck();
+  await expect(page.locator("#high-zoom-enhancement")).not.toBeChecked();
+  await expect(page.locator("#stage-enhancement")).toBeHidden();
+  await expect.poll(() => page.evaluate(() => window.PanelPilot.getReaderInteractionDiagnostics().highZoomEnhancementStatus)).toBe("off");
 });
