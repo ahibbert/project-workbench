@@ -9,6 +9,7 @@ import hmac
 import html
 import ipaddress
 import json
+import math
 import os
 import posixpath
 from pathlib import Path
@@ -1636,6 +1637,14 @@ class DownloadBufferManager:
     RETRY_BASE_DELAY = 3 * 60
     RETRY_MAX_DELAY = 6 * 60 * 60
     MAX_ATTEMPTS = 6
+    RETENTION_SCHEMA_VERSION = 1
+    RETENTION_PURPOSES = {"reading-ahead", "plan-to-read", "source-test"}
+    RETENTION_SCOPE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+    DEFAULT_RETENTION_POLICY = {
+        "readRetentionDays": 30,
+        "keepRecentCount": 2,
+        "sourceTestRetentionDays": 1,
+    }
 
     def __init__(self, path=DOWNLOAD_BUFFER_PATH):
         self.path = path
@@ -1644,6 +1653,9 @@ class DownloadBufferManager:
         self.failures = []
         self.prepared_chapters = set()
         self.requested_chapter_ids = []
+        self.retention_ledger = []
+        self.retention_policy = dict(self.DEFAULT_RETENTION_POLICY)
+        self.last_retention_cleanup_at = None
         self.tasks = self.load_tasks()
         self.active_chapter_id = None
         self.thread = threading.Thread(target=self.run, name="panel-pilot-download-buffer", daemon=True)
@@ -1665,6 +1677,38 @@ class DownloadBufferManager:
         self.requested_chapter_ids = [
             int(value) for value in payload.get("requestedChapterIds", [])[:25] if str(value).isdigit()
         ]
+        retention = payload.get("retention") if isinstance(payload.get("retention"), dict) else {}
+        try:
+            self.retention_policy = self.normalize_retention_policy(retention.get("policy"))
+        except ValueError:
+            self.retention_policy = dict(self.DEFAULT_RETENTION_POLICY)
+        self.last_retention_cleanup_at = self.normalize_retention_iso(retention.get("lastCleanupAt"))
+        self.retention_ledger = []
+        for item in retention.get("ledger", [])[:5000] if isinstance(retention.get("ledger"), list) else []:
+            if not isinstance(item, dict):
+                continue
+            try:
+                chapter_id = int(item.get("chapterId"))
+            except (TypeError, ValueError):
+                continue
+            if chapter_id < 1:
+                continue
+            raw_scope_id = item.get("scopeId")
+            scope_id = str(raw_scope_id).strip() if raw_scope_id is not None else ""
+            if not self.RETENTION_SCOPE_PATTERN.fullmatch(scope_id):
+                scope_id = ""
+            entry = {
+                "schemaVersion": item.get("schemaVersion"),
+                "managedBy": str(item.get("managedBy") or "")[:20],
+                "chapterId": chapter_id,
+                "scopeId": scope_id,
+                "purpose": str(item.get("purpose") or "")[:30],
+                "managedAt": self.normalize_retention_iso(item.get("managedAt")),
+            }
+            read_at = self.normalize_retention_iso(item.get("readAt"))
+            if read_at:
+                entry["readAt"] = read_at
+            self.retention_ledger.append(entry)
         tasks = []
         seen = set()
         for item in payload.get("tasks", []):
@@ -1707,16 +1751,123 @@ class DownloadBufferManager:
                     "preparedVersion": os.environ.get("PANEL_PILOT_MANGA_DETECTOR_CACHE_VERSION", "v1"),
                     "preparedChapters": sorted(self.prepared_chapters)[-1000:],
                     "requestedChapterIds": self.requested_chapter_ids,
+                    "retention": {
+                        "schemaVersion": self.RETENTION_SCHEMA_VERSION,
+                        "policy": self.retention_policy,
+                        "ledger": self.retention_ledger[-5000:],
+                        **({"lastCleanupAt": self.last_retention_cleanup_at} if self.last_retention_cleanup_at else {}),
+                    },
                 }, handle, separators=(",", ":"))
             os.replace(temporary_path, self.path)
         finally:
             if temporary_path and os.path.exists(temporary_path):
                 os.unlink(temporary_path)
 
-    def enqueue(self, chapter_ids, priority="foreground"):
+    @classmethod
+    def normalize_retention_iso(cls, value):
+        if value in (None, ""):
+            return None
+        try:
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                parsed = datetime.fromtimestamp(float(value), timezone.utc)
+            else:
+                parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                parsed = parsed.astimezone(timezone.utc)
+        except (OverflowError, TypeError, ValueError):
+            return None
+        return parsed.isoformat().replace("+00:00", "Z")
+
+    @classmethod
+    def retention_timestamp(cls, value):
+        normalized = cls.normalize_retention_iso(value)
+        if not normalized:
+            return None
+        return datetime.fromisoformat(normalized.replace("Z", "+00:00")).timestamp()
+
+    @staticmethod
+    def retention_iso_now(now=None):
+        value = time.time() if now is None else float(now)
+        return datetime.fromtimestamp(value, timezone.utc).isoformat().replace("+00:00", "Z")
+
+    @classmethod
+    def normalize_retention_policy(cls, policy=None, base=None):
+        if policy is None:
+            return dict(base or cls.DEFAULT_RETENTION_POLICY)
+        if not isinstance(policy, dict):
+            raise ValueError("retentionPolicy must be an object")
+        normalized = dict(base or cls.DEFAULT_RETENTION_POLICY)
+        for key in ("readRetentionDays", "sourceTestRetentionDays"):
+            if key not in policy:
+                continue
+            value = policy[key]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0 or value > 36500:
+                raise ValueError(f"retentionPolicy.{key} must be a number from 0 to 36500")
+            normalized[key] = value
+        if "keepRecentCount" in policy:
+            value = policy["keepRecentCount"]
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > 10000:
+                raise ValueError("retentionPolicy.keepRecentCount must be an integer from 0 to 10000")
+            normalized["keepRecentCount"] = value
+        return normalized
+
+    @classmethod
+    def normalize_enqueue_retention(cls, purpose=None, scope_id=None):
+        if purpose is None and scope_id is None:
+            return None
+        if purpose not in cls.RETENTION_PURPOSES:
+            raise ValueError("purpose must be reading-ahead, plan-to-read, or source-test")
+        normalized_scope_id = str(scope_id or "").strip()
+        if not cls.RETENTION_SCOPE_PATTERN.fullmatch(normalized_scope_id):
+            raise ValueError("scopeId must be a privacy-safe opaque identifier")
+        return {"purpose": purpose, "scopeId": normalized_scope_id}
+
+    @staticmethod
+    def normalize_retention_chapter_ids(chapter_ids, limit=100):
+        normalized = []
+        for raw_id in chapter_ids[:limit] if isinstance(chapter_ids, list) else []:
+            if isinstance(raw_id, bool):
+                continue
+            if isinstance(raw_id, int):
+                chapter_id = raw_id
+            elif isinstance(raw_id, str) and raw_id.isdigit():
+                chapter_id = int(raw_id)
+            else:
+                continue
+            if chapter_id > 0 and chapter_id not in normalized:
+                normalized.append(chapter_id)
+        return normalized
+
+    def record_retention_enqueue_locked(self, chapter_ids, metadata, now=None):
+        if not metadata or not chapter_ids:
+            return
+        managed_at = self.retention_iso_now(now)
+        for chapter_id in chapter_ids:
+            matching = [item for item in self.retention_ledger if item.get("chapterId") == chapter_id]
+            if not matching:
+                self.retention_ledger.append({
+                    "schemaVersion": self.RETENTION_SCHEMA_VERSION,
+                    "managedBy": "panels",
+                    "chapterId": chapter_id,
+                    "scopeId": metadata["scopeId"],
+                    "purpose": metadata["purpose"],
+                    "managedAt": managed_at,
+                })
+            elif len(matching) == 1 and matching[0].get("schemaVersion") == self.RETENTION_SCHEMA_VERSION and matching[0].get("managedBy") == "panels":
+                matching[0].update({
+                    "scopeId": metadata["scopeId"],
+                    "purpose": metadata["purpose"],
+                    "managedAt": managed_at,
+                })
+                matching[0].pop("readAt", None)
+
+    def enqueue(self, chapter_ids, priority="foreground", purpose=None, scope_id=None):
         if priority not in ("foreground", "background"):
             raise ValueError("Download buffer priority must be foreground or background")
+        retention_metadata = self.normalize_enqueue_retention(purpose, scope_id)
         added = 0
+        added_chapter_ids = []
         candidates = []
         for raw_id in chapter_ids[:25]:
             try:
@@ -1744,6 +1895,7 @@ class DownloadBufferManager:
                 self.tasks.append({"chapterId": chapter_id, "attempts": 0, "notBefore": 0, "lastError": ""})
                 existing.add(chapter_id)
                 added += 1
+                added_chapter_ids.append(chapter_id)
             if priority == "foreground":
                 requested_set = set(requested)
                 available = {item["chapterId"] for item in self.tasks}
@@ -1754,10 +1906,184 @@ class DownloadBufferManager:
                 ]
                 self.tasks = preferred + [item for item in self.tasks if item["chapterId"] not in requested_set]
             order_changed = before_order != [item["chapterId"] for item in self.tasks]
+            self.record_retention_enqueue_locked(added_chapter_ids, retention_metadata)
             if added or window_changed or order_changed:
                 self.save_locked()
         self.wake.set()
         return {**self.status(), "added": added, "rejected": rejected}
+
+    def retention_preview_locked(self, active_reader_chapter_ids=None, now=None):
+        now_value = time.time() if now is None else float(now)
+        active_ids = set(self.normalize_retention_chapter_ids(active_reader_chapter_ids or []))
+        if self.active_chapter_id:
+            active_ids.add(self.active_chapter_id)
+        by_chapter = {}
+        for entry in self.retention_ledger:
+            chapter_id = entry.get("chapterId")
+            if isinstance(chapter_id, int) and chapter_id > 0:
+                by_chapter.setdefault(chapter_id, []).append(entry)
+
+        decisions = []
+        read_candidates = []
+        for chapter_id, entries in by_chapter.items():
+            reason = None
+            candidate = None
+            if chapter_id in active_ids:
+                reason = "active-reader"
+            elif len(entries) != 1:
+                reason = "ambiguous-ledger"
+            else:
+                entry = entries[0]
+                if entry.get("schemaVersion") != self.RETENTION_SCHEMA_VERSION:
+                    reason = "legacy-ledger"
+                elif entry.get("managedBy") != "panels":
+                    reason = "unmanaged-download"
+                elif entry.get("purpose") not in self.RETENTION_PURPOSES or not self.RETENTION_SCOPE_PATTERN.fullmatch(str(entry.get("scopeId") or "")):
+                    reason = "invalid-ledger"
+                elif entry["purpose"] == "source-test":
+                    managed_at = self.retention_timestamp(entry.get("managedAt"))
+                    if managed_at is None:
+                        reason = "missing-timestamp"
+                    elif now_value - managed_at < self.retention_policy["sourceTestRetentionDays"] * 86400:
+                        reason = "source-test-retention"
+                    else:
+                        candidate = {
+                            "chapterId": chapter_id,
+                            "reason": "source-test-expired",
+                            "purpose": entry["purpose"],
+                            "scopeId": entry["scopeId"],
+                            "effectiveAt": managed_at,
+                        }
+                else:
+                    read_at = self.retention_timestamp(entry.get("readAt"))
+                    if read_at is None:
+                        reason = "unread"
+                    elif now_value - read_at < self.retention_policy["readRetentionDays"] * 86400:
+                        reason = "read-retention"
+                    else:
+                        candidate = {
+                            "chapterId": chapter_id,
+                            "reason": "read-retention-expired",
+                            "purpose": entry["purpose"],
+                            "scopeId": entry["scopeId"],
+                            "effectiveAt": read_at,
+                        }
+                        read_candidates.append(candidate)
+            if candidate:
+                decisions.append(candidate)
+            else:
+                decisions.append({"chapterId": chapter_id, "reason": reason or "invalid-ledger", "protected": True})
+
+        candidates_by_scope = {}
+        for candidate in read_candidates:
+            candidates_by_scope.setdefault(candidate["scopeId"], []).append(candidate)
+        for candidates in candidates_by_scope.values():
+            candidates.sort(key=lambda item: (-item["effectiveAt"], item["chapterId"]))
+            for candidate in candidates[:self.retention_policy["keepRecentCount"]]:
+                candidate["reason"] = "keep-recent"
+                candidate["protected"] = True
+
+        eligible = sorted(
+            (
+                {"chapterId": item["chapterId"], "reason": item["reason"]}
+                for item in decisions if not item.get("protected")
+            ),
+            key=lambda item: item["chapterId"],
+        )
+        protected = [item for item in decisions if item.get("protected")]
+        reasons = {}
+        for item in decisions:
+            reasons[item["reason"]] = reasons.get(item["reason"], 0) + 1
+        result = {
+            "policy": dict(self.retention_policy),
+            "preview": {
+                "managed": len(by_chapter),
+                "eligible": len(eligible),
+                "protected": len(protected),
+                "reasons": dict(sorted(reasons.items())),
+            },
+            "eligible": eligible,
+        }
+        if self.last_retention_cleanup_at:
+            result["lastCleanupAt"] = self.last_retention_cleanup_at
+        return result
+
+    def retention_status(self, active_reader_chapter_ids=None, policy=None):
+        with self.lock:
+            if policy is not None:
+                normalized_policy = self.normalize_retention_policy(policy, self.retention_policy)
+                if normalized_policy != self.retention_policy:
+                    self.retention_policy = normalized_policy
+                    self.save_locked()
+            retention = self.retention_preview_locked(active_reader_chapter_ids)
+        status = self.status()
+        status["retention"] = retention
+        return status
+
+    def mark_retention_read(self, chapter_ids):
+        requested = self.normalize_retention_chapter_ids(chapter_ids)
+        marked = 0
+        read_at = self.retention_iso_now()
+        with self.lock:
+            for chapter_id in requested:
+                matching = [item for item in self.retention_ledger if item.get("chapterId") == chapter_id]
+                if len(matching) != 1:
+                    continue
+                entry = matching[0]
+                if entry.get("schemaVersion") != self.RETENTION_SCHEMA_VERSION or entry.get("managedBy") != "panels":
+                    continue
+                if entry.get("purpose") not in self.RETENTION_PURPOSES:
+                    continue
+                if not self.RETENTION_SCOPE_PATTERN.fullmatch(str(entry.get("scopeId") or "")):
+                    continue
+                entry["readAt"] = read_at
+                marked += 1
+            if marked:
+                self.save_locked()
+        return {**self.status(), "markedRead": marked}
+
+    def dequeue_retention_chapters(self, chapter_ids):
+        if not chapter_ids:
+            return
+        self.graphql(
+            "mutation($input:DequeueChapterDownloadsInput!){dequeueChapterDownloads(input:$input){downloadStatus{state}}}",
+            {"input": {"ids": chapter_ids}},
+        )
+
+    def delete_retention_chapters(self, chapter_ids):
+        if not chapter_ids:
+            return
+        self.graphql(
+            "mutation($input:DeleteDownloadedChaptersInput!){deleteDownloadedChapters(input:$input){chapters{id}}}",
+            {"input": {"ids": chapter_ids}},
+        )
+
+    def cleanup_retention(self, active_reader_chapter_ids=None, policy=None):
+        deleted_ids = []
+        with self.lock:
+            if policy is not None:
+                self.retention_policy = self.normalize_retention_policy(policy, self.retention_policy)
+            retention = self.retention_preview_locked(active_reader_chapter_ids)
+            eligible_ids = [item["chapterId"] for item in retention["eligible"]]
+            if eligible_ids:
+                eligible_set = set(eligible_ids)
+                self.tasks = [item for item in self.tasks if item["chapterId"] not in eligible_set]
+                self.failures = [item for item in self.failures if item["chapterId"] not in eligible_set]
+                self.requested_chapter_ids = [chapter_id for chapter_id in self.requested_chapter_ids if chapter_id not in eligible_set]
+                self.save_locked()
+                self.dequeue_retention_chapters(eligible_ids)
+                self.delete_retention_chapters(eligible_ids)
+                self.retention_ledger = [item for item in self.retention_ledger if item.get("chapterId") not in eligible_set]
+                self.prepared_chapters.difference_update(eligible_set)
+                deleted_ids = eligible_ids
+            self.last_retention_cleanup_at = self.retention_iso_now()
+            self.save_locked()
+            completed_retention = self.retention_preview_locked(active_reader_chapter_ids)
+        self.wake.set()
+        status = self.status()
+        status["retention"] = completed_retention
+        status["retentionCleanup"] = {"removed": len(deleted_ids)}
+        return status
 
     def status_locked(self):
         return {
@@ -1782,6 +2108,7 @@ class DownloadBufferManager:
     def status(self):
         with self.lock:
             status = self.status_locked()
+            status["retention"] = self.retention_preview_locked()
             requested = list(self.requested_chapter_ids)
             requested_set = set(requested)
             task_by_id = {item["chapterId"]: dict(item) for item in self.tasks if item["chapterId"] in requested_set}
@@ -2404,7 +2731,10 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
                 self.handle_panel_report_post()
                 return
             if parsed.path == "/api/download-buffer":
-                self.handle_download_buffer_post()
+                try:
+                    self.handle_download_buffer_post()
+                except (ValueError, json.JSONDecodeError) as error:
+                    self.send_json({"error": str(error)}, status=400)
                 return
             if parsed.path == "/api/mangabaka/config":
                 self.handle_mangabaka_config_post()
@@ -2523,6 +2853,8 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         if length < 1 or length > 65536:
             raise ValueError("Download buffer request is empty or too large")
         payload = json.loads(self.rfile.read(length).decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("Download buffer request must be an object")
         if payload.get("retryFailed") is True:
             self.send_json(DOWNLOAD_BUFFER_MANAGER.retry_failures())
             return
@@ -2530,13 +2862,44 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         if isinstance(remove_chapter_ids, list):
             self.send_json(DOWNLOAD_BUFFER_MANAGER.remove(remove_chapter_ids))
             return
+        mark_read_chapter_ids = payload.get("markReadChapterIds")
+        if mark_read_chapter_ids is not None:
+            if not isinstance(mark_read_chapter_ids, list):
+                raise ValueError("markReadChapterIds must be a list")
+            self.send_json(DOWNLOAD_BUFFER_MANAGER.mark_retention_read(mark_read_chapter_ids))
+            return
+        retention_preview = payload.get("retentionPreview") is True
+        cleanup_retention = payload.get("cleanupRetention") is True
+        if retention_preview or cleanup_retention:
+            active_reader_chapter_ids = payload.get("activeReaderChapterIds", [])
+            if not isinstance(active_reader_chapter_ids, list):
+                raise ValueError("activeReaderChapterIds must be a list")
+            retention_policy = payload.get("retentionPolicy")
+            if retention_policy is not None and not isinstance(retention_policy, dict):
+                raise ValueError("retentionPolicy must be an object")
+            if cleanup_retention:
+                self.send_json(DOWNLOAD_BUFFER_MANAGER.cleanup_retention(
+                    active_reader_chapter_ids=active_reader_chapter_ids,
+                    policy=retention_policy,
+                ))
+            else:
+                self.send_json(DOWNLOAD_BUFFER_MANAGER.retention_status(
+                    active_reader_chapter_ids=active_reader_chapter_ids,
+                    policy=retention_policy,
+                ))
+            return
         chapter_ids = payload.get("chapterIds")
         if not isinstance(chapter_ids, list):
             raise ValueError("chapterIds must be a list")
         priority = payload.get("priority", "foreground")
         if priority not in ("foreground", "background"):
             raise ValueError("priority must be foreground or background")
-        self.send_json(DOWNLOAD_BUFFER_MANAGER.enqueue(chapter_ids, priority=priority))
+        self.send_json(DOWNLOAD_BUFFER_MANAGER.enqueue(
+            chapter_ids,
+            priority=priority,
+            purpose=payload.get("purpose"),
+            scope_id=payload.get("scopeId"),
+        ))
 
     def do_GET(self):
         parsed = urlparse(self.path)

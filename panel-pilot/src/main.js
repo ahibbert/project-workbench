@@ -232,6 +232,13 @@ const el = {
   downloadChapterList: document.querySelector("#download-chapter-list"),
   downloadStatusIssue: document.querySelector("#download-status-issue"),
   downloadStatusRetry: document.querySelector("#download-status-retry"),
+  serverBufferRetention: document.querySelector("#server-buffer-retention"),
+  serverBufferRetentionSummary: document.querySelector("#server-buffer-retention-summary"),
+  serverBufferRetentionDays: document.querySelector("#server-buffer-retention-days"),
+  serverBufferRetentionKeep: document.querySelector("#server-buffer-retention-keep"),
+  serverBufferRetentionPreview: document.querySelector("#server-buffer-retention-preview"),
+  serverBufferRetentionApply: document.querySelector("#server-buffer-retention-apply"),
+  serverBufferRetentionResult: document.querySelector("#server-buffer-retention-result"),
   readerBack: document.querySelector("#reader-back"),
   readerView: document.querySelector("#reader-view"),
   stageImage: document.querySelector("#stage-image"),
@@ -568,6 +575,7 @@ const state = {
   downloadStatusSheetOpen: false,
   downloadStatusReturnFocus: null,
   downloadStatusFilter: "all",
+  serverBufferRetentionPreview: null,
   libraryOfflineWindows: new Map(),
   libraryOfflineReadiness: new Map(),
   libraryDeferredRenderPending: false,
@@ -3017,7 +3025,7 @@ function restoreReaderModalFocus() {
 
 function trapReaderModalFocus(event, modal) {
   if (event.key !== "Tab" || !modal) return false;
-  const focusable = [...modal.querySelectorAll("button:not([disabled]):not([hidden]), a[href], input:not([disabled]), [tabindex]:not([tabindex='-1'])")]
+  const focusable = [...modal.querySelectorAll("button:not([disabled]):not([hidden]), a[href], input:not([disabled]), summary, [tabindex]:not([tabindex='-1'])")]
     .filter((item) => item.getClientRects().length);
   if (!focusable.length) {
     event.preventDefault();
@@ -5797,6 +5805,7 @@ async function finishChapterAndLoadNext() {
   const keepFullPageReading = state.fullPage;
   recordCurrentReadingStatsFinish();
   if (state.activeChapter?.type === "suwayomi") {
+    void markServerBufferChaptersRead([state.activeChapter.chapterId]);
     window.clearTimeout(state.suwayomiSyncTimer);
     enqueueCurrentSuwayomiProgress({ completed: true });
     void flushSuwayomiProgressOutbox().catch(() => false);
@@ -5935,6 +5944,99 @@ function downloadChapterStateLabel(chapter) {
   if (chapter?.state === "failed") return "Failed";
   if (chapter?.state === "queued") return "Queued";
   return "Pending";
+}
+
+function serverBufferScopeId(item = state.currentManga) {
+  const mangaId = Number(item?.mangaId ?? item?.id);
+  return Number.isInteger(mangaId) && mangaId > 0 ? `manga-${mangaId}` : "";
+}
+
+function serverBufferRetentionPolicyFromControls() {
+  return {
+    readRetentionDays: Math.max(0, Number(el.serverBufferRetentionDays?.value) || 30),
+    keepRecentCount: Math.max(0, Number(el.serverBufferRetentionKeep?.value) || 0),
+    sourceTestRetentionDays: 1,
+  };
+}
+
+function activeServerBufferChapterIds() {
+  const chapterId = Number(state.activeChapter?.chapterId);
+  return state.activeChapter?.type === "suwayomi" && Number.isInteger(chapterId) && chapterId > 0 ? [chapterId] : [];
+}
+
+function renderServerBufferRetention(retention) {
+  if (!el.serverBufferRetention) return;
+  const policy = retention?.policy;
+  if (policy && !state.serverBufferRetentionPreview) {
+    if (el.serverBufferRetentionDays) el.serverBufferRetentionDays.value = String(policy.readRetentionDays ?? 30);
+    if (el.serverBufferRetentionKeep) el.serverBufferRetentionKeep.value = String(policy.keepRecentCount ?? 2);
+  }
+  const preview = retention?.preview || {};
+  const managed = Number(preview.managed ?? preview.uniqueSafeDownloads ?? 0) || 0;
+  const eligible = Number(preview.eligible) || 0;
+  const protectedCount = Number(preview.protected) || 0;
+  if (el.serverBufferRetentionSummary) {
+    el.serverBufferRetentionSummary.textContent = managed
+      ? `${managed} Panels-managed chapter${managed === 1 ? " is" : "s are"} tracked · ${eligible} eligible now · ${protectedCount} protected. Manual and older downloads stay protected.`
+      : "Only chapters downloaded automatically by Panels are eligible. Manual and older downloads stay protected.";
+  }
+  if (el.serverBufferRetentionApply) {
+    el.serverBufferRetentionApply.hidden = !state.serverBufferRetentionPreview || eligible < 1;
+    el.serverBufferRetentionApply.textContent = eligible === 1 ? "Remove 1 eligible chapter" : `Remove ${eligible} eligible chapters`;
+  }
+  if (el.serverBufferRetentionResult && state.serverBufferRetentionPreview) {
+    el.serverBufferRetentionResult.textContent = eligible
+      ? `${eligible} downloaded chapter${eligible === 1 ? "" : "s"} can be removed. Every manual, active, recent, unread, and pre-existing download remains protected.`
+      : "Nothing is eligible under this policy. No downloads will be removed.";
+  }
+}
+
+async function previewServerBufferRetention() {
+  setBusy(el.serverBufferRetentionPreview, true, "Checking");
+  try {
+    const status = await postLocalJson("/api/download-buffer", {
+      retentionPreview: true,
+      retentionPolicy: serverBufferRetentionPolicyFromControls(),
+      activeReaderChapterIds: activeServerBufferChapterIds(),
+    });
+    state.serverBufferRetentionPreview = status.retention || { preview: { eligible: 0 } };
+    renderDownloadStatus(status);
+  } catch (error) {
+    showToast(`Could not preview cleanup: ${friendlySourceErrorMessage(error)}`, "bad");
+  } finally {
+    setBusy(el.serverBufferRetentionPreview, false);
+  }
+}
+
+async function applyServerBufferRetention() {
+  const eligible = Number(state.serverBufferRetentionPreview?.preview?.eligible) || 0;
+  if (!eligible) return;
+  if (!window.confirm(`Remove ${eligible} eligible server chapter${eligible === 1 ? "" : "s"}?\n\nManual, active, unread, recent, and older unmanaged downloads will stay protected.`)) return;
+  setBusy(el.serverBufferRetentionApply, true, "Removing");
+  try {
+    const status = await postLocalJson("/api/download-buffer", {
+      cleanupRetention: true,
+      retentionPolicy: serverBufferRetentionPolicyFromControls(),
+      activeReaderChapterIds: activeServerBufferChapterIds(),
+    });
+    const removed = Number(status.retentionCleanup?.removed ?? status.removedDownloads ?? eligible) || 0;
+    state.serverBufferRetentionPreview = null;
+    renderDownloadStatus(status);
+    if (el.serverBufferRetentionResult) {
+      el.serverBufferRetentionResult.textContent = `Removed ${removed} temporary server chapter${removed === 1 ? "" : "s"}.`;
+    }
+    showToast(`Removed ${removed} temporary server chapter${removed === 1 ? "" : "s"}.`, "good");
+  } catch (error) {
+    showToast(`Could not clean up chapters: ${friendlySourceErrorMessage(error)}`, "bad");
+  } finally {
+    setBusy(el.serverBufferRetentionApply, false);
+  }
+}
+
+async function markServerBufferChaptersRead(chapterIds) {
+  const ids = [...new Set((chapterIds || []).map(Number).filter((id) => Number.isInteger(id) && id > 0))];
+  if (!ids.length || !navigator.onLine) return null;
+  return postLocalJson("/api/download-buffer", { markReadChapterIds: ids }).catch(() => null);
 }
 
 function setDownloadStatusFilter(filter) {
@@ -6083,6 +6185,7 @@ function renderDownloadStatus(status) {
     el.downloadStatusIssue.textContent = issue ? `Latest issue: ${friendlySourceErrorMessage(issue)}` : "";
   }
   if (el.downloadStatusRetry) el.downloadStatusRetry.hidden = globalFailed < 1;
+  renderServerBufferRetention(status?.retention);
 }
 
 function earliestPlanToReadChapterIds(chapters, limit = downloadAheadChapterCount) {
@@ -6164,7 +6267,12 @@ async function enqueuePlanToReadServerBuffer(item, knownChapters = null, { retry
         clearPlanToReadBufferRetry(key);
         return true;
       }
-      const status = await postLocalJson("/api/download-buffer", { chapterIds, priority: "background" });
+      const status = await postLocalJson("/api/download-buffer", {
+        chapterIds,
+        priority: "background",
+        purpose: "plan-to-read",
+        scopeId: serverBufferScopeId(item),
+      });
       if (Number(status?.rejected) > 0) {
         throw new Error(`${status.rejected} chapter${Number(status.rejected) === 1 ? " was" : "s were"} not accepted by the server buffer`);
       }
@@ -6203,7 +6311,12 @@ async function ensureDownloadAhead(chapterId) {
   const ids = chapters.map((chapter) => Number(chapter.id));
   if (el.offlineNote) el.offlineNote.textContent = `Server chapter buffer: sending ${ids.length} chapter${ids.length === 1 ? "" : "s"} to the background queue…`;
   try {
-    const status = await postLocalJson("/api/download-buffer", { chapterIds: ids, priority: "foreground" });
+    const status = await postLocalJson("/api/download-buffer", {
+      chapterIds: ids,
+      priority: "foreground",
+      purpose: "reading-ahead",
+      scopeId: serverBufferScopeId(),
+    });
     renderDownloadStatus(status);
     if (el.offlineNote) el.offlineNote.textContent = downloadBufferStatusText(status);
   } catch (error) {
@@ -7504,6 +7617,9 @@ async function markChaptersBeforeRead(chapter, button) {
   });
 
   renderChapters();
+  if (succeeded.length && serverUrl === currentDeviceServerUrl()) {
+    void markServerBufferChaptersRead(succeeded.map((target) => target.id));
+  }
   if (!failed.length) {
     showToast(`Marked ${targetChapterCount} earlier ${noun} as read.`, "good");
   } else if (succeeded.length) {
@@ -12774,6 +12890,18 @@ function wireEvents() {
   el.downloadStatusClose?.addEventListener("click", () => setDownloadStatusSheet(false));
   el.downloadStatFailedFilter?.addEventListener("click", () => setDownloadStatusFilter("failed"));
   el.downloadStatusRetry?.addEventListener("click", retryFailedDownloads);
+  el.serverBufferRetentionPreview?.addEventListener("click", () => { void previewServerBufferRetention(); });
+  el.serverBufferRetentionApply?.addEventListener("click", () => { void applyServerBufferRetention(); });
+  el.serverBufferRetentionDays?.addEventListener("change", () => {
+    state.serverBufferRetentionPreview = null;
+    if (el.serverBufferRetentionApply) el.serverBufferRetentionApply.hidden = true;
+    if (el.serverBufferRetentionResult) el.serverBufferRetentionResult.textContent = "Preview the updated policy before removing anything.";
+  });
+  el.serverBufferRetentionKeep?.addEventListener("change", () => {
+    state.serverBufferRetentionPreview = null;
+    if (el.serverBufferRetentionApply) el.serverBufferRetentionApply.hidden = true;
+    if (el.serverBufferRetentionResult) el.serverBufferRetentionResult.textContent = "Preview the updated policy before removing anything.";
+  });
   window.addEventListener("keydown", (event) => {
     if (!state.downloadStatusSheetOpen) return;
     if (event.key === "Escape") {

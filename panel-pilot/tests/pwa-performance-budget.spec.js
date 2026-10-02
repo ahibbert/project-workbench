@@ -8,11 +8,11 @@ const distRoot = join(projectRoot, "dist");
 const budgets = {
   indexHtml: 47 * 1024,
   // Includes offline milestones, source health and source selection, detector
-  // fallback, device repair controls, and the local reading-session model.
-  mainJavaScript: 345 * 1024,
+  // fallback, device repair controls, local reading sessions, and retention.
+  mainJavaScript: 350 * 1024,
   mainCss: 72 * 1024,
   criticalPath: 490 * 1024,
-  installShell: 720 * 1024,
+  installShell: 725 * 1024,
   domContentLoadedMs: 1_500,
   loadMs: 2_000,
   applicationReadyMs: 2_500,

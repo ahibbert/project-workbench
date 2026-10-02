@@ -3536,6 +3536,62 @@ body.has-reading-miniplayer .download-status-button {
   text-align: center;
 }
 
+.server-buffer-retention {
+  margin-top: 0.8rem;
+  border-top: 1px solid var(--line);
+  padding-top: 0.7rem;
+}
+
+.server-buffer-retention summary {
+  min-height: 2.75rem;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  color: var(--ink);
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+.server-buffer-retention .note {
+  margin: 0 0 0.65rem;
+}
+
+.server-buffer-retention-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.server-buffer-retention-fields label {
+  min-width: 0;
+  display: grid;
+  gap: 0.3rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.server-buffer-retention-fields select {
+  width: 100%;
+  min-height: 2.75rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.35rem 0.45rem;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+}
+
+.server-buffer-retention .button-row {
+  margin-top: 0.65rem;
+}
+
+@media (max-width: 380px) {
+  .server-buffer-retention-fields {
+    grid-template-columns: 1fr;
+  }
+}
+
 body.download-sheet-open {
   overflow: hidden;
   overscroll-behavior: none;

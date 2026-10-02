@@ -689,6 +689,36 @@
       </div>
       <div class="download-chapter-list" id="download-chapter-list" aria-live="polite"></div>
       <p class="download-status-issue" id="download-status-issue" hidden></p>
+      <details class="server-buffer-retention" id="server-buffer-retention">
+        <summary tabindex="0">Temporary chapter cleanup</summary>
+        <p class="note" id="server-buffer-retention-summary">Only chapters downloaded automatically by Panels are eligible. Manual and older downloads stay protected.</p>
+        <div class="server-buffer-retention-fields">
+          <label>
+            <span>Keep read chapters for</span>
+            <select id="server-buffer-retention-days">
+              <option value="7">7 days</option>
+              <option value="14">14 days</option>
+              <option value="30" selected>30 days</option>
+              <option value="90">90 days</option>
+              <option value="36500">Always</option>
+            </select>
+          </label>
+          <label>
+            <span>Also keep newest per series</span>
+            <select id="server-buffer-retention-keep">
+              <option value="0">None</option>
+              <option value="1">1 chapter</option>
+              <option value="2" selected>2 chapters</option>
+              <option value="5">5 chapters</option>
+            </select>
+          </label>
+        </div>
+        <div class="button-row">
+          <button id="server-buffer-retention-preview" type="button">Preview cleanup</button>
+          <button id="server-buffer-retention-apply" type="button" class="danger-button" hidden>Remove eligible chapters</button>
+        </div>
+        <p class="note" id="server-buffer-retention-result" role="status" aria-live="polite"></p>
+      </details>
       <button class="wide-button" id="download-status-retry" type="button" hidden>Retry failed downloads</button>
     </section>
 

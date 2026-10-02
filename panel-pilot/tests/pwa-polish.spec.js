@@ -161,6 +161,11 @@ function failedBufferStatus() {
       isDownloaded: false,
       lastError: "Rate limited",
     }],
+    retention: {
+      policy: { readRetentionDays: 30, keepRecentCount: 2, sourceTestRetentionDays: 1 },
+      preview: { managed: 1, eligible: 0, protected: 1, reasons: { unread: 1 } },
+      eligible: [],
+    },
   };
 }
 
@@ -267,6 +272,21 @@ async function installPolishFixture(page, { holdStoredChapters = false, detailCh
       const payload = request.postDataJSON() || {};
       downloadBufferRequests.push(payload);
       const response = failedBufferStatus();
+      if (payload.retentionPreview) {
+        response.retention = {
+          policy: payload.retentionPolicy,
+          preview: { managed: 3, eligible: 1, protected: 2, reasons: { "read-retention-expired": 1, unread: 2 } },
+          eligible: [{ chapterId: 80101, reason: "read-retention-expired" }],
+        };
+      }
+      if (payload.cleanupRetention) {
+        response.retention = {
+          policy: payload.retentionPolicy,
+          preview: { managed: 2, eligible: 0, protected: 2, reasons: { unread: 2 } },
+          eligible: [],
+        };
+        response.retentionCleanup = { removed: 1 };
+      }
       if (Array.isArray(payload.chapterIds)) {
         const retried = new Set(payload.chapterIds.map(Number));
         response.failedChapters = response.failedChapters.filter((chapter) => !retried.has(Number(chapter.chapterId)));
@@ -612,6 +632,37 @@ test("the server-buffer sheet is modal, traps focus, closes, and restores focus 
   await page.keyboard.press("Escape");
   await expect(sheet).toBeHidden();
   await expect(pill).toBeFocused();
+});
+
+test("server-buffer cleanup previews and confirms only Panels-managed eligible chapters", async ({ page }) => {
+  const fixture = await installPolishFixture(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await page.locator("#download-status-button").click();
+  await page.locator("#server-buffer-retention summary").click();
+
+  await expect(page.locator("#server-buffer-retention-summary")).toContainText("Manual and older downloads stay protected");
+  await page.locator("#server-buffer-retention-days").selectOption("14");
+  await page.locator("#server-buffer-retention-keep").selectOption("1");
+  await page.locator("#server-buffer-retention-preview").click();
+
+  await expect.poll(() => fixture.downloadBufferRequests).toContainEqual({
+    retentionPreview: true,
+    retentionPolicy: { readRetentionDays: 14, keepRecentCount: 1, sourceTestRetentionDays: 1 },
+    activeReaderChapterIds: [],
+  });
+  await expect(page.locator("#server-buffer-retention-result")).toContainText("1 downloaded chapter can be removed");
+  await expect(page.locator("#server-buffer-retention-apply")).toBeVisible();
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.locator("#server-buffer-retention-apply").click();
+  await expect.poll(() => fixture.downloadBufferRequests).toContainEqual({
+    cleanupRetention: true,
+    retentionPolicy: { readRetentionDays: 14, keepRecentCount: 1, sourceTestRetentionDays: 1 },
+    activeReaderChapterIds: [],
+  });
+  await expect(page.locator("#server-buffer-retention-result")).toHaveText("Removed 1 temporary server chapter.");
+  await expect(page.locator("#server-buffer-retention-apply")).toBeHidden();
 });
 
 test("the failed download total filters to actionable failed chapters", async ({ page }) => {
