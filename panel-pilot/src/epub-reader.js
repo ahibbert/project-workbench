@@ -58,6 +58,7 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
   let saveTimer = 0;
   let resizeTimer = 0;
   let controlsTimer = 0;
+  let chromeResizeFrame = 0;
   let destroyed = false;
   let locationsReady = false;
   let wakeLock = null;
@@ -125,6 +126,13 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
   toc.append(tocHeader, tocList);
   reader.append(toolbar, stage, footer, toc);
   root.append(reader);
+
+  const nativeFullscreenAvailable = typeof reader.requestFullscreen === "function"
+    || typeof reader.webkitRequestFullscreen === "function";
+  if (!nativeFullscreenAvailable) {
+    fullscreenButton.setAttribute("aria-label", "Hide reading controls");
+    fullscreenButton.title = "Hide reading controls";
+  }
 
   function select(label, key, values) {
     const wrapper = node("label");
@@ -203,12 +211,17 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
 
   function setControlsVisible(visible, linger = true) {
     window.clearTimeout(controlsTimer);
+    if (!visible && settings.open) settings.open = false;
     reader.classList.toggle("epub-chrome-hidden", !visible);
     reader.dataset.controlsVisible = visible ? "true" : "false";
+    window.cancelAnimationFrame(chromeResizeFrame);
+    chromeResizeFrame = window.requestAnimationFrame(() => rendition?.resize?.());
     if (visible && linger && !settings.open && !toc.open) {
       controlsTimer = window.setTimeout(() => {
         reader.classList.add("epub-chrome-hidden");
         reader.dataset.controlsVisible = "false";
+        window.cancelAnimationFrame(chromeResizeFrame);
+        chromeResizeFrame = window.requestAnimationFrame(() => rendition?.resize?.());
       }, 5000);
     }
   }
@@ -221,11 +234,17 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
         if (exit) await exit.call(document);
       } else {
         const enter = reader.requestFullscreen || reader.webkitRequestFullscreen;
-        if (!enter) throw new Error("Full screen is not available in this iOS browser. Adding Panel Pilot to the Home Screen provides the cleanest supported view.");
+        if (!enter) {
+          setControlsVisible(false, false);
+          return;
+        }
         await enter.call(reader);
       }
-    } catch (error) {
-      timeRemaining.textContent = error?.message || "Full screen could not be opened.";
+    } catch {
+      // iOS does not expose element fullscreen for normal web content. Falling
+      // back to distraction-free mode is more useful than replacing progress
+      // information with a persistent browser capability error.
+      setControlsVisible(false, false);
     }
   }
 
@@ -332,6 +351,7 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
     sanitizeRenderedDocument(document);
     applyDocumentPreferences(document);
     let contentGesture = null;
+    let lastHandledPointerTap = 0;
     document.addEventListener("pointerdown", (event) => { contentGesture = { x: event.clientX, y: event.clientY }; }, { passive: true });
     document.addEventListener("pointerup", (event) => {
       if (!contentGesture || event.target.closest?.("a")) return;
@@ -339,20 +359,28 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
       const deltaY = event.clientY - contentGesture.y;
       const moved = Math.hypot(deltaX, deltaY) > 12;
       if (!navigateFromGesture(deltaX, deltaY)) handleReaderTap(event.clientX / Math.max(1, contents.window.innerWidth), moved);
+      lastHandledPointerTap = Date.now();
       contentGesture = null;
     }, { passive: true });
     document.addEventListener("click", (event) => {
       const link = event.target.closest?.("a[href]");
-      if (!link) return;
-      const href = link.getAttribute("href") || "";
-      if (/^(?:https?:)?\/\//i.test(href) || /^mailto:/i.test(href)) {
-        event.preventDefault();
+      if (link) {
+        const href = link.getAttribute("href") || "";
+        if (/^(?:https?:)?\/\//i.test(href) || /^mailto:/i.test(href)) {
+          event.preventDefault();
+          return;
+        }
+        if (href && !href.toLowerCase().startsWith("javascript:")) {
+          event.preventDefault();
+          void rendition?.display(href);
+        }
         return;
       }
-      if (href && !href.toLowerCase().startsWith("javascript:")) {
-        event.preventDefault();
-        void rendition?.display(href);
-      }
+      // Some iOS WebKit builds do not deliver pointerup reliably inside the
+      // EPUB iframe. The click path keeps the centre control toggle available
+      // without double-handling browsers that delivered both events.
+      if (Date.now() - lastHandledPointerTap < 450) return;
+      handleReaderTap(event.clientX / Math.max(1, contents.window.innerWidth));
     });
   }
 
@@ -434,7 +462,9 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
     preferences[key] = ["fontSize", "lineHeight", "contentWidth"].includes(key) ? Number(control.value) : control.value;
     void persistPreferences(key).catch((error) => { loading.hidden = false; loading.textContent = error.message; });
   });
-  settings.addEventListener("toggle", () => setControlsVisible(true, !settings.open));
+  settings.addEventListener("toggle", () => {
+    if (settings.open) setControlsVisible(true, false);
+  });
   back.addEventListener("click", onExit);
   previous.addEventListener("click", () => rendition?.prev());
   next.addEventListener("click", () => rendition?.next());
@@ -501,6 +531,7 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
       window.clearTimeout(saveTimer);
       window.clearTimeout(resizeTimer);
       window.clearTimeout(controlsTimer);
+      window.cancelAnimationFrame(chromeResizeFrame);
       window.removeEventListener("keydown", keyHandler);
       window.removeEventListener("resize", resizeHandler);
       document.removeEventListener("visibilitychange", visibilityHandler);

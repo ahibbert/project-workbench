@@ -304,6 +304,10 @@ test("books library and EPUB controls remain usable at phone width", async ({ pa
   }))).toMatchObject({ opacity: "0", height: expect.any(Number) });
   await page.locator(".epub-settings summary").click();
   await expect(page.getByLabel("Page width")).toBeVisible();
+  await expect.poll(() => page.locator(".epub-settings-panel").evaluate((panel) => ({
+    background: getComputedStyle(panel).backgroundColor,
+    position: getComputedStyle(panel).position,
+  }))).toEqual({ background: "rgb(255, 255, 255)", position: "fixed" });
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
@@ -345,7 +349,7 @@ test("every EPUB preference value applies and combinations survive reflow", asyn
   }))).toEqual({ font: "system-ui, sans-serif", size: "150%", lineHeight: "2", alignment: "justify" });
 });
 
-test("centre taps restore reader controls and the EPUB stage owns the full height", async ({ page }) => {
+test("centre taps toggle reader controls and visible chrome never covers the EPUB", async ({ page }) => {
   await stubApp(page, { booksEnabled: true });
   await page.goto("/", { waitUntil: "networkidle" });
   await page.getByRole("button", { name: /^Books$/ }).first().click();
@@ -362,10 +366,49 @@ test("centre taps restore reader controls and the EPUB stage owns the full heigh
   });
   await centralTap();
   await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "false");
-  await centralTap();
-  await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "true");
   await expect.poll(() => page.locator(".epub-reader").evaluate((reader) => {
     const stage = reader.querySelector(".epub-stage");
     return Math.abs(stage.getBoundingClientRect().height - reader.getBoundingClientRect().height);
   })).toBeLessThan(2);
+  await centralTap();
+  await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "true");
+  await expect.poll(() => page.locator(".epub-reader").evaluate((reader) => {
+    const stage = reader.querySelector(".epub-stage");
+    const toolbar = reader.querySelector(".epub-toolbar");
+    const footer = reader.querySelector(".epub-footer");
+    const stageBounds = stage.getBoundingClientRect();
+    return {
+      belowToolbar: stageBounds.top >= toolbar.getBoundingClientRect().bottom - 1,
+      aboveFooter: stageBounds.bottom <= footer.getBoundingClientRect().top + 1,
+    };
+  })).toEqual({ belowToolbar: true, aboveFooter: true });
+
+  await page.waitForTimeout(500);
+  await body.evaluate((element) => {
+    const view = element.ownerDocument.defaultView;
+    element.dispatchEvent(new MouseEvent("click", {
+      bubbles: true,
+      clientX: view.innerWidth / 2,
+      clientY: view.innerHeight / 2,
+    }));
+  });
+  await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "false");
+});
+
+test("fullscreen falls back to distraction-free controls on unsupported browsers", async ({ page }) => {
+  await stubApp(page, { booksEnabled: true });
+  await page.goto("/", { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: /^Books$/ }).first().click();
+  await page.getByRole("button", { name: /^Plan/ }).click();
+  await page.locator(".book-library-card").getByRole("button", { name: /Alice's Adventures/ }).click();
+  await page.getByRole("button", { name: "Read book" }).click();
+  await expect(page.frameLocator(".epub-viewport iframe").locator("body")).toContainText("Alice was beginning");
+  const fullscreen = page.locator(".epub-fullscreen");
+  await fullscreen.evaluate((button) => {
+    Object.defineProperty(button.closest(".epub-reader"), "requestFullscreen", { value: undefined, configurable: true });
+    Object.defineProperty(button.closest(".epub-reader"), "webkitRequestFullscreen", { value: undefined, configurable: true });
+  });
+  await fullscreen.click();
+  await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "false");
+  await expect(page.locator(".epub-time-remaining")).not.toContainText("not available");
 });
