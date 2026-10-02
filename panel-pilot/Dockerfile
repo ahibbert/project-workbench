@@ -27,6 +27,8 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
 COPY --chown=panels:panels server.py ./server.py
+COPY --chown=panels:panels comic_recommendations.py ./comic_recommendations.py
+COPY --chown=panels:panels source_intelligence.py ./source_intelligence.py
 COPY --chown=panels:panels LICENSE THIRD_PARTY_NOTICES.md ./
 COPY --chown=panels:panels --from=frontend-builder /build/dist ./web
 

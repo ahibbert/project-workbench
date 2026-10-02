@@ -101,10 +101,79 @@ class SourceIntelligenceTests(unittest.TestCase):
             self.store.record_observations([observation(operation="arbitrary")])
         with self.assertRaisesRegex(SourceIntelligenceError, "sourceId"):
             self.store.record_observations([observation(source_id="https://private.example/title")])
+        with self.assertRaisesRegex(SourceIntelligenceError, "unsupported fields: title"):
+            self.store.record_observations([observation(title="Private reading title")])
+        with self.assertRaisesRegex(SourceIntelligenceError, "storeIdentity"):
+            self.store.sync_inventory([variant(storeIdentity="https://extensions.example/index.min.json")])
         with closing(sqlite3.connect(self.path)) as connection:
             columns = {row[1] for row in connection.execute("PRAGMA table_info(source_observations)")}
         self.assertNotIn("title", columns)
         self.assertNotIn("url", columns)
+
+    def test_benchmark_run_is_transactional_idempotent_and_updates_coverage(self):
+        self.store.sync_inventory([variant(formats=["manga", "comic"])])
+        run = {
+            "runId": "run-20261002-001",
+            "suiteVersion": "suite-1.0",
+            "status": "completed",
+            "startedAt": "2026-10-02T00:00:00Z",
+            "finishedAt": "2026-10-02T00:02:00Z",
+            "requestedBy": "manual",
+            "appVersion": "3aafecf",
+            "errorClass": "",
+        }
+        results = [{
+            "caseId": "manga-mainstream-01",
+            "sourceId": "source-001",
+            "mediaFormat": "manga",
+            "matchScore": 0.9,
+            "usable": True,
+            "chapterCount": 120,
+            "pageCount": 20,
+            "fetchSuccesses": 5,
+            "fetchFailures": 0,
+            "durationMs": 12_000,
+            "errorClass": "",
+        }]
+        response = self.store.record_benchmark(run, results)
+        self.assertTrue(response["accepted"])
+        self.assertEqual(response["resultCount"], 1)
+        score = self.store.scores("manga")[0]
+        self.assertGreater(score["coverage"], 80)
+        self.assertEqual(score["evidenceCount"], 1)
+        detail = self.store.benchmark_runs(run_id=run["runId"])[0]
+        self.assertEqual(detail["results"][0]["caseId"], "manga-mainstream-01")
+        duplicate = self.store.record_benchmark(run, results)
+        self.assertFalse(duplicate["accepted"])
+        self.assertTrue(duplicate["duplicate"])
+        self.assertEqual(len(self.store.benchmark_runs(run_id=run["runId"])), 1)
+
+    def test_failed_benchmark_may_record_an_empty_run_without_private_error_text(self):
+        self.store.sync_inventory([variant()])
+        response = self.store.record_benchmark({
+            "runId": "run-20261002-failed",
+            "suiteVersion": "suite-1.0",
+            "status": "failed",
+            "startedAt": "2026-10-02T00:00:00Z",
+            "finishedAt": "2026-10-02T00:00:01Z",
+            "requestedBy": "scheduled",
+            "appVersion": "3aafecf",
+            "errorClass": "network",
+        }, [])
+        self.assertTrue(response["accepted"])
+        self.assertEqual(response["resultCount"], 0)
+        with self.assertRaisesRegex(SourceIntelligenceError, "unsupported fields: errorMessage"):
+            self.store.record_benchmark({
+                "runId": "run-unsafe",
+                "suiteVersion": "suite-1.0",
+                "status": "failed",
+                "startedAt": "2026-10-02T00:00:00Z",
+                "finishedAt": "2026-10-02T00:00:01Z",
+                "requestedBy": "manual",
+                "appVersion": "3aafecf",
+                "errorClass": "network",
+                "errorMessage": "request for a private title failed",
+            }, [])
 
 
 if __name__ == "__main__":

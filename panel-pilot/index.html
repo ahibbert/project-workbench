@@ -32,6 +32,7 @@
             <h1 id="chapter-title">Demo chapter</h1>
           </div>
           <div class="reader-stats" aria-live="polite">
+            <span id="reader-session-stat" hidden>Session · just started</span>
             <span id="page-stat">Page 1</span>
             <span id="panel-stat">Panel 1</span>
           </div>
@@ -125,6 +126,7 @@
                 <small id="wake-lock-status" role="status" aria-live="polite" aria-atomic="true">Checking screen wake support…</small>
               </div>
               <button class="text-button moment-save-button" id="save-moment" type="button">Save this moment</button>
+              <button class="text-button" id="finish-reading-session" type="button">Finish reading session</button>
               <button class="text-button" id="toggle-fit" type="button" aria-pressed="false">Full page</button>
               <button class="text-button" id="redetect" type="button">Detect panels again</button>
               <button class="text-button" id="report-bad-panels" type="button">Report bad panels</button>
@@ -190,6 +192,16 @@
               <button class="mini-button" id="refresh-mangabaka" type="button">Refresh</button>
             </div>
             <div class="recommendation-rail" id="mangabaka-results" aria-live="polite"></div>
+          </section>
+          <section class="recommendation-section" id="comic-recommendations" aria-labelledby="comic-recommendations-title">
+            <div class="section-heading">
+              <div>
+                <h2 id="comic-recommendations-title">Comics for you</h2>
+                <p class="recommendation-note" id="comic-recommendations-note">Built from the Western comics in your library</p>
+              </div>
+              <button class="mini-button" id="refresh-comic-recommendations" type="button">Refresh</button>
+            </div>
+            <div class="recommendation-rail" id="comic-recommendation-results" aria-live="polite"></div>
           </section>
           <section class="recommendation-context" id="recommendation-context" aria-live="polite" hidden>
             <div>
@@ -416,6 +428,15 @@
             <summary>
               <span>Manage saved chapters</span>
             </summary>
+            <div class="device-storage-filters" role="group" aria-label="Filter saved chapters">
+              <button class="segmented active" type="button" data-device-storage-filter="all" aria-pressed="true">All</button>
+              <button class="segmented" type="button" data-device-storage-filter="ready" aria-pressed="false">Ready</button>
+              <button class="segmented" type="button" data-device-storage-filter="incomplete" aria-pressed="false">Incomplete</button>
+            </div>
+            <div class="button-row device-storage-repair-actions">
+              <button id="device-storage-retry-incomplete" type="button" hidden>Retry incomplete</button>
+              <button id="device-storage-clear-incomplete" type="button" class="danger-button" hidden>Clear incomplete</button>
+            </div>
             <div class="device-storage-selection-bar">
               <label class="device-storage-select-all" for="device-storage-select-all">
                 <input id="device-storage-select-all" type="checkbox" disabled>
@@ -513,6 +534,25 @@
             <button class="wide-button" id="redetect-chapter" type="button">Redetect chapter</button>
             <div class="panel-strip" id="panel-strip" aria-label="Detected panels"></div>
           </details>
+        </section>
+
+        <section class="panel source-intelligence-panel" aria-labelledby="source-intelligence-title">
+          <div class="panel-heading">
+            <h2 id="source-intelligence-title">Source health</h2>
+            <span class="small-count" id="source-intelligence-state">Collecting evidence</span>
+          </div>
+          <p class="note">Private reliability and image-quality history helps Panels recommend the best source for each format. Titles, URLs and page images are never stored here.</p>
+          <div class="source-intelligence-filters" role="group" aria-label="Filter source health by format">
+            <button class="segmented active" type="button" data-source-intelligence-format="all" aria-pressed="true">All</button>
+            <button class="segmented" type="button" data-source-intelligence-format="manga" aria-pressed="false">Manga</button>
+            <button class="segmented" type="button" data-source-intelligence-format="comic" aria-pressed="false">Comics</button>
+            <button class="segmented" type="button" data-source-intelligence-format="webtoon" aria-pressed="false">Webtoons</button>
+          </div>
+          <div class="source-intelligence-list" id="source-intelligence-list">
+            <p class="note">Source evidence will appear after your installed sources are loaded.</p>
+          </div>
+          <button class="wide-button" id="refresh-source-intelligence" type="button">Refresh source health</button>
+          <p class="note" id="source-intelligence-note" role="status" aria-live="polite"></p>
         </section>
 
         <section class="panel sync-panel">

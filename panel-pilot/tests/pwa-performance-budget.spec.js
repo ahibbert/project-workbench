@@ -6,13 +6,13 @@ import { fileURLToPath } from "node:url";
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const distRoot = join(projectRoot, "dist");
 const budgets = {
-  indexHtml: 41 * 1024,
-  // The offline milestone catalogue and its SVG badge paths add a small,
-  // bounded amount to the reader shell without adding any network requests.
-  mainJavaScript: 312 * 1024,
+  indexHtml: 44 * 1024,
+  // Includes offline milestones, source health, detector fallback, device
+  // repair controls, and the local reading-session model.
+  mainJavaScript: 340 * 1024,
   mainCss: 72 * 1024,
-  criticalPath: 434 * 1024,
-  installShell: 674 * 1024,
+  criticalPath: 480 * 1024,
+  installShell: 710 * 1024,
   domContentLoadedMs: 1_500,
   loadMs: 2_000,
   applicationReadyMs: 2_500,

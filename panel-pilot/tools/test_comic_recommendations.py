@@ -358,6 +358,18 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(len(fallback.calls), 1)
         self.assertIn("saga", fallback.calls[0][1])
 
+    def test_provider_failure_without_fallback_is_reported_as_unavailable(self):
+        http = RecordingHttp(lambda _url, _params: (_ for _ in ()).throw(OSError("offline")))
+        service = ComicRecommendationService(
+            librarything=LibraryThingAdapter(http, api_key="secret-key"),
+            open_library=OpenLibraryAdapter(http),
+        )
+
+        feed = service.build_feed((ComicSeed("Saga"),), limit=12)
+
+        self.assertEqual(feed.mode, "unavailable")
+        self.assertEqual(feed.results, ())
+
 
 if __name__ == "__main__":
     unittest.main()

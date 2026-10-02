@@ -694,7 +694,12 @@ class ComicRecommendationService:
                     break
 
         final_results = tuple(collapsed[:clean_limit])
-        mode = "fallback" if final_results and (primary_failed or all(item.provider != "librarything" for item in final_results)) else "personalized"
+        if primary_failed and not final_results:
+            mode = "unavailable"
+        elif final_results and (primary_failed or all(item.provider != "librarything" for item in final_results)):
+            mode = "fallback"
+        else:
+            mode = "personalized"
         return RecommendationFeed(
             mode=mode,
             seed_titles=tuple(seed.title for seed in clean_seeds),

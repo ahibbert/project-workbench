@@ -1,7 +1,7 @@
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlencode, urljoin, urlparse
 from urllib.request import Request, build_opener, HTTPRedirectHandler
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 import base64
 from contextlib import contextmanager
 import hashlib
@@ -23,6 +23,15 @@ from http.cookies import SimpleCookie
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from source_intelligence import SourceIntelligenceError, SourceIntelligenceStore
+from comic_recommendations import (
+    ComicRecommendationService,
+    ComicSeed,
+    LibraryThingAdapter,
+    OpenLibraryAdapter,
+    RecommendationProviderError,
+)
+
 
 USER_AGENT = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
@@ -39,6 +48,15 @@ READING_STATS_PATH = os.environ.get(
 )
 MOMENTS_PATH = os.environ.get("PANEL_PILOT_MOMENTS_PATH", os.path.join(DATA_ROOT, "moments"))
 SOURCE_PROFILES_PATH = os.environ.get("PANEL_PILOT_SOURCE_PROFILES_PATH", os.path.join(DATA_ROOT, "source-profiles.json"))
+SOURCE_INTELLIGENCE_PATH = os.environ.get(
+    "PANEL_PILOT_SOURCE_INTELLIGENCE_PATH",
+    os.path.join(DATA_ROOT, "source-intelligence.sqlite3"),
+)
+COMIC_RECOMMENDATIONS_CACHE_PATH = os.environ.get(
+    "PANEL_PILOT_COMIC_RECOMMENDATIONS_CACHE_PATH",
+    os.path.join(DATA_ROOT, "comic-recommendations-cache.json"),
+)
+COMIC_RECOMMENDATIONS_CACHE_TTL = 7 * 24 * 60 * 60
 MANGABAKA_API_BASE = "https://api.mangabaka.org"
 LIBRARY_LIMIT = 5000
 LIBRARY_LOCK = threading.Lock()
@@ -49,6 +67,7 @@ DOWNLOAD_BUFFER_MANAGER = None
 READING_STATS_LOCK = threading.RLock()
 MOMENTS_LOCK = threading.Lock()
 SOURCE_PROFILES_LOCK = threading.Lock()
+COMIC_RECOMMENDATIONS_CACHE_LOCK = threading.Lock()
 MOMENT_ID_PATTERN = re.compile(r"^[0-9]{13}-[0-9a-f]{16}$")
 SOURCE_ID_PATTERN = re.compile(r"^[a-zA-Z0-9._:-]{1,100}$")
 
@@ -250,6 +269,171 @@ def open_url(request, timeout=30):
     return build_opener(SameOriginRedirectHandler).open(request, timeout=timeout)
 
 
+COMIC_RECOMMENDATIONS_UPSTREAM_LOCK = threading.Lock()
+COMIC_RECOMMENDATIONS_LAST_REQUEST = {}
+
+
+class RecommendationJsonHttpClient:
+    """Small, allowlisted JSON transport for recommendation metadata providers."""
+
+    ALLOWED_HOSTS = frozenset(("openlibrary.org", "www.librarything.com"))
+    RESPONSE_LIMIT = 6_000_000
+
+    def get_json(self, url, *, params, headers=None):
+        parsed = urlparse(str(url or ""))
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname not in self.ALLOWED_HOSTS
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.port not in (None, 443)
+        ):
+            raise RecommendationProviderError("Recommendation provider URL is not allowed")
+        query = urlencode({str(key): str(value) for key, value in dict(params or {}).items()})
+        target = f"{url}?{query}" if query else url
+        request_headers = {str(key): str(value) for key, value in dict(headers or {}).items()}
+        request = Request(target, headers=request_headers, method="GET")
+
+        # Open Library asks unidentified clients to stay at or below one request
+        # per second. A configured contact identifies this self-hosted instance.
+        contact = os.environ.get("PANEL_PILOT_OPEN_LIBRARY_CONTACT", "").replace("\r", "").replace("\n", "").strip()[:200]
+        minimum_interval = 0.35 if parsed.hostname == "openlibrary.org" and contact else 1.05
+        if parsed.hostname == "www.librarything.com":
+            minimum_interval = 1.05
+        try:
+            with COMIC_RECOMMENDATIONS_UPSTREAM_LOCK:
+                previous = COMIC_RECOMMENDATIONS_LAST_REQUEST.get(parsed.hostname, 0.0)
+                delay = minimum_interval - (time.monotonic() - previous)
+                if delay > 0:
+                    time.sleep(delay)
+                try:
+                    with open_url(request, timeout=20) as response:
+                        body = response.read(self.RESPONSE_LIMIT)
+                        if len(body) >= self.RESPONSE_LIMIT:
+                            raise RecommendationProviderError("Recommendation provider response was too large")
+                finally:
+                    COMIC_RECOMMENDATIONS_LAST_REQUEST[parsed.hostname] = time.monotonic()
+            payload = json.loads(body.decode("utf-8") or "{}")
+        except RecommendationProviderError:
+            raise
+        except (HTTPError, URLError, OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            # Deliberately omit the request URL because LibraryThing credentials
+            # are query parameters.
+            raise RecommendationProviderError("Recommendation metadata provider is unavailable") from error
+        if not isinstance(payload, dict):
+            raise RecommendationProviderError("Recommendation metadata provider returned an invalid response")
+        return payload
+
+
+class ComicRecommendationCache:
+    VERSION = 1
+    MAX_ENTRIES = 24
+
+    def __init__(self, path=None, ttl_seconds=COMIC_RECOMMENDATIONS_CACHE_TTL):
+        self.path = Path(path or COMIC_RECOMMENDATIONS_CACHE_PATH).expanduser().resolve()
+        self.ttl_seconds = max(60, int(ttl_seconds))
+
+    def _read_locked(self):
+        try:
+            with open(self.path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            return {"version": self.VERSION, "entries": {}}
+        if payload.get("version") != self.VERSION or not isinstance(payload.get("entries"), dict):
+            return {"version": self.VERSION, "entries": {}}
+        return payload
+
+    def get(self, cache_key):
+        if not re.fullmatch(r"comic-recs-v\d+-[0-9a-f]{64}", str(cache_key or "")):
+            return None, "miss"
+        with COMIC_RECOMMENDATIONS_CACHE_LOCK:
+            entry = self._read_locked()["entries"].get(cache_key)
+        if not isinstance(entry, dict) or not isinstance(entry.get("feed"), dict):
+            return None, "miss"
+        try:
+            age = max(0.0, time.time() - float(entry.get("createdAt")))
+        except (TypeError, ValueError):
+            return None, "miss"
+        return entry["feed"], "hit" if age <= self.ttl_seconds else "stale"
+
+    def put(self, cache_key, feed):
+        if not re.fullmatch(r"comic-recs-v\d+-[0-9a-f]{64}", str(cache_key or "")):
+            raise ValueError("Invalid comic recommendation cache key")
+        if not isinstance(feed, dict):
+            raise ValueError("Invalid comic recommendation cache payload")
+        with COMIC_RECOMMENDATIONS_CACHE_LOCK:
+            payload = self._read_locked()
+            payload["entries"][cache_key] = {"createdAt": time.time(), "feed": feed}
+            def created_at(entry_item):
+                try:
+                    return float(entry_item[1].get("createdAt") or 0)
+                except (AttributeError, TypeError, ValueError):
+                    return 0.0
+            ordered = sorted(
+                payload["entries"].items(),
+                key=created_at,
+                reverse=True,
+            )[:self.MAX_ENTRIES]
+            payload["entries"] = dict(ordered)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                "w", encoding="utf-8", dir=self.path.parent, prefix=".comic-recommendations-", delete=False
+            ) as temporary:
+                json.dump(payload, temporary, ensure_ascii=True, separators=(",", ":"))
+                temporary.write("\n")
+                temporary_path = Path(temporary.name)
+            try:
+                os.replace(temporary_path, self.path)
+            finally:
+                if temporary_path.exists():
+                    temporary_path.unlink()
+
+
+def comic_seeds_from_library(items, maximum=6):
+    """Select positive, explicit Western-comic library entries deterministically."""
+
+    ignored_statuses = {"plan_to_read", "considering", "dropped"}
+    status_priority = {"reading": 0, "rereading": 0, "completed": 1, "paused": 2}
+    candidates = []
+    seen = set()
+    for item in items if isinstance(items, list) else ():
+        if not isinstance(item, dict) or item.get("mediaFormat") != "comic":
+            continue
+        status = str(item.get("libraryStatus") or "")
+        if status in ignored_statuses:
+            continue
+        title = str(item.get("mangaTitle") or "").replace("\x00", "").strip()[:300]
+        title_key = re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
+        if not title or not title_key or title_key in seen:
+            continue
+        seen.add(title_key)
+        candidates.append((
+            status_priority.get(status, 3),
+            str(item.get("updatedAt") or ""),
+            title.lower(),
+            ComicSeed(title),
+        ))
+    candidates.sort(key=lambda item: item[2])
+    candidates.sort(key=lambda item: item[1], reverse=True)
+    candidates.sort(key=lambda item: item[0])
+    return tuple(item[3] for item in candidates[:max(1, min(12, int(maximum)))])
+
+
+def build_comic_recommendation_service():
+    api_key = os.environ.get("PANEL_PILOT_LIBRARYTHING_API_KEY", "").strip()
+    if not api_key:
+        return None
+    contact = os.environ.get("PANEL_PILOT_OPEN_LIBRARY_CONTACT", "").replace("\r", "").replace("\n", "").strip()[:200]
+    user_agent = "Panels comic recommendations"
+    if contact:
+        user_agent += f" ({contact})"
+    http = RecommendationJsonHttpClient()
+    return ComicRecommendationService(
+        librarything=LibraryThingAdapter(http, api_key=api_key),
+        open_library=OpenLibraryAdapter(http, user_agent=user_agent),
+    )
+
+
 def host_matches_domain(host, domain):
     normalized_host = str(host or "").rstrip(".").lower()
     normalized_domain = str(domain or "").rstrip(".").lower()
@@ -336,6 +520,7 @@ PROTECTED_STATIC_PATHS = {
     "/dockerfile",
     "/package-lock.json",
     "/package.json",
+    "/comic_recommendations.py",
     "/server.py",
     "/vite.config.js",
 }
@@ -2193,6 +2378,12 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
                 except (ValueError, json.JSONDecodeError) as error:
                     self.send_json({"error": str(error)}, status=400)
                 return
+            if parsed.path.startswith("/api/source-intelligence/"):
+                try:
+                    self.handle_source_intelligence_post(parsed)
+                except (SourceIntelligenceError, ValueError, json.JSONDecodeError) as error:
+                    self.send_json({"error": str(error)}, status=400)
+                return
         except ReadingStatsRequestError as error:
             self.send_json({"error": str(error)}, status=error.status)
             return
@@ -2334,6 +2525,9 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/mangabaka/recommendations":
                 self.handle_mangabaka_recommendations(parsed)
                 return
+            if parsed.path == "/api/comic-recommendations":
+                self.handle_comic_recommendations(parsed)
+                return
             if parsed.path == "/api/mangabaka/search":
                 self.handle_mangabaka_search(parsed)
                 return
@@ -2342,6 +2536,12 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
                 return
             if parsed.path == "/api/source-profiles":
                 self.send_json(SourceProfileStore().summary())
+                return
+            if parsed.path == "/api/source-intelligence" or parsed.path.startswith("/api/source-intelligence/"):
+                try:
+                    self.handle_source_intelligence_get(parsed)
+                except SourceIntelligenceError as error:
+                    self.send_json({"error": str(error)}, status=400)
                 return
             if parsed.path == "/api/reading-stats/export":
                 self.send_json_attachment(
@@ -2422,6 +2622,81 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         if not isinstance(payload, dict):
             raise ValueError("Source profile payload must be an object")
         self.send_json(SourceProfileStore().ingest(payload.get("observations")))
+
+    @staticmethod
+    def validate_source_intelligence_payload(payload, expected_fields):
+        if not isinstance(payload, dict):
+            raise SourceIntelligenceError("Source intelligence payload must be an object")
+        unknown = sorted(set(payload) - {"schemaVersion", *expected_fields})
+        if unknown:
+            raise SourceIntelligenceError(
+                f"Source intelligence payload contains unsupported fields: {', '.join(unknown)}"
+            )
+        if payload.get("schemaVersion") != SourceIntelligenceStore.SCHEMA_VERSION:
+            raise SourceIntelligenceError("Unsupported source intelligence schemaVersion")
+
+    def handle_source_intelligence_post(self, parsed):
+        payload = self.read_json_request(524288)
+        store = SourceIntelligenceStore(SOURCE_INTELLIGENCE_PATH)
+        if parsed.path == "/api/source-intelligence/inventory":
+            self.validate_source_intelligence_payload(payload, {"sources"})
+            inventory = store.sync_inventory(payload.get("sources"))
+            self.send_json({
+                "schemaVersion": store.SCHEMA_VERSION,
+                "inventory": inventory,
+                "count": len(inventory),
+            })
+            return
+        if parsed.path == "/api/source-intelligence/observations":
+            self.validate_source_intelligence_payload(payload, {"observations"})
+            scores = store.record_observations(payload.get("observations"))
+            self.send_json({
+                "schemaVersion": store.SCHEMA_VERSION,
+                "accepted": len(payload.get("observations") or []),
+                "scores": scores,
+            })
+            return
+        if parsed.path == "/api/source-intelligence/benchmarks":
+            self.validate_source_intelligence_payload(payload, {"run", "results"})
+            self.send_json(store.record_benchmark(payload.get("run"), payload.get("results")))
+            return
+        self.send_json({"error": "Unknown source intelligence POST endpoint"}, status=404)
+
+    def handle_source_intelligence_get(self, parsed):
+        store = SourceIntelligenceStore(SOURCE_INTELLIGENCE_PATH)
+        params = parse_qs(parsed.query)
+        if parsed.path == "/api/source-intelligence":
+            media_format = params.get("format", [None])[0]
+            self.send_json(store.summary(media_format))
+            return
+        if parsed.path == "/api/source-intelligence/inventory":
+            inventory = store.inventory()
+            self.send_json({
+                "schemaVersion": store.SCHEMA_VERSION,
+                "inventory": inventory,
+                "count": len(inventory),
+            })
+            return
+        if parsed.path == "/api/source-intelligence/scores":
+            media_format = params.get("format", [None])[0]
+            scores = store.scores(media_format)
+            self.send_json({
+                "schemaVersion": store.SCHEMA_VERSION,
+                "scores": scores,
+                "count": len(scores),
+            })
+            return
+        if parsed.path == "/api/source-intelligence/benchmarks":
+            run_id = params.get("runId", [None])[0]
+            limit = params.get("limit", [10])[0]
+            runs = store.benchmark_runs(limit=limit, run_id=run_id)
+            self.send_json({
+                "schemaVersion": store.SCHEMA_VERSION,
+                "benchmarkRuns": runs,
+                "count": len(runs),
+            })
+            return
+        self.send_json({"error": "Unknown source intelligence GET endpoint"}, status=404)
 
     def handle_mangabaka_config_post(self):
         payload = self.read_json_request(16384)
@@ -2505,6 +2780,64 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             if len(unique_results) >= limit:
                 break
         self.send_json({"configured": False, "mode": "public", "results": unique_results})
+
+    def handle_comic_recommendations(self, parsed):
+        params = parse_qs(parsed.query)
+        try:
+            limit = max(1, min(20, int(params.get("limit", [12])[0])))
+        except (TypeError, ValueError):
+            self.send_json({"error": "limit must be an integer between 1 and 20"}, status=400)
+            return
+
+        service = build_comic_recommendation_service()
+        if service is None:
+            self.send_json({
+                "schemaVersion": 1,
+                "configured": False,
+                "status": "unconfigured",
+                "mode": "unconfigured",
+                "seedTitles": [],
+                "cacheKey": "",
+                "cacheStatus": "disabled",
+                "results": [],
+            })
+            return
+
+        seeds = comic_seeds_from_library(self.read_library_items())
+        if not seeds:
+            self.send_json({
+                "schemaVersion": 1,
+                "configured": True,
+                "status": "needs-library",
+                "mode": "needs-library",
+                "seedTitles": [],
+                "cacheKey": "",
+                "cacheStatus": "miss",
+                "results": [],
+            })
+            return
+
+        cache = ComicRecommendationCache()
+        cache_key = service.cache_key(seeds, limit=limit)
+        cached, cache_status = cache.get(cache_key)
+        if cache_status == "hit":
+            self.send_json({**cached, "configured": True, "status": "ready", "cacheStatus": "hit"})
+            return
+
+        feed = service.build_feed(seeds, limit=limit).to_public_dict()
+        if feed.get("mode") == "unavailable":
+            if cached is not None:
+                self.send_json({**cached, "configured": True, "status": "ready", "cacheStatus": "stale"})
+            else:
+                self.send_json({**feed, "configured": True, "status": "unavailable", "cacheStatus": "miss"})
+            return
+
+        response_cache_status = "miss"
+        try:
+            cache.put(cache_key, feed)
+        except OSError:
+            response_cache_status = "bypass"
+        self.send_json({**feed, "configured": True, "status": "ready", "cacheStatus": response_cache_status})
 
     def handle_mangabaka_search(self, parsed):
         params = parse_qs(parsed.query)

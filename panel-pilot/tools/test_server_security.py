@@ -114,6 +114,7 @@ class ServerConfigurationTests(unittest.TestCase):
         self.assertIn("ENV PANEL_PILOT_BIND_ADDRESS=0.0.0.0", dockerfile)
         self.assertIn("PANEL_PILOT_BIND_ADDRESS: 0.0.0.0", compose)
         self.assertIn("USER 10001:10001", dockerfile)
+        self.assertIn("COPY --chown=panels:panels source_intelligence.py ./source_intelligence.py", dockerfile)
         self.assertIn("read_only: true", compose)
         self.assertIn("no-new-privileges:true", compose)
         self.assertIn("cap_drop:", compose)

@@ -244,6 +244,12 @@ h2 {
   background: #fff;
 }
 
+#reader-session-stat {
+  border-color: rgba(52, 127, 128, 0.28);
+  background: #edf6f5;
+  color: var(--accent-2);
+}
+
 body.reader-full-page #stage-image,
 body.reader-full-page .stage-strip {
   box-shadow: none;
@@ -2648,6 +2654,121 @@ body.has-network-status.reader-focus .reader-topbar {
   white-space: nowrap;
 }
 
+.device-storage-filters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.45rem;
+  margin-top: 0.75rem;
+}
+
+.device-storage-filters .segmented {
+  min-width: 0;
+  min-height: 2.5rem;
+}
+
+.device-storage-repair-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 0.55rem;
+}
+
+.device-storage-repair-actions button {
+  width: 100%;
+  min-width: 0;
+}
+
+.source-intelligence-filters {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.4rem;
+  margin-top: 0.8rem;
+}
+
+.source-intelligence-filters .segmented {
+  min-width: 0;
+  min-height: 2.45rem;
+  padding-inline: 0.35rem;
+}
+
+.source-intelligence-list {
+  display: grid;
+  margin: 0.7rem 0;
+  border-block: 1px solid var(--line);
+}
+
+.source-intelligence-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 1.7rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.7rem 0.1rem;
+  border-bottom: 1px solid rgba(217, 221, 216, 0.62);
+}
+
+.source-intelligence-row:last-child {
+  border-bottom: 0;
+}
+
+.source-intelligence-rank {
+  display: grid;
+  width: 1.7rem;
+  height: 1.7rem;
+  place-items: center;
+  border-radius: 999px;
+  background: #edf6f5;
+  color: var(--accent-2);
+  font-size: 0.72rem;
+  font-weight: 850;
+}
+
+.source-intelligence-copy,
+.source-intelligence-copy strong,
+.source-intelligence-copy small {
+  min-width: 0;
+  display: block;
+}
+
+.source-intelligence-copy strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 0.82rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-intelligence-copy small {
+  margin-top: 0.12rem;
+  color: var(--muted);
+  font-size: 0.7rem;
+  text-transform: capitalize;
+}
+
+.source-intelligence-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, auto);
+  justify-items: end;
+  gap: 0.08rem 0.45rem;
+  color: var(--muted);
+  font-size: 0.64rem;
+  font-weight: 760;
+}
+
+.source-intelligence-metrics strong,
+.source-intelligence-metrics small {
+  grid-column: 1 / -1;
+}
+
+.source-intelligence-metrics strong {
+  color: var(--accent-2);
+  font-size: 1rem;
+}
+
+.source-intelligence-empty {
+  margin: 0;
+  padding: 0.85rem 0.1rem;
+}
+
 .device-storage-selection-bar {
   min-height: 2.75rem;
   display: flex;
@@ -4023,6 +4144,34 @@ body.has-reading-miniplayer .app-toast {
 }
 
 @media (max-width: 420px) {
+  .source-intelligence-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .source-intelligence-row {
+    grid-template-columns: 1.7rem minmax(0, 1fr);
+  }
+
+  .source-intelligence-metrics {
+    grid-column: 2;
+    grid-template-columns: repeat(5, auto);
+    justify-content: start;
+    justify-items: start;
+  }
+
+  .source-intelligence-metrics strong,
+  .source-intelligence-metrics small {
+    grid-column: auto;
+  }
+
+  #reader-session-stat {
+    order: 3;
+    flex-basis: 100%;
+    width: fit-content;
+    margin-left: auto;
+    text-align: right;
+  }
+
   .device-storage-meter-copy {
     align-items: flex-start;
     flex-direction: column;

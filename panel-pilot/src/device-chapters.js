@@ -202,6 +202,26 @@ function now() {
   return new Date().toISOString();
 }
 
+function metadataTimestamp(value, label) {
+  const milliseconds = value === undefined
+    ? Date.now()
+    : value instanceof Date
+      ? value.getTime()
+      : typeof value === "number"
+        ? value
+        : Date.parse(value);
+  if (!Number.isFinite(milliseconds)) throw new TypeError(`${label} must be a valid date.`);
+  return new Date(milliseconds).toISOString();
+}
+
+function latestTimestamp(current, candidate) {
+  const currentMilliseconds = Date.parse(current || "");
+  const candidateMilliseconds = Date.parse(candidate);
+  return Number.isFinite(currentMilliseconds) && currentMilliseconds > candidateMilliseconds
+    ? new Date(currentMilliseconds).toISOString()
+    : candidate;
+}
+
 function cachePathFor(key, pageIndex, generation = "") {
   const generationPart = generation ? `${encodeURIComponent(generation)}/` : "";
   return `${DEVICE_CHAPTER_PATH_PREFIX}${encodeURIComponent(key)}/${generationPart}${pageIndex}`;
@@ -434,7 +454,9 @@ async function deleteOperationCache(cache, key, operationId) { await deleteCache
 function mergeDownloadRecord(descriptor, existing) {
   const timestamp = now();
   return { ...descriptor, pages: [], status: "downloading", totalPages: descriptor.pageUrls.length, downloadedPages: 0,
-    storedBytes: 0, createdAt: existing?.createdAt || timestamp, updatedAt: timestamp, readyAt: null, error: null };
+    storedBytes: 0, createdAt: existing?.createdAt || timestamp, updatedAt: timestamp, readyAt: null, error: null,
+    ...(existing?.lastOpenedAt ? { lastOpenedAt: existing.lastOpenedAt } : {}),
+    ...(existing?.readAt ? { readAt: existing.readAt } : {}) };
 }
 
 async function acquireDownloadLease(metadata, operationId) {
@@ -1083,12 +1105,51 @@ export async function getDeviceChapter(serverUrl, chapterId) {
   return publicMetadata(await getRecord(deviceChapterKey(serverUrl, chapterId)));
 }
 
+async function recordDeviceChapterTimestamp(serverUrl, chapterId, field, value) {
+  await initializeDeviceChapters();
+  const key = deviceChapterKey(serverUrl, chapterId);
+  const occurredAt = metadataTimestamp(value, field);
+  return updateRecordAtomically(key, (current) => {
+    if (!current || current.status !== "ready") return { result: null };
+    const record = { ...current, [field]: latestTimestamp(current[field], occurredAt) };
+    return { record, result: publicMetadata(record) };
+  });
+}
+
+export function markDeviceChapterOpened(serverUrl, chapterId, { at } = {}) {
+  return recordDeviceChapterTimestamp(serverUrl, chapterId, "lastOpenedAt", at);
+}
+
+export function markDeviceChapterRead(serverUrl, chapterId, { at } = {}) {
+  return recordDeviceChapterTimestamp(serverUrl, chapterId, "readAt", at);
+}
+
 export async function listDeviceChaptersForManga(serverUrl, mangaId) {
   await initializeDeviceChapters();
   const normalizedServerUrl = normalizeServerUrl(serverUrl);
   const normalizedMangaId = normalizeIdentifier(mangaId, "mangaId");
   const records = (await getAllRecords()).filter((record) => record.serverUrl === normalizedServerUrl && String(record.mangaId) === normalizedMangaId);
   return sortRecords(records.map(publicMetadata));
+}
+
+export function deviceChapterIsIncomplete(chapterPackage) {
+  if (!chapterPackage || !["paused", "failed"].includes(chapterPackage.status)) return false;
+  const totalPages = Number(chapterPackage.totalPages || chapterPackage.pageUrls?.length) || 0;
+  const downloadedPages = Number(chapterPackage.downloadedPages) || 0;
+  return totalPages > 0 && downloadedPages < totalPages;
+}
+
+export function deviceChapterCanRetry(chapterPackage) {
+  return Boolean(
+    deviceChapterIsIncomplete(chapterPackage)
+    && Array.isArray(chapterPackage.pageUrls)
+    && chapterPackage.pageUrls.length > 0,
+  );
+}
+
+export async function listIncompleteDeviceChapters() {
+  await initializeDeviceChapters();
+  return sortRecords((await getAllRecords()).map(publicMetadata).filter(deviceChapterIsIncomplete));
 }
 
 async function readOriginStorageEstimate() {
@@ -1238,6 +1299,24 @@ export async function downloadDeviceChapter(descriptor, { signal, onProgress } =
   }
 }
 
+export async function retryIncompleteDeviceChapter(serverUrl, chapterId, { signal, onProgress } = {}) {
+  await initializeDeviceChapters();
+  const chapterPackage = publicMetadata(await getRecord(deviceChapterKey(serverUrl, chapterId)));
+  if (!chapterPackage) {
+    const error = new Error("This device chapter no longer exists.");
+    error.name = "NotFoundError";
+    throw error;
+  }
+  if (!deviceChapterCanRetry(chapterPackage)) {
+    throw invalidState(
+      chapterPackage.status === "ready"
+        ? "This device chapter is already ready."
+        : "This device chapter is not available to retry.",
+    );
+  }
+  return downloadDeviceChapter(chapterPackage, { signal, onProgress });
+}
+
 async function removeDeviceChapterWithoutInitialization(serverUrl, chapterId) {
   const key = deviceChapterKey(serverUrl, chapterId);
   if (activeDownloads.has(key)) throw invalidState("Pause the chapter download before removing it.");
@@ -1319,6 +1398,24 @@ export async function removeDeviceChapters(references, { onProgress } = {}) {
     }
   }
   return { requested: total, removed, failed };
+}
+
+export async function removeIncompleteDeviceChapters({ excludeKeys = [], onProgress } = {}) {
+  if (!Array.isArray(excludeKeys)) throw new TypeError("excludeKeys must be an array.");
+  await initializeDeviceChapters();
+  const exclusions = new Set(excludeKeys.map((key) => String(key)));
+  const incomplete = sortRecords((await getAllRecords()).map(publicMetadata).filter(deviceChapterIsIncomplete));
+  const excluded = incomplete.filter((chapterPackage) => exclusions.has(chapterPackage.key));
+  const targets = incomplete.filter((chapterPackage) => !exclusions.has(chapterPackage.key));
+  const result = await removeDeviceChapters(targets.map((chapterPackage) => ({
+    serverUrl: chapterPackage.serverUrl,
+    chapterId: chapterPackage.chapterId,
+  })), { onProgress });
+  return {
+    ...result,
+    eligible: incomplete.length,
+    excluded: excluded.map(publicMetadata),
+  };
 }
 
 export function deviceChapterPageUrls(chapterPackage) {

@@ -1,5 +1,6 @@
 import {
   deviceChapterKey,
+  deviceChapterIsIncomplete,
   deviceChapterPageUrls,
   deviceChapterStoredBytes,
   downloadDeviceChapter,
@@ -7,12 +8,17 @@ import {
   initializeDeviceChapters,
   listDeviceChapters,
   listDeviceChaptersForManga,
+  markDeviceChapterOpened,
+  markDeviceChapterRead,
   removeDeviceChapter,
   removeDeviceChapters,
   requestDeviceChapterPersistence,
+  retryIncompleteDeviceChapter,
 } from "./device-chapters.js";
 import { reconcileReadingProgress } from "./progress-reconciliation.js";
 import { createReadingStatsClient } from "./reading-stats.js";
+import { createReadingSession, restoreReadingSession } from "./reading-session.js";
+import { choosePanelDetectionFallback } from "./detection-policy.js";
 
 const storeKey = "panel-pilot-settings";
 const panelModeStoreKey = "panel-pilot-panel-mode";
@@ -35,6 +41,9 @@ const planBufferRetryDelaysMs = [1000, 4000, 15000];
 const progressOutboxStoreKey = "panel-pilot-progress-outbox";
 const mangabakaOutboxStoreKey = "panel-pilot-mangabaka-outbox";
 const tapHintStoreKey = "panel-pilot-tap-hint-seen";
+const readingSessionStoreKey = "panel-pilot-reading-session-v1";
+const readingSessionTickMs = 15 * 1000;
+const readingSessionMaxActiveGapMs = 30 * 1000;
 const reconnectIntervalMs = 45 * 1000;
 const downloadStatusPollMs = 15 * 1000;
 const allSourcesValue = "__all__";
@@ -249,8 +258,14 @@ const el = {
   chapterTitle: document.querySelector("#chapter-title"),
   pageStat: document.querySelector("#page-stat"),
   panelStat: document.querySelector("#panel-stat"),
+  readerSessionStat: document.querySelector("#reader-session-stat"),
   panelCount: document.querySelector("#panel-count"),
   panelStrip: document.querySelector("#panel-strip"),
+  sourceIntelligenceState: document.querySelector("#source-intelligence-state"),
+  sourceIntelligenceList: document.querySelector("#source-intelligence-list"),
+  sourceIntelligenceNote: document.querySelector("#source-intelligence-note"),
+  sourceIntelligenceFilters: [...document.querySelectorAll("[data-source-intelligence-format]")],
+  refreshSourceIntelligence: document.querySelector("#refresh-source-intelligence"),
   prevPanel: document.querySelector("#prev-panel"),
   nextPanel: document.querySelector("#next-panel"),
   keepScreenAwake: document.querySelector("#keep-screen-awake"),
@@ -267,6 +282,7 @@ const el = {
   redetectChapter: document.querySelector("#redetect-chapter"),
   reportBadPanels: document.querySelector("#report-bad-panels"),
   saveMoment: document.querySelector("#save-moment"),
+  finishReadingSession: document.querySelector("#finish-reading-session"),
   momentsGrid: document.querySelector("#moments-grid"),
   momentsCount: document.querySelector("#moments-count"),
   mangaMode: document.querySelector("#manga-mode"),
@@ -313,6 +329,10 @@ const el = {
   mangabakaResults: document.querySelector("#mangabaka-results"),
   mangabakaRecommendationsNote: document.querySelector("#mangabaka-recommendations-note"),
   refreshMangabaka: document.querySelector("#refresh-mangabaka"),
+  comicRecommendations: document.querySelector("#comic-recommendations"),
+  comicRecommendationResults: document.querySelector("#comic-recommendation-results"),
+  comicRecommendationsNote: document.querySelector("#comic-recommendations-note"),
+  refreshComicRecommendations: document.querySelector("#refresh-comic-recommendations"),
   recommendationContext: document.querySelector("#recommendation-context"),
   recommendationContextTitle: document.querySelector("#recommendation-context-title"),
   recommendationContextNote: document.querySelector("#recommendation-context-note"),
@@ -396,6 +416,9 @@ const el = {
   deviceStoragePersist: document.querySelector("#device-storage-persist"),
   deviceStorageRefresh: document.querySelector("#device-storage-refresh"),
   deviceStorageManager: document.querySelector("#device-storage-manager"),
+  deviceStorageFilters: [...document.querySelectorAll("[data-device-storage-filter]")],
+  deviceStorageRetryIncomplete: document.querySelector("#device-storage-retry-incomplete"),
+  deviceStorageClearIncomplete: document.querySelector("#device-storage-clear-incomplete"),
   deviceStorageSelectAll: document.querySelector("#device-storage-select-all"),
   deviceStorageSelectedCount: document.querySelector("#device-storage-selected-count"),
   deviceStorageList: document.querySelector("#device-storage-list"),
@@ -559,6 +582,8 @@ const state = {
   deviceStoragePendingRemoval: [],
   deviceStorageReturnFocus: null,
   deviceStorageRemoving: false,
+  deviceStorageFilter: "all",
+  deviceStorageRepairing: false,
   historyApplying: false,
   viewScrollPositions: { library: 0, browse: 0, settings: 0 },
   browseDiscoveryScroll: 0,
@@ -567,6 +592,8 @@ const state = {
   searchRequestGeneration: 0,
   searchAbortController: null,
   mangabakaRecommendations: [],
+  comicRecommendations: [],
+  comicRecommendationsLoaded: false,
   mangabakaConnected: false,
   mangabakaConfigured: false,
   mangabakaOutbox: [],
@@ -576,6 +603,9 @@ const state = {
   mangabakaSyncTimer: null,
   pendingMangaBakaRecommendation: null,
   sourceMigration: null,
+  sourceIntelligence: null,
+  sourceIntelligenceFormat: "all",
+  sourceIntelligenceLoading: false,
   setupReturnToBrowse: false,
   cameraPageChanged: false,
   readerModalReturnFocus: null,
@@ -589,9 +619,158 @@ const state = {
   readingStatsFinishedAttempt: "",
   readingStatsPageViews: new Set(),
   readingStatsRefreshTimer: 0,
+  readingSession: null,
+  readingSessionActiveAt: 0,
+  readingSessionTimer: 0,
 };
 
 const readingStatsClient = createReadingStatsClient();
+
+function readingSessionTitleKey() {
+  return String(state.currentManga?.id || state.currentManga?.mangaId || "demo");
+}
+
+function readingSessionEligible() {
+  return Boolean(
+    state.activeView === "reader" &&
+    state.pages.length &&
+    !state.readerLifecyclePaused &&
+    !state.navigationPending &&
+    !activeReaderOverlay()
+  );
+}
+
+function ensureReadingSession() {
+  if (state.readingSession && !state.readingSession.finished && !state.readingSession.isExpired()) return state.readingSession;
+  state.readingSession = createReadingSession();
+  persistReadingSession();
+  return state.readingSession;
+}
+
+function persistReadingSession() {
+  try {
+    if (state.readingSession?.finished) localStorage.removeItem(readingSessionStoreKey);
+    else if (state.readingSession) localStorage.setItem(readingSessionStoreKey, state.readingSession.serialize());
+  } catch {
+    // Session polish remains usable when browser storage is unavailable.
+  }
+}
+
+function formatReadingSessionDuration(activeMs) {
+  const minutes = Math.max(0, Math.floor(Number(activeMs || 0) / 60_000));
+  if (minutes < 1) return "just started";
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return remainder ? `${hours}h ${remainder}m` : `${hours}h`;
+}
+
+function renderReadingSession() {
+  if (!el.readerSessionStat) return;
+  const snapshot = state.readingSession?.snapshot();
+  el.readerSessionStat.hidden = !snapshot;
+  if (!snapshot) return;
+  const chapterText = snapshot.chaptersFinished
+    ? ` · ${snapshot.chaptersFinished} ch`
+    : "";
+  el.readerSessionStat.textContent = `Session · ${formatReadingSessionDuration(snapshot.activeMs)}${chapterText}`;
+  el.readerSessionStat.title = `${snapshot.pagesViewed} page${snapshot.pagesViewed === 1 ? "" : "s"} viewed in this private, device-local session`;
+}
+
+function checkpointReadingSession(at = Date.now()) {
+  if (!state.readingSession || !state.readingSessionActiveAt) return;
+  const elapsed = Math.max(0, Math.min(readingSessionMaxActiveGapMs, at - state.readingSessionActiveAt));
+  state.readingSessionActiveAt = at;
+  if (elapsed) state.readingSession.addActiveTime(Math.round(elapsed), { at, titleKey: readingSessionTitleKey() });
+  persistReadingSession();
+  renderReadingSession();
+}
+
+function syncReadingSessionActivity() {
+  window.clearInterval(state.readingSessionTimer);
+  state.readingSessionTimer = 0;
+  if (!readingSessionEligible()) {
+    checkpointReadingSession();
+    state.readingSessionActiveAt = 0;
+    return;
+  }
+  ensureReadingSession();
+  state.readingSessionActiveAt = Date.now();
+  state.readingSessionTimer = window.setInterval(() => checkpointReadingSession(), readingSessionTickMs);
+  renderReadingSession();
+}
+
+function recordCurrentReadingSessionPage() {
+  if (!state.pages.length) return;
+  const session = ensureReadingSession();
+  session.recordPage({
+    pageKey: `${state.activeChapter?.type || "reader"}:${state.activeChapter?.chapterId || readingSessionTitleKey()}:${state.pageIndex}`,
+    titleKey: readingSessionTitleKey(),
+  });
+  persistReadingSession();
+  renderReadingSession();
+  if (readingSessionEligible() && !state.readingSessionActiveAt) syncReadingSessionActivity();
+}
+
+function showReadingSessionCheckIn() {
+  const status = state.readingSession?.claimCheckIn();
+  if (!status?.pending) return;
+  const reason = status.reasons.includes("chapters")
+    ? `${status.chaptersSinceCheckIn} chapters down`
+    : `${formatReadingSessionDuration(status.activeMsSinceCheckIn)} of reading`;
+  showToast(`${reason} · nice session. Stretch, grab water, or keep going.`, "good");
+  state.readingSession.acknowledgeCheckIn();
+  persistReadingSession();
+}
+
+function recordCurrentReadingSessionFinish() {
+  const attemptId = state.readingStatsAttemptId || `${state.activeChapter?.chapterId || readingSessionTitleKey()}:${Date.now()}`;
+  const recorded = ensureReadingSession().recordChapterFinish({ attemptId, titleKey: readingSessionTitleKey() });
+  persistReadingSession();
+  renderReadingSession();
+  if (recorded) showReadingSessionCheckIn();
+  if (state.activeChapter?.type === "suwayomi") {
+    void markDeviceChapterRead(
+      state.activeChapter.serverUrl || currentDeviceServerUrl(),
+      state.activeChapter.chapterId
+    ).then((chapterPackage) => {
+      if (chapterPackage) rememberDevicePackage(chapterPackage);
+    }).catch(() => null);
+  }
+}
+
+function finishReadingSession() {
+  if (!state.readingSession) {
+    showToast("Start reading a chapter to begin a session.");
+    return;
+  }
+  checkpointReadingSession();
+  const recap = state.readingSession.finish({ reason: "reader-finished" });
+  const parts = [formatReadingSessionDuration(recap.activeMs)];
+  if (recap.chaptersFinished) parts.push(`${recap.chaptersFinished} chapter${recap.chaptersFinished === 1 ? "" : "s"}`);
+  if (recap.pagesViewed) parts.push(`${recap.pagesViewed} page${recap.pagesViewed === 1 ? "" : "s"}`);
+  persistReadingSession();
+  state.readingSession = null;
+  state.readingSessionActiveAt = 0;
+  window.clearInterval(state.readingSessionTimer);
+  state.readingSessionTimer = 0;
+  renderReadingSession();
+  if (el.readerOptions) el.readerOptions.open = false;
+  showToast(`Session complete · ${parts.join(" · ")}`, "good");
+}
+
+function restoreLocalReadingSession() {
+  try {
+    const serialized = localStorage.getItem(readingSessionStoreKey);
+    if (!serialized) return;
+    const restored = restoreReadingSession(serialized);
+    if (restored.status === "active") state.readingSession = restored.session;
+    else localStorage.removeItem(readingSessionStoreKey);
+  } catch {
+    // Invalid or unavailable local storage starts a clean session.
+  }
+  renderReadingSession();
+}
 
 let networkReconnectPromise = null;
 let suwayomiRecoveryPromise = null;
@@ -1018,6 +1197,7 @@ function recordCurrentReadingStatsPage() {
 }
 
 function recordCurrentReadingStatsFinish() {
+  recordCurrentReadingSessionFinish();
   const context = readingStatsContext();
   const attemptId = state.readingStatsAttemptId;
   if (!state.readingStatsSettings?.enabled || !context || !attemptId || state.readingStatsFinishedAttempt === attemptId) return;
@@ -1156,7 +1336,13 @@ function setActiveView(view, options = {}) {
   document.body.classList.toggle("reader-active", view === "reader");
   syncReaderPresentationClasses();
   if (view === "reader") setDownloadStatusSheet(false);
-  if (view === "settings") void refreshDeviceStorage();
+  if (view === "settings") {
+    void refreshDeviceStorage();
+    if (state.connected || state.sourceIntelligence) void refreshSourceIntelligence();
+  }
+  if (view === "browse" && (!state.comicRecommendationsLoaded || (!state.comicRecommendations.length && state.libraryItems.some((item) => inferredMediaFormat(item) === "comic")))) {
+    void loadComicRecommendations();
+  }
   if (view === "stats") void refreshReadingStats();
   if (view === "moments") void loadMoments();
 
@@ -1180,6 +1366,7 @@ function setActiveView(view, options = {}) {
     recordNavigationState(previous === view ? "replace" : "push", false);
   }
   syncReadingStatsTracker();
+  syncReadingSessionActivity();
 }
 
 function leaveReaderView() {
@@ -1749,6 +1936,128 @@ async function loadSourceProfiles() {
   }
 }
 
+function sourceIntelligenceVariant(source) {
+  const detected = detectedMediaFormatFromMetadata(source);
+  const mediaFormat = detected || "manga";
+  const safeToken = (value, fallback) => String(value || fallback)
+    .replace(/[^A-Za-z0-9._+:-]/g, "_")
+    .slice(0, 200) || fallback;
+  return {
+    sourceId: String(source?.id || "unknown_source").replace(/[^A-Za-z0-9._:-]/g, "_").slice(0, 100),
+    packageName: safeToken(source?.extension?.pkgName, `source-${source?.id || "unknown"}`),
+    displayName: String(source?.displayName || source?.name || source?.id || "Unknown source").slice(0, 240),
+    language: String(source?.lang || "und").slice(0, 35),
+    storeIdentity: safeToken(source?.extension?.repo, "suwayomi"),
+    extensionVersion: "unknown",
+    installed: true,
+    obsolete: false,
+    formats: [mediaFormat],
+    formatProvenance: "automatic",
+    formatConfidence: detected ? 0.85 : 0.55,
+  };
+}
+
+async function syncSourceIntelligenceInventory() {
+  if (!state.sources.length) return null;
+  try {
+    const payload = await postLocalJson("/api/source-intelligence/inventory", {
+      schemaVersion: 1,
+      sources: state.sources.map(sourceIntelligenceVariant),
+    });
+    if (state.sourceIntelligence) state.sourceIntelligence.inventory = payload.inventory || [];
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+function sourceScoreText(value) {
+  return Number.isFinite(Number(value)) ? `${Math.round(Number(value))}` : "—";
+}
+
+function renderSourceIntelligence() {
+  if (!el.sourceIntelligenceList) return;
+  const payload = state.sourceIntelligence;
+  const scores = Array.isArray(payload?.scores) ? payload.scores : [];
+  const inventory = Array.isArray(payload?.inventory) ? payload.inventory : [];
+  const visibleScores = scores
+    .filter((score) => state.sourceIntelligenceFormat === "all" || score.mediaFormat === state.sourceIntelligenceFormat)
+    .sort((left, right) => Number(right.suitability ?? -1) - Number(left.suitability ?? -1));
+  el.sourceIntelligenceFilters.forEach((button) => {
+    const active = button.dataset.sourceIntelligenceFormat === state.sourceIntelligenceFormat;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+  el.sourceIntelligenceList.replaceChildren();
+  if (!payload) {
+    const note = document.createElement("p");
+    note.className = "note";
+    note.textContent = state.sourceIntelligenceLoading ? "Loading source evidence…" : "Source evidence is not available yet.";
+    el.sourceIntelligenceList.append(note);
+    return;
+  }
+  if (!visibleScores.length) {
+    const note = document.createElement("p");
+    note.className = "note source-intelligence-empty";
+    note.textContent = inventory.length
+      ? `Tracking ${inventory.length} installed source variant${inventory.length === 1 ? "" : "s"}. Rankings will appear after successful and failed source requests are observed.`
+      : "Load your Suwayomi sources to begin private reliability tracking.";
+    el.sourceIntelligenceList.append(note);
+  } else {
+    visibleScores.forEach((score, index) => {
+      const row = document.createElement("article");
+      row.className = "source-intelligence-row";
+      const rank = document.createElement("span");
+      rank.className = "source-intelligence-rank";
+      rank.textContent = String(index + 1);
+      const copy = document.createElement("span");
+      copy.className = "source-intelligence-copy";
+      const title = document.createElement("strong");
+      title.textContent = score.displayName || score.packageName || score.sourceId;
+      const meta = document.createElement("small");
+      const flags = [score.mediaFormat, score.confidence, score.stale ? "version changed" : "", score.obsolete ? "obsolete" : ""].filter(Boolean);
+      meta.textContent = flags.join(" · ");
+      copy.append(title, meta);
+      const metrics = document.createElement("span");
+      metrics.className = "source-intelligence-metrics";
+      metrics.innerHTML = `<strong>${sourceScoreText(score.suitability)}</strong><small>overall</small><span>R ${sourceScoreText(score.reliability)}</span><span>Q ${sourceScoreText(score.quality)}</span><span>C ${sourceScoreText(score.coverage)}</span>`;
+      row.append(rank, copy, metrics);
+      el.sourceIntelligenceList.append(row);
+    });
+  }
+  if (el.sourceIntelligenceState) {
+    const counts = payload.counts || {};
+    el.sourceIntelligenceState.textContent = visibleScores.length
+      ? `${visibleScores.length} ranked`
+      : `${Number(counts.installed ?? inventory.filter((item) => item.installed).length) || 0} tracked`;
+  }
+}
+
+async function refreshSourceIntelligence({ announce = false } = {}) {
+  if (state.sourceIntelligenceLoading) return state.sourceIntelligence;
+  state.sourceIntelligenceLoading = true;
+  renderSourceIntelligence();
+  setBusy(el.refreshSourceIntelligence, true, "Refreshing");
+  try {
+    state.sourceIntelligence = await localJson("/api/source-intelligence");
+    if (el.sourceIntelligenceNote) {
+      el.sourceIntelligenceNote.textContent = announce ? "Source health refreshed." : "Rankings improve as Panels observes more source requests.";
+    }
+  } catch (error) {
+    if (el.sourceIntelligenceNote) el.sourceIntelligenceNote.textContent = `Source health is unavailable: ${friendlySourceErrorMessage(error)}`;
+  } finally {
+    state.sourceIntelligenceLoading = false;
+    setBusy(el.refreshSourceIntelligence, false);
+    renderSourceIntelligence();
+  }
+  return state.sourceIntelligence;
+}
+
+function setSourceIntelligenceFormat(format) {
+  state.sourceIntelligenceFormat = mediaFormats.includes(format) ? format : "all";
+  renderSourceIntelligence();
+}
+
 function makeSourceObservation(source, operation, outcome, startedAt, mediaFormat = "") {
   return {
     sourceId: String(source?.id ?? source?.sourceId ?? ""),
@@ -1756,7 +2065,7 @@ function makeSourceObservation(source, operation, outcome, startedAt, mediaForma
     operation,
     outcome,
     latencyMs: Math.max(0, Math.round(performance.now() - startedAt)),
-    mediaFormat: mediaFormats.includes(mediaFormat) ? mediaFormat : "",
+    mediaFormat: mediaFormats.includes(mediaFormat) ? mediaFormat : (detectedMediaFormatFromMetadata(source) || "manga"),
   };
 }
 
@@ -1767,6 +2076,23 @@ async function recordSourceObservations(observations) {
     applySourceProfiles(await postLocalJson("/api/source-profiles", { observations: valid }));
   } catch {
     // Source history is advisory and must never interrupt browsing or reading.
+  }
+  try {
+    await postLocalJson("/api/source-intelligence/observations", {
+      schemaVersion: 1,
+      observations: valid.map((observation) => ({
+        sourceId: String(observation.sourceId).replace(/[^A-Za-z0-9._:-]/g, "_").slice(0, 100),
+        operation: observation.operation === "pages" ? "page_list" : observation.operation,
+        outcome: observation.outcome,
+        errorClass: observation.outcome === "success" ? "" : "unknown",
+        latencyMs: observation.latencyMs,
+        mediaFormat: observation.mediaFormat,
+        origin: "passive",
+        occurredAt: new Date().toISOString(),
+      })),
+    });
+  } catch {
+    // New source intelligence is advisory and must never interrupt reading.
   }
 }
 
@@ -1879,6 +2205,96 @@ async function loadMangaBakaRecommendations({ announce = false } = {}) {
   }
 }
 
+function comicRecommendationReason(recommendation) {
+  const seed = recommendation?.reason?.seedTitles?.[0];
+  if (seed) return `Because you read ${seed}`;
+  return "Selected from your Western comics library";
+}
+
+function comicRecommendationSearchItem(recommendation) {
+  const searchTitles = [recommendation?.title, ...(recommendation?.searchTitles || [])].filter(Boolean);
+  return {
+    ...recommendation,
+    recommendationSource: "comic",
+    media_type: "comic",
+    titles: [...new Set(searchTitles)].map((title, index) => ({ title, language: "en", is_primary: index === 0 })),
+    cover_url: recommendation?.coverUrl || "",
+  };
+}
+
+function renderComicRecommendations(status = "") {
+  if (!el.comicRecommendationResults) return;
+  el.comicRecommendationResults.replaceChildren();
+  if (!state.comicRecommendations.length) {
+    const message = status === "unconfigured"
+      ? "Add a LibraryThing API key on the Panels server to enable this feed."
+      : status === "needs-library"
+        ? "Add a Western comic to your library to start this feed."
+        : status === "unavailable"
+          ? "Comic recommendations are temporarily unavailable."
+          : "No comic recommendations are ready yet.";
+    el.comicRecommendationResults.append(emptyLine(message));
+    return;
+  }
+  state.comicRecommendations.forEach((recommendation) => {
+    const pending = comicRecommendationSearchItem(recommendation);
+    const card = document.createElement("article");
+    card.className = "recommendation-card";
+    const cover = createCoverButton({ title: recommendation.title, thumbnailUrl: recommendation.coverUrl }, {
+      title: recommendation.title,
+      eyebrow: [recommendation.year, ...(recommendation.creators || []).slice(0, 1)].filter(Boolean).join(" · ") || "Western comic",
+      meta: "Find a readable source",
+    });
+    cover.addEventListener("click", () => findMangaBakaSource(pending));
+    const reason = document.createElement("p");
+    reason.className = "recommendation-reason";
+    reason.textContent = comicRecommendationReason(recommendation);
+    const find = document.createElement("button");
+    find.type = "button";
+    find.textContent = state.connected && state.visibleSources.length ? "Read this" : "Set up to read";
+    find.addEventListener("click", () => findMangaBakaSource(pending));
+    card.append(cover, reason, find);
+    el.comicRecommendationResults.append(card);
+  });
+}
+
+async function loadComicRecommendations({ announce = false, force = false } = {}) {
+  if (!el.comicRecommendationResults) return;
+  const hasComicLibrary = state.libraryItems.some((item) => inferredMediaFormat(item) === "comic" && !["dropped", "considering"].includes(item.libraryStatus));
+  if (!force && !hasComicLibrary) {
+    state.comicRecommendations = [];
+    state.comicRecommendationsLoaded = true;
+    if (el.comicRecommendationsNote) el.comicRecommendationsNote.textContent = "Add a Western comic to your library to personalize this feed";
+    renderComicRecommendations("needs-library");
+    return;
+  }
+  if (el.comicRecommendationsNote) el.comicRecommendationsNote.textContent = "Loading Western comic recommendations…";
+  setBusy(el.refreshComicRecommendations, true, "Loading");
+  try {
+    const payload = await localJson("/api/comic-recommendations?limit=12");
+    state.comicRecommendations = Array.isArray(payload.results) ? payload.results : [];
+    state.comicRecommendationsLoaded = true;
+    renderComicRecommendations(payload.status);
+    if (el.comicRecommendationsNote) {
+      el.comicRecommendationsNote.textContent = payload.status === "ready"
+        ? `Based on ${payload.seedTitles?.length || 0} comic${payload.seedTitles?.length === 1 ? "" : "s"} in your library${payload.cacheStatus === "stale" ? " · showing the last good feed" : ""}`
+        : payload.status === "unconfigured"
+          ? "LibraryThing is not configured on this Panels server yet"
+          : payload.status === "needs-library"
+            ? "Add a Western comic to your library to personalize this feed"
+            : "The recommendation providers are temporarily unavailable";
+    }
+    if (announce) showToast(payload.status === "ready" ? "Comic recommendations refreshed." : "Comic recommendations are not ready yet.", payload.status === "ready" ? "good" : "");
+  } catch (error) {
+    state.comicRecommendations = [];
+    state.comicRecommendationsLoaded = true;
+    if (el.comicRecommendationsNote) el.comicRecommendationsNote.textContent = friendlySourceErrorMessage(error);
+    renderComicRecommendations("unavailable");
+  } finally {
+    setBusy(el.refreshComicRecommendations, false);
+  }
+}
+
 function findMangaBakaSource(series) {
   state.pendingMangaBakaRecommendation = series;
   el.searchQuery.value = mangaBakaTitle(series);
@@ -1910,7 +2326,8 @@ function updateRecommendationContext() {
   const title = mangaBakaTitle(series);
   if (el.recommendationContextTitle) el.recommendationContextTitle.textContent = `Finding ${title}`;
   if (el.recommendationContextNote) {
-    el.recommendationContextNote.textContent = `${mangaBakaReason(series)} · Exact matches are shown first.`;
+    const reason = series.recommendationSource === "comic" ? comicRecommendationReason(series) : mangaBakaReason(series);
+    el.recommendationContextNote.textContent = `${reason} · Exact matches are shown first.`;
   }
 }
 
@@ -2402,6 +2819,7 @@ function syncReaderInteractionIsolation() {
     });
     readerIsolationPrevious.clear();
     syncReadingStatsTracker();
+    syncReadingSessionActivity();
     return;
   }
 
@@ -2416,6 +2834,7 @@ function syncReaderInteractionIsolation() {
     item.inert = readerChildren.includes(item) ? item !== surface : true;
   });
   syncReadingStatsTracker();
+  syncReadingSessionActivity();
 }
 
 function closeReaderOverlaysForExit() {
@@ -2720,6 +3139,8 @@ async function loadSources() {
     );
     state.visibleSources = filterSourceVariants(state.sources);
     renderSources();
+    await syncSourceIntelligenceInventory();
+    void refreshSourceIntelligence();
     loadSourceIndexCache();
     const hasFreshIndex = sourceIndexIsFresh();
     if (!hasFreshIndex) warmSourceIndexInBackground();
@@ -2814,6 +3235,7 @@ function renderSources() {
   el.sourceSelect.value = allSourcesValue;
   updateBrowseAvailability();
   renderMangaBakaRecommendations();
+  renderComicRecommendations(state.comicRecommendationsLoaded ? "" : "needs-library");
   updateSuwayomiSetupState();
 }
 
@@ -3062,7 +3484,8 @@ function sortMangaResults(results, query) {
   const normalizedQuery = normalizeTitle(query);
   const desiredFormat = state.sourceMigration
     ? inferredMediaFormat(state.sourceMigration.fromLibraryItem || state.sourceMigration.fromManga)
-    : state.pendingMangaBakaRecommendation ? "manga" : "";
+    : state.pendingMangaBakaRecommendation?.recommendationSource === "comic" ? "comic"
+      : state.pendingMangaBakaRecommendation ? "manga" : "";
   return results.sort((a, b) => {
     const aTitle = normalizeTitle(a.title);
     const bTitle = normalizeTitle(b.title);
@@ -3178,7 +3601,7 @@ function renderMangaResults() {
     });
     button.addEventListener("click", async (event) => {
       const mangabaka = mangaBakaMatchForManga(manga);
-      const accountScopedMangaBaka = mangabaka && state.mangabakaConnected && state.mangabakaAccountKey
+      const accountScopedMangaBaka = mangabaka && mangabaka.recommendationSource !== "comic" && state.mangabakaConnected && state.mangabakaAccountKey
         ? mangabaka
         : null;
       el.mangaId.value = manga.id;
@@ -3206,10 +3629,11 @@ function renderMangaResults() {
           mangabakaAccountKey: migrationItem?.mangabakaAccountKey,
         }, inferredMediaFormat(migrationItem || state.sourceMigration.fromManga), migrationItem?.mediaFormatSource || "automatic");
       } else {
+        const recommendationFormat = mangabaka?.recommendationSource === "comic" ? "comic" : "";
         state.currentManga = taggedMediaItem(
           { ...state.currentManga, ...existingLibraryItem },
-          existingLibraryItem?.mediaFormat || automaticMediaFormat(state.currentManga),
-          existingLibraryItem?.mediaFormatSource || (existingLibraryItem?.mediaFormat ? "" : "automatic")
+          existingLibraryItem?.mediaFormat || recommendationFormat || automaticMediaFormat(state.currentManga),
+          existingLibraryItem?.mediaFormatSource || (existingLibraryItem?.mediaFormat ? "" : recommendationFormat ? "recommendation" : "automatic")
         );
       }
       if (mangabaka) {
@@ -5959,6 +6383,7 @@ function activeDeviceReaderPackageKey() {
 
 function deviceStoragePackageSelectable(chapterPackage) {
   if (!chapterPackage?.key || chapterPackage.status === "removing") return false;
+  if (state.deviceStorageRepairing) return false;
   if (["preparing", "downloading"].includes(chapterPackage.status)) return false;
   if (state.deviceDownloadControllers.has(chapterPackage.key)) return false;
   return chapterPackage.key !== activeDeviceReaderPackageKey();
@@ -5970,8 +6395,21 @@ function deviceStoragePackages() {
     : [...state.deviceChapters.values()];
 }
 
-function updateDeviceStorageSelectionControls() {
+function filteredDeviceStoragePackages() {
   const packages = deviceStoragePackages();
+  if (state.deviceStorageFilter === "ready") return packages.filter((chapterPackage) => chapterPackage.status === "ready");
+  if (state.deviceStorageFilter === "incomplete") return packages.filter(deviceChapterIsIncomplete);
+  return packages;
+}
+
+function setDeviceStorageFilter(filter) {
+  state.deviceStorageFilter = ["ready", "incomplete"].includes(filter) ? filter : "all";
+  state.deviceStorageSelection.clear();
+  renderDeviceStorage();
+}
+
+function updateDeviceStorageSelectionControls() {
+  const packages = filteredDeviceStoragePackages();
   const selectable = packages.filter(deviceStoragePackageSelectable);
   const selectableKeys = new Set(selectable.map((chapterPackage) => chapterPackage.key));
   state.deviceStorageSelection = new Set([...state.deviceStorageSelection].filter((key) => selectableKeys.has(key)));
@@ -6000,8 +6438,29 @@ function updateDeviceStorageSelectionControls() {
 function renderDeviceStorage() {
   if (!el.deviceStorageList || !el.deviceStorageSummary) return;
   const snapshot = state.deviceStorageSnapshot;
-  const packages = deviceStoragePackages();
+  const allPackages = deviceStoragePackages();
+  const packages = filteredDeviceStoragePackages();
   el.deviceStorageList.replaceChildren();
+
+  el.deviceStorageFilters.forEach((button) => {
+    const active = button.dataset.deviceStorageFilter === state.deviceStorageFilter;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+  const incomplete = allPackages.filter(deviceChapterIsIncomplete);
+  const retryable = incomplete.filter((chapterPackage) => Array.isArray(chapterPackage.pageUrls) && chapterPackage.pageUrls.length);
+  if (el.deviceStorageRetryIncomplete) {
+    el.deviceStorageRetryIncomplete.hidden = incomplete.length < 1;
+    el.deviceStorageRetryIncomplete.disabled = state.deviceStorageRepairing || retryable.length < 1;
+    el.deviceStorageRetryIncomplete.textContent = state.deviceStorageRepairing
+      ? "Retrying…"
+      : `Retry incomplete (${retryable.length})`;
+  }
+  if (el.deviceStorageClearIncomplete) {
+    el.deviceStorageClearIncomplete.hidden = incomplete.length < 1;
+    el.deviceStorageClearIncomplete.disabled = state.deviceStorageRepairing || state.deviceStorageRemoving;
+    el.deviceStorageClearIncomplete.textContent = `Clear incomplete (${incomplete.length})`;
+  }
 
   if (state.deviceStorageError) {
     if (el.deviceStorageState) el.deviceStorageState.textContent = "Unavailable";
@@ -6024,7 +6483,7 @@ function renderDeviceStorage() {
     return;
   }
 
-  const packageCount = Number(snapshot.packageCount ?? packages.length) || 0;
+  const packageCount = Number(snapshot.packageCount ?? allPackages.length) || 0;
   const storedBytes = Number(snapshot.storedBytes);
   const readyCount = Number(snapshot.readyCount) || 0;
   const partialCount = Number(snapshot.partialCount) || 0;
@@ -6069,7 +6528,9 @@ function renderDeviceStorage() {
   if (!packages.length) {
     const empty = document.createElement("p");
     empty.className = "note device-storage-empty";
-    empty.textContent = "No chapters are saved on this device yet.";
+    empty.textContent = allPackages.length
+      ? `No ${state.deviceStorageFilter} chapters are saved on this device.`
+      : "No chapters are saved on this device yet.";
     el.deviceStorageList.append(empty);
     if (el.deviceStorageManager && !el.deviceStorageManager.dataset.initialized) el.deviceStorageManager.open = false;
   } else {
@@ -6230,6 +6691,49 @@ async function protectDeviceStorage() {
   }
 }
 
+async function retryIncompleteDeviceStorage() {
+  if (state.deviceStorageRepairing) return;
+  const targets = deviceStoragePackages().filter(deviceChapterIsIncomplete);
+  if (!targets.length) return;
+  state.deviceStorageRepairing = true;
+  renderDeviceStorage();
+  let completed = 0;
+  let failed = 0;
+  try {
+    for (const chapterPackage of targets) {
+      try {
+        await retryIncompleteDeviceChapter(chapterPackage.serverUrl, chapterPackage.chapterId);
+        completed += 1;
+      } catch {
+        failed += 1;
+      }
+      announceDeviceStorage(`Retried ${completed + failed} of ${targets.length} incomplete chapters…`);
+    }
+    announceDeviceStorage(
+      failed
+        ? `${completed} chapter${completed === 1 ? "" : "s"} repaired; ${failed} still need attention.`
+        : `${completed} incomplete chapter${completed === 1 ? "" : "s"} repaired.`,
+      failed ? "bad" : "good"
+    );
+  } finally {
+    state.deviceStorageRepairing = false;
+    await refreshDeviceStorage({ reconcile: true });
+    renderDeviceStorage();
+  }
+}
+
+function clearIncompleteDeviceStorage(returnFocus = document.activeElement) {
+  const keys = deviceStoragePackages()
+    .filter(deviceChapterIsIncomplete)
+    .filter(deviceStoragePackageSelectable)
+    .map((chapterPackage) => chapterPackage.key);
+  if (!keys.length) {
+    announceDeviceStorage("There are no removable incomplete chapters.");
+    return;
+  }
+  openDeviceStorageRemovalDialog(keys, returnFocus);
+}
+
 function deviceStorageSelectionKeys() {
   return [...state.deviceStorageSelection].filter((key) => {
     const chapterPackage = deviceStoragePackages().find((item) => item.key === key);
@@ -6238,7 +6742,7 @@ function deviceStorageSelectionKeys() {
 }
 
 function setAllDeviceStorageSelection() {
-  const selectable = deviceStoragePackages().filter(deviceStoragePackageSelectable);
+  const selectable = filteredDeviceStoragePackages().filter(deviceStoragePackageSelectable);
   const allSelected = selectable.length > 0 && selectable.every((chapterPackage) => state.deviceStorageSelection.has(chapterPackage.key));
   state.deviceStorageSelection = allSelected ? new Set() : new Set(selectable.map((chapterPackage) => chapterPackage.key));
   renderDeviceStorage();
@@ -6384,6 +6888,9 @@ async function openDeviceChapter(chapterPackage, resumeItem = null) {
     serverUrl: chapterPackage.serverUrl,
   };
   await loadChapter(pageUrls.map(appUrl), chapter.name);
+  void markDeviceChapterOpened(chapterPackage.serverUrl, chapter.id).then((updatedPackage) => {
+    if (updatedPackage) rememberDevicePackage(updatedPackage);
+  }).catch(() => null);
   rememberReadingProgress();
   setConnection(state.connected, `Opened ${pageUrls.length} pages saved on this device.`, "good");
 }
@@ -7115,6 +7622,9 @@ async function loadChapterPages(options = {}) {
       { requestIsCurrent: loadIsCurrent, signal: loadController.signal }
     );
     if (!loadIsCurrent()) return;
+    void markDeviceChapterOpened(serverUrl, chapterId).then((chapterPackage) => {
+      if (chapterPackage) rememberDevicePackage(chapterPackage);
+    }).catch(() => null);
     rememberReadingProgress();
     if (serverUrl === currentDeviceServerUrl()) void ensureDownloadAhead(chapterId);
     setConnection(true, `Loaded ${pages.length} pages. Panel detection is running locally.`, "good");
@@ -7454,6 +7964,16 @@ async function preparePageEntry(page, index, totalPages, options = {}) {
       : mode === "comic"
         ? await detectComicPanels(image, direction, page.url).catch(() => [fullPagePanel(naturalWidth, naturalHeight)])
         : await detectPanels(image, direction, page.url).catch(() => [fullPagePanel(naturalWidth, naturalHeight)]);
+  const viewport = readerViewportAspect();
+  const detectionDecision = mode === "webtoon"
+    ? null
+    : choosePanelDetectionFallback({
+        panels: detectedPanels,
+        pageWidth: naturalWidth,
+        pageHeight: naturalHeight,
+        direction,
+        viewportAspect: viewport.width / Math.max(1, viewport.height),
+      });
   state.performanceStats.detectorRuns += 1;
   if (!isCurrent()) {
     releaseDecodedImage(image);
@@ -7465,7 +7985,14 @@ async function preparePageEntry(page, index, totalPages, options = {}) {
   page.renderUrl = image.currentSrc || image.src || page.url;
   page.naturalWidth = naturalWidth;
   page.naturalHeight = naturalHeight;
-  page.panels = sanitizePanels(detectedPanels, naturalWidth, naturalHeight);
+  page.detectionStrategy = detectionDecision?.strategy || "panels";
+  page.detectionConfidence = detectionDecision?.confidence ?? null;
+  page.detectionReasons = detectionDecision?.reasonCodes || [];
+  page.panels = detectionDecision?.strategy === "full-width"
+    ? makeFullWidthFallbackPanels(naturalWidth, naturalHeight, viewport)
+    : detectionDecision?.strategy === "full-page"
+      ? [fullPagePanel(naturalWidth, naturalHeight)]
+      : sanitizePanels(detectionDecision?.panels || detectedPanels, naturalWidth, naturalHeight);
   page.bubbles = mode === "manga" ? sanitizeDetectionBoxes(detectedPanels?.bubbles) : [];
   page.detected = true;
   page.panelMode = mode;
@@ -7958,6 +8485,31 @@ function fullPagePanel(width, height) {
     pageWidth: width,
     pageHeight: height,
   };
+}
+
+function makeFullWidthFallbackPanels(width, height, viewport = readerViewportAspect()) {
+  const pageAspect = Math.max(0.01, Number(width) / Math.max(1, Number(height)));
+  const viewportAspect = Math.max(0.01, Number(viewport?.width) / Math.max(1, Number(viewport?.height)));
+  const visibleHeight = clamp(pageAspect / viewportAspect, 0.2, 0.82);
+  if (visibleHeight >= 0.8) return [fullPagePanel(width, height)];
+  const step = visibleHeight * 0.92;
+  const panels = [];
+  for (let y = 0; y < 1; y += step) {
+    const top = Math.min(y, Math.max(0, 1 - visibleHeight));
+    if (panels.some((panel) => Math.abs(panel.y - top) < 0.001)) break;
+    panels.push({
+      x: 0,
+      y: top,
+      w: 1,
+      h: Math.min(visibleHeight, 1 - top),
+      label: `Full-width section ${panels.length + 1}`,
+      pageWidth: width,
+      pageHeight: height,
+      confidenceFallback: true,
+    });
+    if (top + visibleHeight >= 0.999) break;
+  }
+  return panels.length ? panels : [fullPagePanel(width, height)];
 }
 
 function sanitizePanels(panels, width, height) {
@@ -10478,6 +11030,7 @@ function setReaderNavigationPending(pending) {
   if (el.prevPanel) el.prevPanel.disabled = state.navigationPending;
   if (el.nextPanel) el.nextPanel.disabled = state.navigationPending;
   syncReadingStatsTracker();
+  syncReadingSessionActivity();
 }
 
 function cancelReaderNavigation() {
@@ -10814,6 +11367,8 @@ function updateStats() {
   el.panelStat.textContent = continuousWebtoon
     ? "Continuous scroll"
     : state.fullPage ? "Full page"
+    : page?.detectionStrategy === "full-page" ? "Full page fallback"
+    : page?.detectionStrategy === "full-width" ? `Full width ${state.panelIndex + 1} / ${totalPanels}`
     : totalPanels ? `${unit} ${state.panelIndex + 1} / ${totalPanels}` : `${unit} 0`;
   const detectedPages = state.pages.filter((item) => item.detected).length;
   const detectedPanels = state.pages.reduce((sum, item) => sum + item.panels.length, 0);
@@ -10838,6 +11393,7 @@ function updateStats() {
     el.prevPanel.setAttribute("aria-label", label);
     el.prevPanel.title = continuousWebtoon ? "Scroll up" : state.fullPage ? "Previous page" : "Previous panel";
   }
+  recordCurrentReadingSessionPage();
 }
 
 function renderPanelStrip() {
@@ -12082,6 +12638,11 @@ function wireEvents() {
   el.applyAppUpdate?.addEventListener("click", () => { void activateAppUpdate(); });
   el.deviceStorageRefresh?.addEventListener("click", () => { void refreshDeviceStorageFromControl(); });
   el.deviceStoragePersist?.addEventListener("click", () => { void protectDeviceStorage(); });
+  el.deviceStorageFilters.forEach((button) => button.addEventListener("click", () => setDeviceStorageFilter(button.dataset.deviceStorageFilter)));
+  el.deviceStorageRetryIncomplete?.addEventListener("click", () => { void retryIncompleteDeviceStorage(); });
+  el.deviceStorageClearIncomplete?.addEventListener("click", (event) => clearIncompleteDeviceStorage(event.currentTarget));
+  el.sourceIntelligenceFilters.forEach((button) => button.addEventListener("click", () => setSourceIntelligenceFormat(button.dataset.sourceIntelligenceFormat)));
+  el.refreshSourceIntelligence?.addEventListener("click", () => { void refreshSourceIntelligence({ announce: true }); });
   el.deviceStorageSelectAll?.addEventListener("click", setAllDeviceStorageSelection);
   el.deviceStorageRemoveSelected?.addEventListener("click", () => openDeviceStorageRemovalDialog());
   el.deviceStorageCancel?.addEventListener("click", (event) => {
@@ -12100,6 +12661,7 @@ function wireEvents() {
   el.clearAppCache?.addEventListener("click", clearAppCache);
   el.syncProgress?.addEventListener("click", syncLibraryAndProgress);
   el.refreshMangabaka?.addEventListener("click", () => loadMangaBakaRecommendations({ announce: true }));
+  el.refreshComicRecommendations?.addEventListener("click", () => loadComicRecommendations({ announce: true, force: true }));
   el.clearRecommendationContext?.addEventListener("click", clearRecommendationContext);
   el.saveMangabaka?.addEventListener("click", connectMangaBaka);
   el.disconnectMangabaka?.addEventListener("click", disconnectMangaBaka);
@@ -12168,6 +12730,7 @@ function wireEvents() {
   el.toggleReaderMode?.addEventListener("click", toggleReaderFocus);
   el.redetect.addEventListener("click", redetectCurrentPage);
   el.saveMoment?.addEventListener("click", () => { void saveCurrentMoment(); });
+  el.finishReadingSession?.addEventListener("click", finishReadingSession);
   el.reportBadPanels?.addEventListener("click", reportBadPanels);
   el.redetectChapter?.addEventListener("click", redetectChapterPanels);
   el.mangaMode?.addEventListener("click", () => setPanelMode("manga"));
@@ -12214,6 +12777,7 @@ function wireEvents() {
   window.addEventListener("offline", handleBrowserOffline);
   document.addEventListener("visibilitychange", () => {
     handleReaderVisibilityChange();
+    syncReadingSessionActivity();
     if (document.hidden) return;
     if (state.activeView === "settings") void refreshDeviceStorage();
     if (!navigator.onLine) {
@@ -12352,6 +12916,8 @@ window.PanelPilot = {
   detectComicPanelsWithModel,
   detectPanels,
   fullPagePanel,
+  choosePanelDetectionFallback,
+  makeFullWidthFallbackPanels,
   inferredMediaFormat,
   loadImage,
   mangaBakaEligibleLibraryItem,
@@ -12398,6 +12964,7 @@ if (el.stage) {
   renderVersionNote();
   initializeInstallExperience();
   loadSettings();
+  restoreLocalReadingSession();
   resetReaderVisibilityController();
   renderWakeLockState();
   const deviceChapterInitialization = initializeDeviceChapterState();

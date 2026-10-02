@@ -18,10 +18,35 @@ OPERATIONS = {"search", "chapters", "page_list", "image_fetch", "download"}
 OUTCOMES = {"success", "failure", "coverage_miss"}
 ORIGINS = {"passive", "benchmark"}
 FORMAT_PROVENANCE = {"automatic", "manual", "benchmark"}
+ERROR_CLASSES = {
+    "", "timeout", "rate_limited", "blocked", "network", "upstream",
+    "invalid_image", "empty", "unknown",
+}
+CODECS = {"", "jpeg", "jpg", "png", "webp", "avif", "gif", "jxl", "unknown"}
+RUN_STATUSES = {"completed", "failed", "cancelled"}
+RUN_REQUESTERS = {"manual", "scheduled", "cli"}
+IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,120}$")
+VERSION_PATTERN = re.compile(r"^[A-Za-z0-9._+:-]{1,80}$")
+ERROR_CLASS_PATTERN = re.compile(r"^[a-z0-9_-]{0,40}$")
+STORE_IDENTITY_PATTERN = re.compile(r"^[A-Za-z0-9._+:-]{0,300}$")
 
 
 class SourceIntelligenceError(ValueError):
     pass
+
+
+def _reject_unknown_fields(value, allowed, label):
+    unknown = sorted(set(value) - set(allowed))
+    if unknown:
+        raise SourceIntelligenceError(f"{label} contains unsupported fields: {', '.join(unknown)}")
+
+
+def _strict_boolean(value, field, default):
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise SourceIntelligenceError(f"{field} is invalid")
+    return value
 
 
 def _bounded_text(value, field, maximum, pattern=None, allow_empty=False):
@@ -190,6 +215,11 @@ class SourceIntelligenceStore:
     def _clean_variant(item):
         if not isinstance(item, dict):
             raise SourceIntelligenceError("source variant must be an object")
+        _reject_unknown_fields(item, {
+            "sourceId", "packageName", "displayName", "language", "storeIdentity",
+            "extensionVersion", "installed", "obsolete", "formats",
+            "formatProvenance", "formatConfidence",
+        }, "source variant")
         formats = item.get("formats") or []
         if not isinstance(formats, list) or any(value not in FORMATS for value in formats):
             raise SourceIntelligenceError("formats is invalid")
@@ -201,10 +231,14 @@ class SourceIntelligenceStore:
             "packageName": _bounded_text(item.get("packageName"), "packageName", 240, PACKAGE_PATTERN),
             "displayName": _bounded_text(item.get("displayName"), "displayName", 240),
             "language": _bounded_text(item.get("language"), "language", 35),
-            "storeIdentity": _bounded_text(item.get("storeIdentity"), "storeIdentity", 300, allow_empty=True),
-            "extensionVersion": _bounded_text(item.get("extensionVersion"), "extensionVersion", 80),
-            "installed": bool(item.get("installed", True)),
-            "obsolete": bool(item.get("obsolete", False)),
+            "storeIdentity": _bounded_text(
+                item.get("storeIdentity"), "storeIdentity", 300, STORE_IDENTITY_PATTERN, allow_empty=True
+            ),
+            "extensionVersion": _bounded_text(
+                item.get("extensionVersion"), "extensionVersion", 80, VERSION_PATTERN
+            ),
+            "installed": _strict_boolean(item.get("installed"), "installed", True),
+            "obsolete": _strict_boolean(item.get("obsolete"), "obsolete", False),
             "formats": sorted(set(formats)),
             "formatProvenance": provenance,
             "formatConfidence": _bounded_score(item.get("formatConfidence", 0.5), "formatConfidence"),
@@ -250,24 +284,38 @@ class SourceIntelligenceStore:
     def _clean_observation(item):
         if not isinstance(item, dict):
             raise SourceIntelligenceError("observation must be an object")
+        _reject_unknown_fields(item, {
+            "sourceId", "operation", "outcome", "errorClass", "latencyMs", "byteCount",
+            "width", "height", "codec", "clarity", "placeholder", "mediaFormat",
+            "origin", "runId", "occurredAt",
+        }, "observation")
         operation = str(item.get("operation") or "")
         outcome = str(item.get("outcome") or "")
         media_format = str(item.get("mediaFormat") or "")
         origin = str(item.get("origin") or "passive")
         if operation not in OPERATIONS or outcome not in OUTCOMES or media_format not in FORMATS or origin not in ORIGINS:
             raise SourceIntelligenceError("observation classification is invalid")
+        error_class = _bounded_text(item.get("errorClass"), "errorClass", 40, ERROR_CLASS_PATTERN, allow_empty=True)
+        if error_class not in ERROR_CLASSES:
+            raise SourceIntelligenceError("errorClass is invalid")
+        codec = _bounded_text(item.get("codec"), "codec", 30, allow_empty=True).lower()
+        if codec not in CODECS:
+            raise SourceIntelligenceError("codec is invalid")
+        placeholder = item.get("placeholder", False)
+        if not isinstance(placeholder, bool):
+            raise SourceIntelligenceError("placeholder is invalid")
         return {
             "sourceId": _bounded_text(item.get("sourceId"), "sourceId", 100, SOURCE_ID_PATTERN),
             "operation": operation,
             "outcome": outcome,
-            "errorClass": _bounded_text(item.get("errorClass"), "errorClass", 80, allow_empty=True),
+            "errorClass": error_class,
             "latencyMs": _bounded_integer(item.get("latencyMs"), "latencyMs", maximum=120_000),
             "byteCount": _bounded_integer(item.get("byteCount"), "byteCount"),
             "width": _bounded_integer(item.get("width"), "width", maximum=100_000),
             "height": _bounded_integer(item.get("height"), "height", maximum=1_000_000),
-            "codec": _bounded_text(item.get("codec"), "codec", 30, allow_empty=True).lower(),
+            "codec": codec,
             "clarity": _bounded_score(item.get("clarity"), "clarity"),
-            "placeholder": bool(item.get("placeholder", False)),
+            "placeholder": placeholder,
             "mediaFormat": media_format,
             "origin": origin,
             "runId": _bounded_text(item.get("runId"), "runId", 100, SOURCE_ID_PATTERN, allow_empty=True) or None,
@@ -370,16 +418,187 @@ class SourceIntelligenceStore:
         )
         quality = self._quality_score(rows, media_format)
         coverage = self._coverage_score(connection, source_id, media_format)
-        run_count = len({row["run_id"] for row in rows if row["run_id"]})
-        confidence = "established" if len(rows) >= 10 and run_count >= 3 else "developing" if len(rows) >= 3 else "early"
+        benchmark_rows = connection.execute(
+            """SELECT run_id FROM benchmark_results
+            WHERE source_id=? AND media_format=?""",
+            (source_id, media_format),
+        ).fetchall()
+        run_count = len(
+            {row["run_id"] for row in rows if row["run_id"]}
+            | {row["run_id"] for row in benchmark_rows}
+        )
+        evidence_count = len(rows) + len(benchmark_rows)
+        confidence = "established" if evidence_count >= 10 and run_count >= 3 else "developing" if evidence_count >= 3 else "early"
         connection.execute(
             """INSERT INTO source_scores(
                 source_id,media_format,extension_version,reliability,quality,coverage,confidence,evidence_count,computed_at
             ) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(source_id,media_format,extension_version) DO UPDATE SET
                 reliability=excluded.reliability,quality=excluded.quality,coverage=excluded.coverage,
                 confidence=excluded.confidence,evidence_count=excluded.evidence_count,computed_at=excluded.computed_at""",
-            (source_id, media_format, version, round(reliability, 1), quality, coverage, confidence, len(rows), self._now()),
+            (source_id, media_format, version, round(reliability, 1), quality, coverage, confidence, evidence_count, self._now()),
         )
+
+    @staticmethod
+    def _clean_benchmark_run(run):
+        if not isinstance(run, dict):
+            raise SourceIntelligenceError("benchmark run must be an object")
+        _reject_unknown_fields(run, {
+            "runId", "suiteVersion", "status", "startedAt", "finishedAt",
+            "requestedBy", "appVersion", "errorClass",
+        }, "benchmark run")
+        status = str(run.get("status") or "")
+        requested_by = str(run.get("requestedBy") or "")
+        if status not in RUN_STATUSES:
+            raise SourceIntelligenceError("benchmark status is invalid")
+        if requested_by not in RUN_REQUESTERS:
+            raise SourceIntelligenceError("requestedBy is invalid")
+        started_at = _timestamp(run.get("startedAt"), "startedAt")
+        finished_at = _timestamp(run.get("finishedAt"), "finishedAt")
+        if finished_at < started_at:
+            raise SourceIntelligenceError("finishedAt is invalid")
+        error_class = _bounded_text(run.get("errorClass"), "errorClass", 40, ERROR_CLASS_PATTERN, allow_empty=True)
+        if error_class not in ERROR_CLASSES:
+            raise SourceIntelligenceError("errorClass is invalid")
+        return {
+            "runId": _bounded_text(run.get("runId"), "runId", 100, IDENTIFIER_PATTERN),
+            "suiteVersion": _bounded_text(run.get("suiteVersion"), "suiteVersion", 80, VERSION_PATTERN),
+            "status": status,
+            "startedAt": started_at,
+            "finishedAt": finished_at,
+            "requestedBy": requested_by,
+            "appVersion": _bounded_text(run.get("appVersion"), "appVersion", 80, VERSION_PATTERN),
+            "errorClass": error_class,
+        }
+
+    @staticmethod
+    def _clean_benchmark_result(result):
+        if not isinstance(result, dict):
+            raise SourceIntelligenceError("benchmark result must be an object")
+        _reject_unknown_fields(result, {
+            "caseId", "sourceId", "mediaFormat", "matchScore", "usable",
+            "chapterCount", "pageCount", "fetchSuccesses", "fetchFailures",
+            "durationMs", "errorClass",
+        }, "benchmark result")
+        media_format = str(result.get("mediaFormat") or "")
+        if media_format not in FORMATS:
+            raise SourceIntelligenceError("benchmark mediaFormat is invalid")
+        usable = result.get("usable", False)
+        if not isinstance(usable, bool):
+            raise SourceIntelligenceError("usable is invalid")
+        error_class = _bounded_text(result.get("errorClass"), "errorClass", 40, ERROR_CLASS_PATTERN, allow_empty=True)
+        if error_class not in ERROR_CLASSES:
+            raise SourceIntelligenceError("errorClass is invalid")
+        return {
+            "caseId": _bounded_text(result.get("caseId"), "caseId", 100, IDENTIFIER_PATTERN),
+            "sourceId": _bounded_text(result.get("sourceId"), "sourceId", 100, SOURCE_ID_PATTERN),
+            "mediaFormat": media_format,
+            "matchScore": _bounded_score(result.get("matchScore", 0), "matchScore"),
+            "usable": usable,
+            "chapterCount": _bounded_integer(result.get("chapterCount"), "chapterCount", maximum=1_000_000),
+            "pageCount": _bounded_integer(result.get("pageCount"), "pageCount", maximum=100_000),
+            "fetchSuccesses": _bounded_integer(result.get("fetchSuccesses"), "fetchSuccesses", maximum=100_000),
+            "fetchFailures": _bounded_integer(result.get("fetchFailures"), "fetchFailures", maximum=100_000),
+            "durationMs": _bounded_integer(result.get("durationMs"), "durationMs", maximum=3_600_000),
+            "errorClass": error_class,
+        }
+
+    def record_benchmark(self, run, results):
+        cleaned_run = self._clean_benchmark_run(run)
+        if not isinstance(results, list) or len(results) > 500:
+            raise SourceIntelligenceError("results must contain no more than 500 entries")
+        if cleaned_run["status"] == "completed" and not results:
+            raise SourceIntelligenceError("completed benchmark results cannot be empty")
+        cleaned_results = [self._clean_benchmark_result(result) for result in results]
+        keys = {(item["caseId"], item["sourceId"]) for item in cleaned_results}
+        if len(keys) != len(cleaned_results):
+            raise SourceIntelligenceError("results contains duplicate case/source pairs")
+        with self.lock, self._database() as connection:
+            existing = connection.execute(
+                "SELECT 1 FROM benchmark_runs WHERE id=?", (cleaned_run["runId"],)
+            ).fetchone()
+            if existing:
+                return {
+                    "schemaVersion": self.SCHEMA_VERSION,
+                    "accepted": False,
+                    "duplicate": True,
+                    "runId": cleaned_run["runId"],
+                }
+            versions = {
+                row["source_id"]: row["extension_version"]
+                for row in connection.execute("SELECT source_id,extension_version FROM source_variants")
+            }
+            missing = sorted({item["sourceId"] for item in cleaned_results if item["sourceId"] not in versions})
+            if missing:
+                raise SourceIntelligenceError("benchmark sourceId is not in the current inventory")
+            connection.execute(
+                """INSERT INTO benchmark_runs(
+                    id,suite_version,status,started_at,finished_at,requested_by,app_version,error_class
+                ) VALUES (?,?,?,?,?,?,?,?)""",
+                (
+                    cleaned_run["runId"], cleaned_run["suiteVersion"], cleaned_run["status"],
+                    cleaned_run["startedAt"], cleaned_run["finishedAt"], cleaned_run["requestedBy"],
+                    cleaned_run["appVersion"], cleaned_run["errorClass"],
+                ),
+            )
+            connection.executemany(
+                """INSERT INTO benchmark_results(
+                    run_id,case_id,source_id,media_format,match_score,usable,chapter_count,
+                    page_count,fetch_successes,fetch_failures,duration_ms,error_class
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                [(
+                    cleaned_run["runId"], item["caseId"], item["sourceId"], item["mediaFormat"],
+                    item["matchScore"], int(item["usable"]), item["chapterCount"], item["pageCount"],
+                    item["fetchSuccesses"], item["fetchFailures"], item["durationMs"], item["errorClass"],
+                ) for item in cleaned_results],
+            )
+            touched = {(item["sourceId"], item["mediaFormat"], versions[item["sourceId"]]) for item in cleaned_results}
+            for source_id, media_format, version in touched:
+                self._recompute_score(connection, source_id, media_format, version)
+        return {
+            "schemaVersion": self.SCHEMA_VERSION,
+            "accepted": True,
+            "duplicate": False,
+            "runId": cleaned_run["runId"],
+            "resultCount": len(cleaned_results),
+            "scores": self.scores(),
+        }
+
+    def benchmark_runs(self, limit=10, run_id=None):
+        limit = _bounded_integer(limit, "limit", minimum=1, maximum=100)
+        if run_id is not None:
+            run_id = _bounded_text(run_id, "runId", 100, IDENTIFIER_PATTERN)
+        with self.lock, self._database() as connection:
+            if run_id:
+                rows = connection.execute("SELECT * FROM benchmark_runs WHERE id=?", (run_id,)).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT * FROM benchmark_runs ORDER BY finished_at DESC LIMIT ?", (limit,)
+                ).fetchall()
+            output = []
+            for row in rows:
+                results = connection.execute(
+                    """SELECT * FROM benchmark_results WHERE run_id=?
+                    ORDER BY media_format,source_id,case_id""",
+                    (row["id"],),
+                ).fetchall()
+                item = {
+                    "runId": row["id"], "suiteVersion": row["suite_version"],
+                    "status": row["status"], "startedAt": row["started_at"],
+                    "finishedAt": row["finished_at"], "requestedBy": row["requested_by"],
+                    "appVersion": row["app_version"], "errorClass": row["error_class"],
+                    "resultCount": len(results),
+                }
+                if run_id:
+                    item["results"] = [{
+                        "caseId": result["case_id"], "sourceId": result["source_id"],
+                        "mediaFormat": result["media_format"], "matchScore": result["match_score"],
+                        "usable": bool(result["usable"]), "chapterCount": result["chapter_count"],
+                        "pageCount": result["page_count"], "fetchSuccesses": result["fetch_successes"],
+                        "fetchFailures": result["fetch_failures"], "durationMs": result["duration_ms"],
+                        "errorClass": result["error_class"],
+                    } for result in results]
+                output.append(item)
+        return output
 
     def inventory(self):
         with self.lock, self._database() as connection:
@@ -395,7 +614,9 @@ class SourceIntelligenceStore:
             "obsolete": bool(row["obsolete"]), "formats": sorted(filter(None, str(row["formats"] or "").split(","))),
         } for row in rows]
 
-    def scores(self):
+    def scores(self, media_format=None):
+        if media_format is not None and media_format not in FORMATS:
+            raise SourceIntelligenceError("mediaFormat is invalid")
         with self.lock, self._database() as connection:
             rows = connection.execute(
                 """SELECT s.*,v.display_name,v.package_name,v.installed,v.obsolete,
@@ -403,11 +624,38 @@ class SourceIntelligenceStore:
                 FROM source_scores s JOIN source_variants v ON v.source_id=s.source_id
                 ORDER BY s.media_format,s.reliability DESC,s.evidence_count DESC"""
             ).fetchall()
-        return [{
-            "sourceId": row["source_id"], "displayName": row["display_name"], "packageName": row["package_name"],
-            "mediaFormat": row["media_format"], "extensionVersion": row["extension_version"],
-            "reliability": row["reliability"], "quality": row["quality"], "coverage": row["coverage"],
-            "confidence": row["confidence"], "evidenceCount": row["evidence_count"],
-            "installed": bool(row["installed"]), "obsolete": bool(row["obsolete"]), "stale": bool(row["stale"]),
-            "computedAt": row["computed_at"],
-        } for row in rows]
+        output = []
+        for row in rows:
+            if media_format and row["media_format"] != media_format:
+                continue
+            dimensions = [
+                (row["reliability"], 0.55),
+                (row["quality"], 0.30),
+                (row["coverage"], 0.15),
+            ]
+            present = [(float(value), weight) for value, weight in dimensions if value is not None]
+            suitability = round(sum(value * weight for value, weight in present) / sum(weight for _, weight in present), 1) if present else None
+            output.append({
+                "sourceId": row["source_id"], "displayName": row["display_name"], "packageName": row["package_name"],
+                "mediaFormat": row["media_format"], "extensionVersion": row["extension_version"],
+                "reliability": row["reliability"], "quality": row["quality"], "coverage": row["coverage"],
+                "suitability": suitability, "confidence": row["confidence"], "evidenceCount": row["evidence_count"],
+                "installed": bool(row["installed"]), "obsolete": bool(row["obsolete"]), "stale": bool(row["stale"]),
+                "computedAt": row["computed_at"],
+            })
+        return output
+
+    def summary(self, media_format=None):
+        inventory = self.inventory()
+        return {
+            "schemaVersion": self.SCHEMA_VERSION,
+            "inventory": inventory,
+            "scores": self.scores(media_format),
+            "benchmarkRuns": self.benchmark_runs(limit=10),
+            "counts": {
+                "sources": len(inventory),
+                "packages": len({item["packageName"] for item in inventory}),
+                "installed": sum(1 for item in inventory if item["installed"]),
+                "obsolete": sum(1 for item in inventory if item["obsolete"]),
+            },
+        }
