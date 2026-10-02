@@ -25,6 +25,9 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from source_intelligence import SourceIntelligenceError, SourceIntelligenceStore
+from books import BooksConfig, BooksService
+from opds_client import OpdsError
+from shelfmark_client import ShelfmarkError
 from comic_recommendations import (
     ComicRecommendationService,
     ComicSeed,
@@ -69,6 +72,8 @@ REPORT_LOCK = threading.Lock()
 DETECTOR_CACHE_LOCK = threading.Lock()
 MANGABAKA_LOCK = threading.Lock()
 DOWNLOAD_BUFFER_MANAGER = None
+BOOKS_SERVICE = None
+BOOKS_SERVICE_LOCK = threading.Lock()
 READING_STATS_LOCK = threading.RLock()
 MOMENTS_LOCK = threading.Lock()
 SOURCE_PROFILES_LOCK = threading.Lock()
@@ -2712,6 +2717,9 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/suwayomi/graphql":
                 self.handle_suwayomi_graphql(parsed)
                 return
+            if parsed.path == "/api/books/connections/test":
+                self.handle_books_connection_test()
+                return
             if parsed.path == "/api/library":
                 self.handle_library_post()
                 return
@@ -2772,6 +2780,9 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
                 except (SourceIntelligenceError, ValueError, json.JSONDecodeError) as error:
                     self.send_json({"error": str(error)}, status=400)
                 return
+        except (ShelfmarkError, OpdsError) as error:
+            self.send_json({"error": str(error), "code": error.code}, status=error.status)
+            return
         except ReadingStatsRequestError as error:
             self.send_json({"error": str(error)}, status=error.status)
             return
@@ -2912,6 +2923,15 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         if not self.require_auth(parsed):
             return
         try:
+            if parsed.path == "/api/books/status":
+                self.handle_books_status()
+                return
+            if parsed.path.startswith("/api/books"):
+                if not self.books_config().enabled:
+                    self.send_json({"error": "Books are disabled", "code": "feature_disabled"}, status=404)
+                else:
+                    self.send_json({"error": "Unknown books endpoint"}, status=404)
+                return
             if parsed.path == "/api/comick/chapters":
                 self.handle_comick_chapters(parsed)
                 return
@@ -2973,6 +2993,9 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
                     f"panels-reading-stats-{datetime.now(timezone.utc).date().isoformat()}.json",
                 )
                 return
+        except (ShelfmarkError, OpdsError) as error:
+            self.send_json({"error": str(error), "code": error.code}, status=error.status)
+            return
         except ReadingStatsRequestError as error:
             self.send_json({"error": str(error)}, status=error.status)
             return
@@ -2981,6 +3004,34 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             return
 
         super().do_GET()
+
+    def books_config(self):
+        return BooksConfig.from_environment(DATA_ROOT)
+
+    def books_service(self):
+        global BOOKS_SERVICE
+        config = self.books_config()
+        if not config.enabled:
+            raise ValueError("Books are disabled")
+        with BOOKS_SERVICE_LOCK:
+            if BOOKS_SERVICE is None or BOOKS_SERVICE.config != config:
+                BOOKS_SERVICE = BooksService(config)
+            return BOOKS_SERVICE
+
+    def handle_books_status(self):
+        config = self.books_config()
+        if not config.enabled:
+            self.send_json(config.public_status())
+            return
+        self.send_json(self.books_service().status())
+
+    def handle_books_connection_test(self):
+        config = self.books_config()
+        if not config.enabled:
+            self.send_json({"error": "Books are disabled", "code": "feature_disabled"}, status=404)
+            return
+        payload = self.read_json_request(4096)
+        self.send_json(self.books_service().test_connection(str(payload.get("target") or "")))
 
     def mangabaka_json(self, path, method="GET", payload=None, token=None):
         if not path.startswith("/") or path.startswith("//"):
@@ -3986,7 +4037,7 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
 
 
 def main():
-    global DOWNLOAD_BUFFER_MANAGER
+    global DOWNLOAD_BUFFER_MANAGER, BOOKS_SERVICE
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8012
     bind_address = resolve_bind_address()
     validate_runtime_security(bind_address)
@@ -3996,6 +4047,9 @@ def main():
     static_root = resolve_static_root()
     DOWNLOAD_BUFFER_MANAGER = DownloadBufferManager()
     DOWNLOAD_BUFFER_MANAGER.start()
+    books_config = BooksConfig.from_environment(DATA_ROOT)
+    if books_config.enabled:
+        BOOKS_SERVICE = BooksService(books_config)
     handler = lambda *args, **kwargs: PanelPilotHandler(*args, directory=static_root, **kwargs)
     server = ThreadingHTTPServer((bind_address, port), handler)
     print(f"Panels server running on http://{bind_address}:{port} from {static_root}", flush=True)

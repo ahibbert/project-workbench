@@ -35,6 +35,15 @@ services:
       PANEL_PILOT_MANGA_DETECTOR_URL: ${PANEL_PILOT_MANGA_DETECTOR_URL:-}
       PANEL_PILOT_MANGA_DETECTOR_CACHE_VERSION: v3-yolo26n-1024-bubbles-800-inkwell-640
       PANEL_PILOT_MANGA_DETECTOR_CACHE_PATH: /app/data/detector-cache
+      BOOKS_ENABLED: ${BOOKS_ENABLED:-false}
+      SHELFMARK_BASE_URL: ${SHELFMARK_BASE_URL:-}
+      SHELFMARK_API_KEY: ${SHELFMARK_API_KEY:-}
+      CWA_OPDS_URL: ${CWA_OPDS_URL:-}
+      CWA_USERNAME: ${CWA_USERNAME:-}
+      CWA_PASSWORD: ${CWA_PASSWORD:-}
+      BOOK_SYNC_INTERVAL_SECONDS: ${BOOK_SYNC_INTERVAL_SECONDS:-300}
+      PANEL_PILOT_BOOKS_DB_PATH: /app/data/books.sqlite3
+      PANEL_PILOT_BOOK_CACHE_PATH: /app/data/book-cache
     extra_hosts:
       - host.docker.internal:host-gateway
     volumes:
@@ -66,3 +75,53 @@ services:
       COMIC_SCORE_THRESHOLD: ${COMIC_SCORE_THRESHOLD:-0.25}
       COMIC_NMS_THRESHOLD: ${COMIC_NMS_THRESHOLD:-0.45}
       COMIC_INPUT_SIZE: ${COMIC_INPUT_SIZE:-640}
+  shelfmark:
+    profiles:
+      - books
+    image: ghcr.io/calibrain/shelfmark:v1.4.0
+    restart: unless-stopped
+    init: true
+    environment:
+      PUID: ${BOOKS_PUID:-1000}
+      PGID: ${BOOKS_PGID:-1000}
+      TZ: ${TZ:-Australia/Sydney}
+      SHELFMARK_API_KEY: ${SHELFMARK_API_KEY:-}
+    volumes:
+      - book-ingest:/books
+      - shelfmark-config:/config
+    ports:
+      - 127.0.0.1:${SHELFMARK_PORT:-8084}:8084
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:8084/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+  calibre-web-automated:
+    profiles:
+      - books
+    image: ghcr.io/crocodilestick/calibre-web-automated:V4.0.8
+    restart: unless-stopped
+    init: true
+    environment:
+      PUID: ${BOOKS_PUID:-1000}
+      PGID: ${BOOKS_PGID:-1000}
+      TZ: ${TZ:-Australia/Sydney}
+    volumes:
+      - cwa-config:/config
+      - book-ingest:/cwa-book-ingest
+      - cwa-library:/calibre-library
+    ports:
+      - 127.0.0.1:${CWA_PORT:-8083}:8083
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:8083/login"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+
+volumes:
+  book-ingest:
+  shelfmark-config:
+  cwa-config:
+  cwa-library:

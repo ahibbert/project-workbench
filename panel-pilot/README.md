@@ -1,5 +1,9 @@
 # Panels
 
+Optional EPUB support through Shelfmark and Calibre-Web Automated is documented
+in [docs/books.md](docs/books.md). It is disabled by default and isolated from
+the Suwayomi-backed manga and comics library.
+
 Panels is a self-hosted, mobile-first PWA for reading a Suwayomi library with
 panel-by-panel guidance, device-local chapters, offline launch, and resumable
 progress.
