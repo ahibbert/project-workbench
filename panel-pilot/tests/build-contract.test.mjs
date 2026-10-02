@@ -7,7 +7,8 @@ import { fileURLToPath } from "node:url";
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const distRoot = join(projectRoot, "dist");
 const iconSetBudgetBytes = 300_000;
-const installShellBudgetBytes = 682_000;
+// Includes the complete offline achievement catalogue and its inline badge artwork.
+const installShellBudgetBytes = 690_000;
 
 function readSource(path) {
   return readFileSync(join(projectRoot, path), "utf8");

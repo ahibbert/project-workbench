@@ -469,13 +469,38 @@ class ReadingStatsStore:
     RANGE_DAYS = {"7d": 7, "30d": 30, "365d": 365, "all": None}
     ACHIEVEMENTS = (
         ("first-finish", "First finish", "Finish your first chapter"),
-        ("ten-finishes", "Ten chapters", "Finish 10 unique chapters"),
-        ("fifty-finishes", "Fifty chapters", "Finish 50 unique chapters"),
+        ("ten-finishes", "Chapter scout", "Finish 10 unique chapters"),
+        ("twenty-five-finishes", "Turning pages", "Finish 25 unique chapters"),
+        ("fifty-finishes", "Shelf momentum", "Finish 50 unique chapters"),
+        ("hundred-finishes", "Century reader", "Finish 100 unique chapters"),
+        ("two-fifty-finishes", "Chapter titan", "Finish 250 unique chapters"),
+        ("hundred-pages", "Page turner", "Read 100 pages"),
+        ("five-hundred-pages", "Paper trail", "Read 500 pages"),
+        ("thousand-pages", "Thousand-page stare", "Read 1,000 pages"),
+        ("five-thousand-pages", "Ink ocean", "Read 5,000 pages"),
+        ("one-reading-hour", "Settling in", "Spend an hour reading"),
+        ("ten-reading-hours", "Lost in the panels", "Spend 10 hours reading"),
+        ("fifty-reading-hours", "Long-form legend", "Spend 50 hours reading"),
+        ("hundred-reading-hours", "Time well read", "Spend 100 hours reading"),
         ("three-titles", "Curious reader", "Explore three titles"),
+        ("ten-titles", "Genre hopper", "Explore 10 titles"),
+        ("twenty-five-titles", "Library wanderer", "Explore 25 titles"),
+        ("first-title-complete", "The end", "Complete your first series"),
+        ("five-titles-complete", "Series finisher", "Complete five series"),
+        ("ten-titles-complete", "Closing credits", "Complete 10 series"),
         ("seven-reading-days", "A week of reading", "Read on seven days"),
+        ("thirty-reading-days", "Regular visitor", "Read on 30 different days"),
+        ("hundred-reading-days", "Well-worn bookmark", "Read on 100 different days"),
         ("three-day-rhythm", "Finding a rhythm", "Read for three days in a row"),
         ("seven-day-rhythm", "Seven-day rhythm", "Read for seven days in a row"),
+        ("fourteen-day-rhythm", "Fortnight flow", "Read for 14 days in a row"),
+        ("thirty-day-rhythm", "Month in motion", "Read for 30 days in a row"),
         ("first-reread", "Worth another look", "Finish a chapter again"),
+        ("five-rereads", "Second-pass scholar", "Reread five chapters"),
+        ("twenty-five-rereads", "Comfort chapters", "Reread 25 chapters"),
+        ("ten-chapter-day", "Chapter sprint", "Finish 10 chapters in one reading day"),
+        ("hundred-page-day", "Page storm", "Read 100 pages in one reading day"),
+        ("two-hour-day", "Deep dive", "Read for two hours in one reading day"),
     )
 
     def __init__(self, path=None):
@@ -965,26 +990,58 @@ class ReadingStatsStore:
 
     def _achievement_candidates(self, rows, settings):
         all_data = self._aggregate(rows, settings)
-        totals = all_data["totals"]
         candidates = {}
         finishes = list(rows["finishes"])
-        if finishes:
-            candidates["first-finish"] = finishes[0]["occurred_at"]
+        chapter_targets = {
+            1: "first-finish",
+            10: "ten-finishes",
+            25: "twenty-five-finishes",
+            50: "fifty-finishes",
+            100: "hundred-finishes",
+            250: "two-fifty-finishes",
+        }
         unique_seen = set()
+        reread_count = 0
+        reread_targets = {1: "first-reread", 5: "five-rereads", 25: "twenty-five-rereads"}
         for row in finishes:
-            unique_seen.add((row["title_hash"], row["chapter_hash"]))
-            if len(unique_seen) == 10 and "ten-finishes" not in candidates:
-                candidates["ten-finishes"] = row["occurred_at"]
-            if len(unique_seen) == 50 and "fifty-finishes" not in candidates:
-                candidates["fifty-finishes"] = row["occurred_at"]
-        if totals["rereads"]:
-            seen = set()
-            for row in finishes:
-                key = (row["title_hash"], row["chapter_hash"])
-                if key in seen:
-                    candidates["first-reread"] = row["occurred_at"]
-                    break
-                seen.add(key)
+            key = (row["title_hash"], row["chapter_hash"])
+            if key in unique_seen:
+                reread_count += 1
+                achievement_id = reread_targets.get(reread_count)
+                if achievement_id:
+                    candidates[achievement_id] = row["occurred_at"]
+                continue
+            unique_seen.add(key)
+            achievement_id = chapter_targets.get(len(unique_seen))
+            if achievement_id:
+                candidates[achievement_id] = row["occurred_at"]
+
+        page_targets = {
+            100: "hundred-pages",
+            500: "five-hundred-pages",
+            1_000: "thousand-pages",
+            5_000: "five-thousand-pages",
+        }
+        for count, row in enumerate(rows["pages"], start=1):
+            achievement_id = page_targets.get(count)
+            if achievement_id:
+                candidates[achievement_id] = row["occurred_at"]
+
+        reading_seconds = 0
+        time_targets = {
+            3_600: "one-reading-hour",
+            36_000: "ten-reading-hours",
+            180_000: "fifty-reading-hours",
+            360_000: "hundred-reading-hours",
+        }
+        remaining_time_targets = dict(time_targets)
+        for row in rows["activity"]:
+            reading_seconds += row["seconds"]
+            for threshold, achievement_id in list(remaining_time_targets.items()):
+                if reading_seconds >= threshold:
+                    candidates[achievement_id] = row["minute_utc"]
+                    remaining_time_targets.pop(threshold)
+
         title_qualified_at = {}
         title_active_seconds = {}
         for row in rows["activityTitles"]:
@@ -999,13 +1056,39 @@ class ReadingStatsStore:
                     title_qualified_at.get(title_hash, row["occurred_at"]),
                     row["occurred_at"],
                 )
-        if len(title_qualified_at) >= 3:
-            candidates["three-titles"] = sorted(title_qualified_at.values())[2]
+        qualified_times = sorted(title_qualified_at.values())
+        for target, achievement_id in (
+            (3, "three-titles"),
+            (10, "ten-titles"),
+            (25, "twenty-five-titles"),
+        ):
+            if len(qualified_times) >= target:
+                candidates[achievement_id] = qualified_times[target - 1]
+
+        completions = list(rows["completions"])
+        for target, achievement_id in (
+            (1, "first-title-complete"),
+            (5, "five-titles-complete"),
+            (10, "ten-titles-complete"),
+        ):
+            if len(completions) >= target:
+                candidates[achievement_id] = completions[target - 1]["occurred_at"]
+
         reading_dates = sorted(all_data["readingDayDates"])
-        if len(reading_dates) >= 7:
-            candidates["seven-reading-days"] = f"{reading_dates[6]}T23:59:59Z"
+        for target, achievement_id in (
+            (7, "seven-reading-days"),
+            (30, "thirty-reading-days"),
+            (100, "hundred-reading-days"),
+        ):
+            if len(reading_dates) >= target:
+                candidates[achievement_id] = f"{reading_dates[target - 1]}T23:59:59Z"
         date_values = [datetime.fromisoformat(day).date() for day in reading_dates]
-        for target, achievement_id in ((3, "three-day-rhythm"), (7, "seven-day-rhythm")):
+        for target, achievement_id in (
+            (3, "three-day-rhythm"),
+            (7, "seven-day-rhythm"),
+            (14, "fourteen-day-rhythm"),
+            (30, "thirty-day-rhythm"),
+        ):
             run = 0
             previous = None
             for day in date_values:
@@ -1014,6 +1097,15 @@ class ReadingStatsStore:
                     candidates[achievement_id] = f"{day.isoformat()}T23:59:59Z"
                     break
                 previous = day
+
+        for day in all_data["days"]:
+            unlocked_at = f"{day['date']}T23:59:59Z"
+            if day["chapterFinishes"] >= 10 and "ten-chapter-day" not in candidates:
+                candidates["ten-chapter-day"] = unlocked_at
+            if day["pages"] >= 100 and "hundred-page-day" not in candidates:
+                candidates["hundred-page-day"] = unlocked_at
+            if day["activeSeconds"] >= 7_200 and "two-hour-day" not in candidates:
+                candidates["two-hour-day"] = unlocked_at
         return candidates
 
     def _refresh_achievements(self, connection, profile=None):

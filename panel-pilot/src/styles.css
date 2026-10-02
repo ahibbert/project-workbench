@@ -3531,12 +3531,12 @@ body.download-sheet-open {
 .achievement-card {
   min-width: 0;
   display: grid;
-  grid-template-columns: 2.4rem minmax(0, 1fr);
-  align-items: center;
-  gap: 0.6rem;
+  grid-template-columns: 3.2rem minmax(0, 1fr);
+  align-items: start;
+  gap: 0.7rem;
   border: 1px solid var(--line);
   border-radius: 14px;
-  padding: 0.7rem;
+  padding: 0.75rem;
   background: var(--panel-strong);
 }
 
@@ -3546,19 +3546,26 @@ body.download-sheet-open {
 }
 
 .achievement-mark {
-  width: 2.4rem;
-  height: 2.4rem;
+  width: 3.2rem;
+  height: 3.2rem;
   display: grid;
   place-items: center;
-  border-radius: 50%;
-  background: #dfe3de;
-  color: var(--muted);
-  font-size: 1.1rem;
+  flex: 0 0 auto;
+  border-radius: 15px;
+  background: var(--achievement-soft, #ecefea);
+  color: var(--achievement-accent, var(--muted));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--achievement-accent, #66736c) 18%, transparent);
 }
 
-.achievement-card[data-unlocked="true"] .achievement-mark {
-  background: #e7bd52;
-  color: #453100;
+.achievement-mark[data-unlocked="true"] {
+  background: linear-gradient(145deg, color-mix(in srgb, var(--achievement-accent) 78%, white), var(--achievement-accent));
+  color: #fff;
+  box-shadow: 0 6px 15px color-mix(in srgb, var(--achievement-accent) 28%, transparent), inset 0 0 0 1px rgba(255, 255, 255, 0.22);
+}
+
+.achievement-art {
+  width: 2.45rem;
+  height: 2.45rem;
 }
 
 .achievement-copy {
@@ -3568,7 +3575,20 @@ body.download-sheet-open {
 }
 
 .achievement-copy strong { font-size: 0.82rem; }
-.achievement-copy small { color: var(--muted); font-size: 0.75rem; }
+.achievement-copy small { color: var(--muted); font-size: 0.72rem; line-height: 1.32; }
+
+.achievement-status {
+  margin-top: 0.15rem;
+  color: var(--muted);
+  font-size: 0.62rem;
+  font-weight: 820;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
+
+.achievement-card[data-unlocked="true"] .achievement-status {
+  color: var(--stats-warm-ink);
+}
 
 .stats-controls .checkbox-field {
   margin-top: 0.45rem;
@@ -3841,6 +3861,57 @@ body.has-reading-miniplayer .app-toast {
 
 .app-toast.good { background: rgba(37, 105, 68, 0.96); }
 .app-toast.bad { background: rgba(147, 57, 50, 0.96); }
+
+.app-toast.achievement-toast {
+  display: grid;
+  grid-template-columns: 3.6rem minmax(0, 1fr);
+  align-items: center;
+  gap: 0.75rem;
+  max-width: 30rem;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 18px;
+  padding: 0.78rem;
+  background: rgba(28, 47, 44, 0.97);
+  box-shadow: 0 16px 36px rgba(21, 31, 27, 0.3);
+}
+
+.achievement-toast .achievement-mark {
+  width: 3.6rem;
+  height: 3.6rem;
+  border-radius: 17px;
+}
+
+.achievement-toast .achievement-art {
+  width: 2.75rem;
+  height: 2.75rem;
+}
+
+.achievement-toast-copy {
+  min-width: 0;
+  display: grid;
+  gap: 0.08rem;
+}
+
+.achievement-toast-eyebrow {
+  color: #bfe4db;
+  font-size: 0.61rem;
+  font-weight: 850;
+  letter-spacing: 0.075em;
+  text-transform: uppercase;
+}
+
+.achievement-toast-copy strong {
+  color: #fff;
+  font-size: 0.92rem;
+  line-height: 1.2;
+}
+
+.achievement-toast-copy small {
+  color: rgba(255, 255, 255, 0.76);
+  font-size: 0.71rem;
+  font-weight: 590;
+  line-height: 1.32;
+}
 
 .app-update {
   position: fixed;

@@ -684,16 +684,101 @@ function saveSettings() {
   );
 }
 
+const achievementPalettes = {
+  chapter: { accent: "#236c6e", soft: "#d9eeec" },
+  pages: { accent: "#3b6f9c", soft: "#e0edf8" },
+  time: { accent: "#6f5c9f", soft: "#eee9f8" },
+  explore: { accent: "#a9602d", soft: "#faeadc" },
+  complete: { accent: "#9b7118", soft: "#fff1c7" },
+  days: { accent: "#3f7d51", soft: "#e2f1e5" },
+  rhythm: { accent: "#b64d43", soft: "#f9dfdb" },
+  reread: { accent: "#9b4f78", soft: "#f4dfeb" },
+  daily: { accent: "#4b5fa7", soft: "#e6e9f7" },
+  star: { accent: "#77672f", soft: "#f4edcf" },
+};
+
 const readingAchievementDefinitions = [
-  { id: "first-finish", name: "First finish", description: "Finish your first chapter", mark: "1" },
-  { id: "ten-finishes", name: "Ten chapters", description: "Finish 10 chapters", mark: "10" },
-  { id: "fifty-finishes", name: "Fifty chapters", description: "Finish 50 chapters", mark: "50" },
-  { id: "three-titles", name: "Curious reader", description: "Explore 3 titles", mark: "3" },
-  { id: "seven-reading-days", name: "A week of reading", description: "Read on 7 different days", mark: "7" },
-  { id: "three-day-rhythm", name: "Finding a rhythm", description: "Read 3 days in a row", mark: "3d" },
-  { id: "seven-day-rhythm", name: "Seven-day rhythm", description: "Read 7 days in a row", mark: "7d" },
-  { id: "first-reread", name: "Worth another look", description: "Reread a chapter", mark: "↻" },
-];
+  { id: "first-finish", name: "First finish", description: "Finish your first chapter", icon: "chapter" },
+  { id: "ten-finishes", name: "Chapter scout", description: "Finish 10 unique chapters", icon: "chapter" },
+  { id: "twenty-five-finishes", name: "Turning pages", description: "Finish 25 unique chapters", icon: "chapter" },
+  { id: "fifty-finishes", name: "Shelf momentum", description: "Finish 50 unique chapters", icon: "chapter" },
+  { id: "hundred-finishes", name: "Century reader", description: "Finish 100 unique chapters", icon: "chapter" },
+  { id: "two-fifty-finishes", name: "Chapter titan", description: "Finish 250 unique chapters", icon: "chapter" },
+  { id: "hundred-pages", name: "Page turner", description: "Read 100 pages", icon: "pages" },
+  { id: "five-hundred-pages", name: "Paper trail", description: "Read 500 pages", icon: "pages" },
+  { id: "thousand-pages", name: "Thousand-page stare", description: "Read 1,000 pages", icon: "pages" },
+  { id: "five-thousand-pages", name: "Ink ocean", description: "Read 5,000 pages", icon: "pages" },
+  { id: "one-reading-hour", name: "Settling in", description: "Spend an hour reading", icon: "time" },
+  { id: "ten-reading-hours", name: "Lost in the panels", description: "Spend 10 hours reading", icon: "time" },
+  { id: "fifty-reading-hours", name: "Long-form legend", description: "Spend 50 hours reading", icon: "time" },
+  { id: "hundred-reading-hours", name: "Time well read", description: "Spend 100 hours reading", icon: "time" },
+  { id: "three-titles", name: "Curious reader", description: "Explore 3 titles", icon: "explore" },
+  { id: "ten-titles", name: "Genre hopper", description: "Explore 10 titles", icon: "explore" },
+  { id: "twenty-five-titles", name: "Library wanderer", description: "Explore 25 titles", icon: "explore" },
+  { id: "first-title-complete", name: "The end", description: "Complete your first series", icon: "complete" },
+  { id: "five-titles-complete", name: "Series finisher", description: "Complete 5 series", icon: "complete" },
+  { id: "ten-titles-complete", name: "Closing credits", description: "Complete 10 series", icon: "complete" },
+  { id: "seven-reading-days", name: "A week of reading", description: "Read on 7 different days", icon: "days" },
+  { id: "thirty-reading-days", name: "Regular visitor", description: "Read on 30 different days", icon: "days" },
+  { id: "hundred-reading-days", name: "Well-worn bookmark", description: "Read on 100 different days", icon: "days" },
+  { id: "three-day-rhythm", name: "Finding a rhythm", description: "Read 3 days in a row", icon: "rhythm" },
+  { id: "seven-day-rhythm", name: "Seven-day rhythm", description: "Read 7 days in a row", icon: "rhythm" },
+  { id: "fourteen-day-rhythm", name: "Fortnight flow", description: "Read 14 days in a row", icon: "rhythm" },
+  { id: "thirty-day-rhythm", name: "Month in motion", description: "Read 30 days in a row", icon: "rhythm" },
+  { id: "first-reread", name: "Worth another look", description: "Reread a chapter", icon: "reread" },
+  { id: "five-rereads", name: "Second-pass scholar", description: "Reread 5 chapters", icon: "reread" },
+  { id: "twenty-five-rereads", name: "Comfort chapters", description: "Reread 25 chapters", icon: "reread" },
+  { id: "ten-chapter-day", name: "Chapter sprint", description: "Finish 10 chapters in one reading day", icon: "daily" },
+  { id: "hundred-page-day", name: "Page storm", description: "Read 100 pages in one reading day", icon: "daily" },
+  { id: "two-hour-day", name: "Deep dive", description: "Read for 2 hours in one reading day", icon: "daily" },
+].map((definition) => ({
+  ...achievementPalettes[definition.icon],
+  ...definition,
+}));
+
+const achievementArtPaths = {
+  chapter: '<path d="M10 12.5c6-2 11-.8 14 3.2v21c-3-4-8-5.2-14-3.2Z"/><path d="M38 12.5c-6-2-11-.8-14 3.2v21c3-4 8-5.2 14-3.2Z"/><path d="M24 15.7v21"/>',
+  pages: '<path d="M13 10h22v27H13z"/><path d="M9 14v27h22"/><path d="M18 17h12M18 23h12M18 29h8"/>',
+  time: '<circle cx="24" cy="24" r="15"/><path d="M24 15v10l7 4"/><path d="M19 7h10"/>',
+  explore: '<circle cx="24" cy="24" r="16"/><path d="m29 19-3.5 6.5L19 29l3.5-6.5Z"/><circle cx="24" cy="24" r="2"/>',
+  complete: '<path d="M15 10h18v8c0 8-3.8 13-9 15-5.2-2-9-7-9-15Z"/><path d="M15 15H9c0 6 3 9 8 9M33 15h6c0 6-3 9-8 9M20 38h8M24 33v5"/><path d="m24 16 1.8 3.6 4 .6-2.9 2.8.7 4-3.6-1.9-3.6 1.9.7-4-2.9-2.8 4-.6Z"/>',
+  days: '<rect x="9" y="12" width="30" height="27" rx="4"/><path d="M9 20h30M17 8v8M31 8v8"/><path d="m17 29 4 4 10-10"/>',
+  rhythm: '<path d="M26 7c2 8-5 9-2 15 1.5-3 5-5 8-7 2 4 6 8 6 15 0 8-6 13-14 13S10 38 10 29c0-7 4-13 10-18-1 7 1 9 3 11 0-6 5-9 3-15Z"/>',
+  reread: '<path d="M11 20a14 14 0 0 1 24-6l3 3M37 10v7h-7M37 28a14 14 0 0 1-24 6l-3-3M11 38v-7h7"/><path d="M19 18h10v12H19z"/>',
+  daily: '<path d="M27 6 13 27h10l-2 15 14-22H25Z"/><path d="M9 38h7M32 10h7"/>',
+  star: '<path d="m24 8 4.7 9.5 10.5 1.5-7.6 7.4 1.8 10.4-9.4-5-9.4 5 1.8-10.4L8.8 19l10.5-1.5Z"/>',
+};
+
+function achievementDefinition(achievement = {}) {
+  const id = achievement.id || achievement.key;
+  return readingAchievementDefinitions.find((item) => item.id === id) || {
+    id,
+    name: achievement.name || achievement.title || "Reading milestone",
+    description: achievement.description || "A personal reading milestone",
+    icon: "star",
+    ...achievementPalettes.star,
+  };
+}
+
+function createAchievementArt(definition, unlocked = false) {
+  const mark = document.createElement("span");
+  mark.className = "achievement-mark";
+  mark.dataset.unlocked = unlocked ? "true" : "false";
+  mark.style.setProperty("--achievement-accent", definition.accent || achievementPalettes.star.accent);
+  mark.style.setProperty("--achievement-soft", definition.soft || achievementPalettes.star.soft);
+  mark.setAttribute("aria-hidden", "true");
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.classList.add("achievement-art");
+  svg.setAttribute("viewBox", "0 0 48 48");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2.7");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.innerHTML = achievementArtPaths[definition.icon] || achievementArtPaths.star;
+  mark.append(svg);
+  return mark;
+}
 
 function defaultReadingStatsSettings() {
   return {
@@ -795,7 +880,7 @@ function renderReadingStats() {
     summary.achievements.forEach((achievement) => {
       const id = achievement.id || achievement.key;
       if (id && !definitions.some((item) => item.id === id)) {
-        definitions.push({ id, name: achievement.name || achievement.title || "Reading milestone", description: achievement.description || "A personal reading milestone", mark: "★" });
+        definitions.push(achievementDefinition(achievement));
       }
     });
     definitions.forEach((definition) => {
@@ -803,24 +888,24 @@ function renderReadingStats() {
       const card = document.createElement("article");
       card.className = "achievement-card";
       card.dataset.unlocked = unlocked ? "true" : "false";
-      const mark = document.createElement("span");
-      mark.className = "achievement-mark";
-      mark.setAttribute("aria-hidden", "true");
-      mark.textContent = unlocked ? "★" : definition.mark;
+      const mark = createAchievementArt(definition, Boolean(unlocked));
       const copy = document.createElement("span");
       copy.className = "achievement-copy";
       const title = document.createElement("strong");
       title.textContent = unlocked?.name || unlocked?.title || definition.name;
       const note = document.createElement("small");
-      note.textContent = unlocked ? "Unlocked" : definition.description;
-      copy.append(title, note);
+      note.textContent = unlocked?.description || definition.description;
+      const status = document.createElement("span");
+      status.className = "achievement-status";
+      status.textContent = unlocked ? "Unlocked" : "Still to discover";
+      copy.append(title, note, status);
       card.append(mark, copy);
       el.statsAchievementList.append(card);
     });
   }
   if (el.statsAchievementCount) {
     const unlockedCount = summary.achievements.length;
-    el.statsAchievementCount.textContent = `${unlockedCount} unlocked`;
+    el.statsAchievementCount.textContent = `${unlockedCount} of ${readingAchievementDefinitions.length} unlocked`;
   }
 }
 
@@ -828,10 +913,7 @@ async function flushReadingStats({ celebrate = true } = {}) {
   const result = await readingStatsClient.flush();
   const unlocked = Array.isArray(result.newAchievements) ? result.newAchievements : [];
   if (celebrate && state.readingStatsSettings?.celebrations !== false && unlocked.length) {
-    const id = unlocked[0]?.id || unlocked[0]?.key;
-    const definition = readingAchievementDefinitions.find((item) => item.id === id);
-    const title = unlocked[0]?.name || unlocked[0]?.title || definition?.name || "Reading milestone";
-    showToast(unlocked.length === 1 ? `Achievement unlocked: ${title}` : `${unlocked.length} reading achievements unlocked`, "good");
+    showAchievementToast(unlocked[0], Math.max(0, unlocked.length - 1));
   }
   return result;
 }
@@ -3489,16 +3571,43 @@ function closeMangaDetail(options = {}) {
 }
 
 let toastTimer = null;
-function showToast(message, tone = "") {
-  if (!el.appToast || !message) return;
+let toastHideTimer = null;
+
+function revealToast(duration = 2600) {
   window.clearTimeout(toastTimer);
-  el.appToast.textContent = message;
-  el.appToast.className = `app-toast visible ${tone}`;
+  window.clearTimeout(toastHideTimer);
   el.appToast.hidden = false;
   toastTimer = window.setTimeout(() => {
     el.appToast.classList.remove("visible");
-    window.setTimeout(() => { el.appToast.hidden = true; }, 180);
-  }, 2600);
+    toastHideTimer = window.setTimeout(() => { el.appToast.hidden = true; }, 180);
+  }, duration);
+}
+
+function showToast(message, tone = "") {
+  if (!el.appToast || !message) return;
+  el.appToast.textContent = message;
+  el.appToast.className = `app-toast visible ${tone}`;
+  revealToast();
+}
+
+function showAchievementToast(achievement, additionalCount = 0) {
+  if (!el.appToast) return;
+  const definition = achievementDefinition(achievement);
+  const copy = document.createElement("span");
+  copy.className = "achievement-toast-copy";
+  const eyebrow = document.createElement("span");
+  eyebrow.className = "achievement-toast-eyebrow";
+  eyebrow.textContent = "Achievement unlocked";
+  const title = document.createElement("strong");
+  title.textContent = achievement?.name || achievement?.title || definition.name;
+  const note = document.createElement("small");
+  note.textContent = additionalCount
+    ? `${definition.description} · Plus ${additionalCount} more added to your shelf`
+    : definition.description;
+  copy.append(eyebrow, title, note);
+  el.appToast.replaceChildren(createAchievementArt(definition, true), copy);
+  el.appToast.className = "app-toast achievement-toast visible good";
+  revealToast(4800);
 }
 
 function emptyLine(text) {

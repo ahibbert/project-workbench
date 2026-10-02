@@ -7,7 +7,7 @@ import sys
 import tempfile
 import threading
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer
 from unittest import mock
 from urllib.error import HTTPError
@@ -94,6 +94,33 @@ class ReadingStatsStoreTests(unittest.TestCase):
         self.assertEqual(summary["totals"]["uniqueChapters"], 1)
         self.assertEqual(summary["totals"]["rereads"], 1)
         self.assertIn("first-reread", {item["id"] for item in summary["achievements"]})
+
+    def test_expanded_achievements_unlock_retroactively_from_existing_activity(self):
+        start = datetime(2026, 9, 20, 8, tzinfo=timezone.utc)
+        events = []
+        for index in range(120):
+            stamp = (start + timedelta(minutes=index)).isoformat().replace("+00:00", "Z")
+            events.append(event(f"active-{index:04d}", "active_minute", stamp, seconds=60))
+        for index in range(100):
+            events.append(event(
+                f"page-view-{index:04d}", "page_view", "2026-09-20T08:00:00Z",
+                chapterKey=f"chapter-{index // 10}", pageKey=f"page-{index}",
+            ))
+        for index in range(10):
+            events.append(event(
+                f"finish-event-{index:04d}", "chapter_finish", "2026-09-20T10:00:00Z",
+                chapterKey=f"chapter-{index}", attemptId=f"attempt-{index}",
+            ))
+        events.append(event("complete-event-0001", "title_complete", "2026-09-20T10:01:00Z"))
+
+        result = self.store.ingest(events)
+        self.assertEqual(result["accepted"], 231)
+        summary = self.store.summary("all", now=datetime(2026, 9, 21, tzinfo=timezone.utc))
+        unlocked = {item["id"] for item in summary["achievements"]}
+        self.assertTrue({
+            "first-finish", "ten-finishes", "hundred-pages", "one-reading-hour",
+            "first-title-complete", "ten-chapter-day", "hundred-page-day", "two-hour-day",
+        }.issubset(unlocked))
 
     def test_browser_payload_minute_key_page_index_and_metadata_are_supported(self):
         settings = self.store.update_settings({

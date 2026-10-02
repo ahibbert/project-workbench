@@ -74,7 +74,7 @@ function emptySummary(settings) {
   };
 }
 
-function createStatsBackend({ settings: settingsOverrides = {}, summary = null, missing = false } = {}) {
+function createStatsBackend({ settings: settingsOverrides = {}, summary = null, newAchievements = [], missing = false } = {}) {
   const state = {
     settings: { ...initialSettings, ...settingsOverrides },
     summary,
@@ -82,6 +82,7 @@ function createStatsBackend({ settings: settingsOverrides = {}, summary = null, 
     requests: [],
     receivedEvents: [],
     eventIds: new Set(),
+    pendingAchievements: [...newAchievements],
     resets: 0,
   };
 
@@ -157,6 +158,8 @@ function createStatsBackend({ settings: settingsOverrides = {}, summary = null, 
                 state.receivedEvents.push(event);
               }
             }
+            const unlocked = [...state.pendingAchievements];
+            state.pendingAchievements = [];
             await route.fulfill({
               status: 200,
               contentType: "application/json",
@@ -164,7 +167,8 @@ function createStatsBackend({ settings: settingsOverrides = {}, summary = null, 
                 accepted,
                 duplicates,
                 acknowledgedEventIds: (payload.events || []).map((event) => event.eventId),
-                newlyUnlocked: [],
+                newAchievements: unlocked,
+                newlyUnlocked: unlocked,
               }),
             });
             return;
@@ -255,20 +259,49 @@ test("dashboard exposes understandable metrics, trend, calendar, rhythm, and ach
   const dashboard = page.locator("#stats-dashboard");
   await expect(dashboard.getByText(/2h\s*3m|123\s*min/i)).toBeVisible();
   await expect(dashboard.getByText("12", { exact: true })).toBeVisible();
-  await expect(dashboard.getByText(/10.*unique|unique.*10/i)).toBeVisible();
-  await expect(dashboard.getByText(/2.*reread|reread.*2/i)).toBeVisible();
+  await expect(page.locator("#stats-rereads")).toHaveText(/10.*unique/i);
+  await expect(page.locator("#stats-rereads")).toHaveText(/2.*reread/i);
   await expect(dashboard.getByText(/6.*reading days|reading days.*6/i)).toBeVisible();
   await expect(page.locator("#stats-titles")).toHaveText(/3 titles/i);
   await expect(dashboard.getByText(/current.*3|3.*current/i)).toBeVisible();
   await expect(dashboard.getByText(/longest.*5|5.*longest/i)).toBeVisible();
   await expect(dashboard.getByText("First finish", { exact: true })).toHaveCount(1);
   await expect(dashboard.getByText("Ten chapters", { exact: true })).toHaveCount(1);
-  await expect(page.locator("#stats-achievement-list [data-unlocked='true']")).toHaveCount(2);
+  await expect(page.locator("#stats-achievement-list .achievement-card[data-unlocked='true']")).toHaveCount(2);
+  await expect(page.locator("#stats-achievement-list .achievement-card")).toHaveCount(33);
+  await expect(page.locator("#stats-achievement-list .achievement-art")).toHaveCount(33);
+  await expect(page.locator("#stats-achievement-count")).toHaveText("2 of 33 unlocked");
 
   const calendar = page.locator("#stats-calendar");
   await expect(calendar).toBeVisible();
   await expect(calendar.locator('[aria-label*="2026-10-02"]')).toHaveCount(1);
   await expect(page.getByRole("combobox", { name: /range/i })).toHaveValue("30d");
+});
+
+test("achievement unlock celebrations include their illustrated badge", async ({ page }) => {
+  const backend = createStatsBackend({
+    settings: { enabled: true, since: populatedSummary.since },
+    summary: populatedSummary,
+    newAchievements: [{ id: "hundred-pages" }],
+  });
+  await backend.attach(page);
+  await page.goto("/", { waitUntil: "networkidle" });
+  await expect.poll(() => page.evaluate(() => typeof window.PanelPilot?.readingStats?.recordPageView)).toBe("function");
+
+  await page.evaluate(async () => {
+    await window.PanelPilot.readingStats.recordPageView({
+      titleKey: "title-key",
+      chapterKey: "chapter-key",
+      pageIndex: 100,
+    });
+    window.dispatchEvent(new Event("online"));
+  });
+
+  const toast = page.locator("#app-toast");
+  await expect(toast).toHaveClass(/achievement-toast/);
+  await expect(toast.getByText("Achievement unlocked", { exact: true })).toBeVisible();
+  await expect(toast.getByText("Page turner", { exact: true })).toBeVisible();
+  await expect(toast.locator(".achievement-art")).toBeVisible();
 });
 
 test("offline events survive reload and retry idempotently when connectivity returns", async ({ page }) => {
