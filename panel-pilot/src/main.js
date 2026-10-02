@@ -228,6 +228,8 @@ const el = {
   appViews: [...document.querySelectorAll(".app-view")],
   appNavButtons: [...document.querySelectorAll("[data-target-view]")],
   navLibrary: document.querySelector("#nav-library"),
+  navBooks: document.querySelector("#nav-books"),
+  booksRoot: document.querySelector("#books-root"),
   navStats: document.querySelector("#nav-stats"),
   navReader: document.querySelector("#nav-reader"),
   navReaderCover: document.querySelector("#nav-reader-cover"),
@@ -609,6 +611,9 @@ const state = {
   readerFocus: false,
   readerChromeVisible: true,
   activeView: "library",
+  booksEnabled: false,
+  booksController: null,
+  booksControllerPromise: null,
   previousView: "library",
   suwayomiSetupOpen: false,
   showNsfwSources: false,
@@ -655,7 +660,7 @@ const state = {
   deviceStorageFilter: "all",
   deviceStorageRepairing: false,
   historyApplying: false,
-  viewScrollPositions: { library: 0, browse: 0, settings: 0 },
+  viewScrollPositions: { library: 0, books: 0, browse: 0, settings: 0 },
   browseDiscoveryScroll: 0,
   mangaDetailOrigin: "browse",
   mangaDetailReturnFocus: null,
@@ -1356,7 +1361,7 @@ async function resetReadingStats() {
 }
 
 function isAppView(view) {
-  return view === "library" || view === "browse" || view === "moments" || view === "stats" || view === "reader" || view === "settings";
+  return view === "library" || view === "books" || view === "browse" || view === "moments" || view === "stats" || view === "reader" || view === "settings";
 }
 
 function navigationHash(view, detail = false) {
@@ -1391,7 +1396,54 @@ function routeFromLocation() {
       origin: params.get("origin") === "library" ? "library" : "browse",
     };
   }
-  return { view: isAppView(route) ? route : null, detail: false, manga: null, origin: "browse" };
+  if (route === "book-detail" || route === "book-read" || route === "books-search") {
+    return { view: "books", bookRoute: route, bookQuery: query, detail: false, manga: null, origin: "books" };
+  }
+  return { view: isAppView(route) ? route : null, bookRoute: route === "books" ? "books" : "", bookQuery: query, detail: false, manga: null, origin: "browse" };
+}
+
+async function ensureBooksApp() {
+  if (state.booksController) return state.booksController;
+  if (!state.booksControllerPromise) {
+    state.booksControllerPromise = import("./books-app.js").then(({ createBooksApp }) => {
+      state.booksController = createBooksApp({
+        root: el.booksRoot,
+        navigate(route, parameters = {}) {
+          const query = new URLSearchParams(parameters).toString();
+          const hash = `#${route}${query ? `?${query}` : ""}`;
+          window.history.pushState({ panelPilot: true, view: "books", bookRoute: route }, "", hash);
+          setActiveView("books", { history: false });
+        },
+      });
+      return state.booksController;
+    });
+  }
+  return state.booksControllerPromise;
+}
+
+async function showBooksRoute() {
+  if (!state.booksEnabled) return;
+  const controller = await ensureBooksApp();
+  await controller.show(routeFromLocation());
+}
+
+async function initializeBooksFeature() {
+  try {
+    const response = await fetch("/api/books/status", { headers: { Accept: "application/json" }, cache: "no-store" });
+    if (!response.ok) return;
+    const status = await response.json();
+    state.booksEnabled = status.enabled === true;
+    el.navBooks?.toggleAttribute("hidden", !state.booksEnabled);
+    document.body.classList.toggle("books-enabled", state.booksEnabled);
+    if (!state.booksEnabled && state.activeView === "books") {
+      setActiveView("library", { history: false });
+      recordNavigationState("replace", false);
+      return;
+    }
+    if (state.booksEnabled && state.activeView === "books") void showBooksRoute();
+  } catch {
+    state.booksEnabled = false;
+  }
 }
 
 function applyReaderMotion() {
@@ -1468,6 +1520,7 @@ function setActiveView(view, options = {}) {
   }
   if (view === "stats") void refreshReadingStats();
   if (view === "moments") void loadMoments();
+  if (view === "books") void showBooksRoute();
 
   if (view === "reader") {
     setReaderFocus(isReaderFocusAvailable());
@@ -14370,6 +14423,7 @@ if (el.stage) {
   loadLibraryItems();
   state.sourceProfilesPromise = loadSourceProfiles();
   wireEvents();
+  void initializeBooksFeature();
   startBackgroundHealthChecks();
   setActiveView(state.activeView, { history: false });
   void initializeReadingStats();

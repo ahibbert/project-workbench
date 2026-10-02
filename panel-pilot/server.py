@@ -2720,6 +2720,9 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/books/connections/test":
                 self.handle_books_connection_test()
                 return
+            if parsed.path == "/api/books/sync":
+                self.handle_books_sync()
+                return
             if parsed.path == "/api/library":
                 self.handle_library_post()
                 return
@@ -2926,6 +2929,17 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/books/status":
                 self.handle_books_status()
                 return
+            if parsed.path == "/api/books":
+                self.handle_books_list(parsed)
+                return
+            book_cover = re.fullmatch(r"/api/books/(\d+)/cover", parsed.path)
+            if book_cover:
+                self.handle_book_cover(int(book_cover.group(1)))
+                return
+            book_detail = re.fullmatch(r"/api/books/(\d+)", parsed.path)
+            if book_detail:
+                self.handle_book_detail(int(book_detail.group(1)))
+                return
             if parsed.path.startswith("/api/books"):
                 if not self.books_config().enabled:
                     self.send_json({"error": "Books are disabled", "code": "feature_disabled"}, status=404)
@@ -3016,6 +3030,7 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         with BOOKS_SERVICE_LOCK:
             if BOOKS_SERVICE is None or BOOKS_SERVICE.config != config:
                 BOOKS_SERVICE = BooksService(config)
+                BOOKS_SERVICE.start()
             return BOOKS_SERVICE
 
     def handle_books_status(self):
@@ -3032,6 +3047,50 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             return
         payload = self.read_json_request(4096)
         self.send_json(self.books_service().test_connection(str(payload.get("target") or "")))
+
+    def handle_books_sync(self):
+        if not self.books_config().enabled:
+            self.send_json({"error": "Books are disabled", "code": "feature_disabled"}, status=404)
+            return
+        self.send_json(self.books_service().sync_library())
+
+    def handle_books_list(self, parsed):
+        config = self.books_config()
+        if not config.enabled:
+            self.send_json({"error": "Books are disabled", "code": "feature_disabled"}, status=404)
+            return
+        params = parse_qs(parsed.query)
+        self.send_json(self.books_service().list_books(
+            params.get("q", [""])[0],
+            params.get("limit", [100])[0],
+            params.get("offset", [0])[0],
+        ))
+
+    def handle_book_detail(self, book_id):
+        if not self.books_config().enabled:
+            self.send_json({"error": "Books are disabled", "code": "feature_disabled"}, status=404)
+            return
+        book = self.books_service().get_book(book_id)
+        if not book:
+            self.send_json({"error": "Book not found"}, status=404)
+            return
+        self.send_json({"book": book})
+
+    def handle_book_cover(self, book_id):
+        if not self.books_config().enabled:
+            self.send_error(404, "Not found")
+            return
+        try:
+            content, content_type = self.books_service().cover(book_id)
+        except KeyError:
+            self.send_error(404, "Not found")
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "private, max-age=3600")
+        self.send_header("Content-Length", str(len(content)))
+        self.end_headers()
+        self.wfile.write(content)
 
     def mangabaka_json(self, path, method="GET", payload=None, token=None):
         if not path.startswith("/") or path.startswith("//"):
@@ -4050,6 +4109,7 @@ def main():
     books_config = BooksConfig.from_environment(DATA_ROOT)
     if books_config.enabled:
         BOOKS_SERVICE = BooksService(books_config)
+        BOOKS_SERVICE.start()
     handler = lambda *args, **kwargs: PanelPilotHandler(*args, directory=static_root, **kwargs)
     server = ThreadingHTTPServer((bind_address, port), handler)
     print(f"Panels server running on http://{bind_address}:{port} from {static_root}", flush=True)

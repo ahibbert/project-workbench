@@ -77,6 +77,7 @@ def parse_opds_feed(xml_bytes: bytes, feed_url: str) -> dict[str, Any]:
         raise OpdsError("CWA response is not an OPDS feed", code="invalid_feed")
 
     books: list[dict[str, Any]] = []
+    navigation_hrefs: list[str] = []
     for entry in root.findall(ATOM + "entry"):
         entry_id = _text(entry.find(ATOM + "id"), 1000)
         title = _text(entry.find(ATOM + "title"), 1000)
@@ -98,6 +99,12 @@ def parse_opds_feed(xml_bytes: bytes, feed_url: str) -> dict[str, Any]:
         cover = next((link["href"] for link in links if "image" in link["rel"] and link["type"].startswith("image/")), "")
         identifiers = [_text(node, 300) for node in entry.findall(DC + "identifier")]
         isbn = next((value.split(":")[-1] for value in identifiers if "isbn" in value.lower()), "")
+        navigation = next((link["href"] for link in links if link["type"] in ("application/atom+xml", "application/xml") and link["rel"] in ("alternate", "subsection", "http://opds-spec.org/subsection")), "")
+        if navigation and not acquisition:
+            navigation_hrefs.append(navigation)
+            continue
+        if not acquisition:
+            continue
         books.append({
             "stableIdentifier": entry_id,
             "title": title,
@@ -123,7 +130,13 @@ def parse_opds_feed(xml_bytes: bytes, feed_url: str) -> dict[str, Any]:
             next_href = urljoin(feed_url, href)
         if rel == "search" and href:
             search_template = urljoin(feed_url, href)
-    return {"title": _text(root.find(ATOM + "title")), "books": books, "nextHref": next_href, "searchTemplate": search_template}
+    return {
+        "title": _text(root.find(ATOM + "title")),
+        "books": books,
+        "nextHref": next_href,
+        "navigationHrefs": navigation_hrefs,
+        "searchTemplate": search_template,
+    }
 
 
 class OpdsClient:
@@ -170,7 +183,35 @@ class OpdsClient:
                     book[field] = self._safe_url(book[field])
         if result["nextHref"]:
             result["nextHref"] = self._safe_url(result["nextHref"])
+        result["navigationHrefs"] = [self._safe_url(href) for href in result["navigationHrefs"]]
         return result
+
+    def catalog(self, *, maximum_feeds: int = 100, maximum_books: int = 10_000) -> list[dict[str, Any]]:
+        """Crawl bounded OPDS navigation and pagination links without leaving CWA."""
+        pending = [self.catalog_url]
+        visited: set[str] = set()
+        books: list[dict[str, Any]] = []
+        while pending and len(visited) < maximum_feeds and len(books) < maximum_books:
+            target = pending.pop(0)
+            safe_target = self._safe_url(target)
+            if safe_target in visited:
+                continue
+            visited.add(safe_target)
+            page = self.page(safe_target)
+            books.extend(page["books"][:maximum_books - len(books)])
+            links = [page.get("nextHref", ""), *page.get("navigationHrefs", [])]
+            for link in links:
+                if link and link not in visited and link not in pending:
+                    pending.append(link)
+        if pending:
+            raise OpdsError("CWA OPDS catalog exceeded the safe pagination limit", code="catalog_too_large")
+        return books
+
+    def cover(self, url: str) -> tuple[bytes, str]:
+        content, content_type, _ = self.fetch(url, accept="image/avif,image/webp,image/jpeg,image/png", maximum=12_000_000)
+        if not content_type.lower().startswith("image/"):
+            raise OpdsError("CWA cover response was not an image", code="invalid_cover")
+        return content, content_type.split(";", 1)[0]
 
     def health(self) -> dict[str, Any]:
         page = self.page()

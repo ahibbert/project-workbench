@@ -8,8 +8,9 @@ const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const distRoot = join(projectRoot, "dist");
 const iconSetBudgetBytes = 300_000;
 // Includes offline achievement artwork, reading sessions, source selection,
-// repair controls, the Detection Lab, calibration models, and enhanced-reader UI.
-const installShellBudgetBytes = 780_000;
+// repair controls, the Detection Lab, calibration models, enhanced-reader UI,
+// and the feature-flagged Books entry point (its implementation stays lazy).
+const installShellBudgetBytes = 785_000;
 
 function readSource(path) {
   return readFileSync(join(projectRoot, path), "utf8");

@@ -202,6 +202,10 @@
         </section>
       </section>
 
+      <section class="app-view books-view" id="books-view" data-view="books" aria-label="Books" hidden>
+        <div id="books-root" aria-live="polite"></div>
+      </section>
+
       <section class="app-view browse-view" id="browse-view" data-view="browse" aria-label="Browse">
         <header class="view-header">
           <div>
@@ -802,6 +806,10 @@
       <button class="app-nav-button active" id="nav-library" type="button" data-target-view="library" aria-current="page">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H11v16H6.5A2.5 2.5 0 0 0 4 21.5v-16Z"/><path d="M20 5.5A2.5 2.5 0 0 0 17.5 3H13v16h4.5a2.5 2.5 0 0 1 2.5 2.5v-16Z"/></svg>
         <span>Library</span>
+      </button>
+      <button class="app-nav-button" id="nav-books" type="button" data-target-view="books" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3.5h10.5A2.5 2.5 0 0 1 18 6v14.5H7A2.5 2.5 0 0 1 4.5 18V4A.5.5 0 0 1 5 3.5Z"/><path d="M7 17.5h11M8 7h6"/></svg>
+        <span>Books</span>
       </button>
       <button class="app-nav-button" id="nav-browse" type="button" data-target-view="browse">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>

@@ -10,7 +10,7 @@ import sys
 sys.path.insert(0, str(ROOT))
 
 from books import BookStore, BooksConfig  # noqa: E402
-from opds_client import OpdsError, parse_opds_feed  # noqa: E402
+from opds_client import OpdsClient, OpdsError, parse_opds_feed  # noqa: E402
 from shelfmark_client import normalize_metadata_results, normalize_releases  # noqa: E402
 from server import PanelPilotHandler  # noqa: E402
 
@@ -108,6 +108,25 @@ class BooksConfigurationTests(unittest.TestCase):
                 "shelfmark_downloads", "book_meta",
             }.issubset(tables))
 
+    def test_opds_sync_is_idempotent_and_matches_a_changed_stable_id_by_unique_isbn(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = BookStore(str(pathlib.Path(temporary) / "books.sqlite3"))
+            fixture = {
+                "stableIdentifier": "urn:old", "title": "Alice", "authors": ["Lewis Carroll"],
+                "isbn": "9780000000001", "acquisitionHref": "http://cwa/old.epub",
+                "coverHref": "", "description": "", "subtitle": "", "seriesName": "",
+                "seriesPosition": None, "language": "en", "publisher": "", "publishedDate": "",
+            }
+            self.assertEqual(store.sync_books([fixture])["added"], 1)
+            changed = {**fixture, "stableIdentifier": "urn:new", "acquisitionHref": "http://cwa/new.epub"}
+            self.assertEqual(store.sync_books([changed]), {"seen": 1, "added": 0, "updated": 1})
+            result = store.list_books()
+            self.assertEqual(result["total"], 1)
+            private = store.get_book(result["books"][0]["id"], public=False)
+            self.assertEqual(private["cwa_identifier"], "urn:new")
+            self.assertEqual(private["acquisition_href"], "http://cwa/new.epub")
+            self.assertNotIn("acquisition_href", result["books"][0])
+
 
 class ShelfmarkNormalizationTests(unittest.TestCase):
     def test_metadata_search_normalizes_documented_shape(self):
@@ -149,6 +168,21 @@ class OpdsParsingTests(unittest.TestCase):
             parse_opds_feed(b"<not-closed", "http://cwa:8083/opds")
         self.assertEqual(raised.exception.code, "invalid_feed")
         self.assertNotIn("not-closed", str(raised.exception))
+
+    def test_catalog_follows_navigation_and_pagination_once(self):
+        client = object.__new__(OpdsClient)
+        client.catalog_url = "http://cwa/opds"
+        client._safe_url = lambda url: url
+        pages = {
+            "http://cwa/opds": {"books": [], "nextHref": "", "navigationHrefs": ["http://cwa/new"]},
+            "http://cwa/new": {"books": [{"stableIdentifier": "one"}], "nextHref": "http://cwa/new?page=2", "navigationHrefs": []},
+            "http://cwa/new?page=2": {"books": [{"stableIdentifier": "two"}], "nextHref": "", "navigationHrefs": ["http://cwa/new"]},
+        }
+        client.page = lambda url=None: pages[url]
+        self.assertEqual(
+            [book["stableIdentifier"] for book in client.catalog()],
+            ["one", "two"],
+        )
 
 
 if __name__ == "__main__":

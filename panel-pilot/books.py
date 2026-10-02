@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import threading
 from typing import Any
@@ -178,6 +179,158 @@ class BookStore:
             ).fetchone()[0])
         return {"books": books, "activeDownloads": active}
 
+    @staticmethod
+    def _authors(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(author).replace("\x00", "").strip()[:300] for author in value if str(author).strip()][:20]
+
+    @staticmethod
+    def _normalized_title(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", str(value or "").casefold()).strip()
+
+    @staticmethod
+    def _row_public(row: sqlite3.Row) -> dict[str, Any]:
+        book_id = int(row["id"])
+        try:
+            authors = json.loads(row["authors_json"] or "[]")
+        except json.JSONDecodeError:
+            authors = []
+        return {
+            "id": book_id,
+            "title": row["title"],
+            "subtitle": row["subtitle"],
+            "description": row["description"],
+            "authors": authors,
+            "seriesName": row["series_name"],
+            "seriesPosition": row["series_position"],
+            "isbn": row["isbn"],
+            "language": row["language"],
+            "publisher": row["publisher"],
+            "publishedDate": row["published_date"],
+            "coverUrl": f"/api/books/{book_id}/cover" if row["cover_href"] else "",
+            "epubUrl": f"/api/books/{book_id}/epub" if row["acquisition_href"] else "",
+            "hasEpub": bool(row["acquisition_href"]),
+            "dateAdded": row["date_added"],
+            "lastSyncedAt": row["last_synced_at"],
+        }
+
+    def _match_existing_id(self, connection: sqlite3.Connection, book: dict[str, Any]) -> int | None:
+        row = connection.execute(
+            "SELECT id FROM books WHERE cwa_identifier = ?",
+            (book["stableIdentifier"],),
+        ).fetchone()
+        if row:
+            return int(row["id"])
+        isbn = str(book.get("isbn") or "").strip()
+        if isbn:
+            matches = connection.execute("SELECT id FROM books WHERE isbn = ? LIMIT 2", (isbn,)).fetchall()
+            if len(matches) == 1:
+                return int(matches[0]["id"])
+        title_key = self._normalized_title(book.get("title", ""))
+        authors = self._authors(book.get("authors"))
+        if not title_key or not authors:
+            return None
+        candidates = connection.execute("SELECT id, title, authors_json FROM books").fetchall()
+        matches = []
+        first_author = self._normalized_title(authors[0])
+        for candidate in candidates:
+            try:
+                candidate_authors = json.loads(candidate["authors_json"] or "[]")
+            except json.JSONDecodeError:
+                candidate_authors = []
+            if (
+                self._normalized_title(candidate["title"]) == title_key
+                and candidate_authors
+                and self._normalized_title(candidate_authors[0]) == first_author
+            ):
+                matches.append(int(candidate["id"]))
+        return matches[0] if len(matches) == 1 else None
+
+    def sync_books(self, books: list[dict[str, Any]]) -> dict[str, int]:
+        now = utc_now()
+        added = 0
+        updated = 0
+        with self.lock, self.connection() as connection:
+            for book in books:
+                if not book.get("stableIdentifier") or not book.get("title") or not book.get("acquisitionHref"):
+                    continue
+                authors_json = json.dumps(self._authors(book.get("authors")), ensure_ascii=True)
+                values = (
+                    str(book.get("stableIdentifier"))[:1000], str(book.get("title"))[:1000],
+                    str(book.get("subtitle") or "")[:1000], str(book.get("description") or "")[:20_000],
+                    authors_json, str(book.get("seriesName") or "")[:1000], book.get("seriesPosition"),
+                    str(book.get("isbn") or "")[:40], str(book.get("language") or "")[:40],
+                    str(book.get("publisher") or "")[:500], str(book.get("publishedDate") or "")[:80],
+                    str(book.get("coverHref") or "")[:4000], str(book.get("acquisitionHref") or "")[:4000], now,
+                )
+                existing_id = self._match_existing_id(connection, book)
+                if existing_id is None:
+                    connection.execute("""
+                        INSERT INTO books (
+                            cwa_identifier, title, subtitle, description, authors_json,
+                            series_name, series_position, isbn, language, publisher,
+                            published_date, cover_href, acquisition_href, date_added, last_synced_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (*values[:-1], now, values[-1]))
+                    added += 1
+                else:
+                    connection.execute("""
+                        UPDATE books SET cwa_identifier = ?, title = ?, subtitle = ?, description = ?,
+                            authors_json = ?, series_name = ?, series_position = ?, isbn = ?, language = ?,
+                            publisher = ?, published_date = ?, cover_href = ?, acquisition_href = ?,
+                            last_synced_at = ? WHERE id = ?
+                    """, (*values, existing_id))
+                    updated += 1
+            connection.execute(
+                "INSERT INTO book_meta(key, value, updated_at) VALUES('last_sync', ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                (json.dumps({"added": added, "updated": updated, "seen": len(books)}), now),
+            )
+        return {"seen": len(books), "added": added, "updated": updated}
+
+    def list_books(self, query: str = "", limit: int = 100, offset: int = 0) -> dict[str, Any]:
+        limit = max(1, min(200, int(limit)))
+        offset = max(0, int(offset))
+        query = str(query or "").strip()[:300]
+        where = ""
+        parameters: list[Any] = []
+        if query:
+            where = "WHERE title LIKE ? ESCAPE '\\' OR authors_json LIKE ? ESCAPE '\\'"
+            escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            parameters.extend([f"%{escaped}%", f"%{escaped}%"])
+        with self.lock, self.connection() as connection:
+            total = int(connection.execute(f"SELECT COUNT(*) FROM books {where}", parameters).fetchone()[0])
+            rows = connection.execute(
+                f"SELECT * FROM books {where} ORDER BY title COLLATE NOCASE, id LIMIT ? OFFSET ?",
+                (*parameters, limit, offset),
+            ).fetchall()
+        return {"books": [self._row_public(row) for row in rows], "total": total, "limit": limit, "offset": offset}
+
+    def get_book(self, book_id: int, *, public: bool = True) -> dict[str, Any] | None:
+        with self.lock, self.connection() as connection:
+            row = connection.execute("SELECT * FROM books WHERE id = ?", (int(book_id),)).fetchone()
+        if not row:
+            return None
+        if public:
+            return self._row_public(row)
+        return dict(row)
+
+    def update_content_hash(self, book_id: int, content_hash: str) -> None:
+        with self.lock, self.connection() as connection:
+            connection.execute("UPDATE books SET content_hash = ? WHERE id = ?", (content_hash, int(book_id)))
+
+    def last_sync(self) -> dict[str, Any] | None:
+        with self.lock, self.connection() as connection:
+            row = connection.execute("SELECT value, updated_at FROM book_meta WHERE key = 'last_sync'").fetchone()
+        if not row:
+            return None
+        try:
+            result = json.loads(row["value"])
+        except json.JSONDecodeError:
+            result = {}
+        return {**result, "at": row["updated_at"]}
+
 
 class BooksService:
     def __init__(self, config: BooksConfig):
@@ -185,6 +338,10 @@ class BooksService:
             raise ValueError("BooksService cannot be created while books are disabled")
         self.config = config
         self.store = BookStore(config.database_path)
+        self._sync_lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._worker: threading.Thread | None = None
+        self._last_error = ""
 
     def shelfmark_client(self) -> ShelfmarkClient:
         if not self.config.shelfmark_configured:
@@ -201,7 +358,12 @@ class BooksService:
         ))
 
     def status(self) -> dict[str, Any]:
-        return {**self.config.public_status(), **self.store.counts()}
+        return {
+            **self.config.public_status(),
+            **self.store.counts(),
+            "lastSync": self.store.last_sync(),
+            "syncError": self._last_error,
+        }
 
     def test_connection(self, target: str) -> dict[str, Any]:
         if target == "shelfmark":
@@ -209,6 +371,50 @@ class BooksService:
         if target == "cwa":
             return {"target": target, **self.opds_client().health()}
         raise ValueError("Connection target must be shelfmark or cwa")
+
+    def sync_library(self) -> dict[str, Any]:
+        if not self._sync_lock.acquire(blocking=False):
+            return {"status": "already_running", **self.store.counts()}
+        try:
+            books = self.opds_client().catalog()
+            result = self.store.sync_books(books)
+            self._last_error = ""
+            return {"status": "complete", **result}
+        except Exception as error:
+            self._last_error = str(error)[:500]
+            raise
+        finally:
+            self._sync_lock.release()
+
+    def start(self) -> None:
+        if self._worker and self._worker.is_alive():
+            return
+        self._worker = threading.Thread(target=self._run, name="panels-book-sync", daemon=True)
+        self._worker.start()
+
+    def _run(self) -> None:
+        delay = 2
+        while not self._stop_event.wait(delay):
+            if self.config.cwa_configured:
+                try:
+                    self.sync_library()
+                except Exception:
+                    pass
+            delay = self.config.sync_interval_seconds
+
+    def list_books(self, query: str = "", limit: int = 100, offset: int = 0) -> dict[str, Any]:
+        return self.store.list_books(query, limit, offset)
+
+    def get_book(self, book_id: int) -> dict[str, Any] | None:
+        return self.store.get_book(book_id)
+
+    def cover(self, book_id: int) -> tuple[bytes, str]:
+        book = self.store.get_book(book_id, public=False)
+        if not book:
+            raise KeyError("Book not found")
+        if not book["cover_href"]:
+            raise KeyError("Book has no cover")
+        return self.opds_client().cover(book["cover_href"])
 
 
 def utc_now() -> str:

@@ -90,6 +90,8 @@ export default defineConfig({
           // worker is an optional enhancement with a native-render fallback.
           "assets/source-quality-comparison-*.*",
           "assets/reader-clarity-worker-*.js",
+          "assets/books-app-*.*",
+          "assets/books-*.*",
         ],
       },
     }),
