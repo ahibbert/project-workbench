@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "suiteVersion": "source-suite-2",
+  "store": {
+    "id": "keiyoushi",
+    "metadataUrl": "https://raw.githubusercontent.com/keiyoushi/extensions/repo/index.json",
+    "signingKey": "9add655a78e96c4ec7a53ef89dccb557cb5d767489fac5e785d671a5a75d4da2",
+    "verifiedAt": "2026-10-02"
+  },
+  "cases": [
+    { "caseId": "manga-complete-01", "mediaFormat": "manga", "query": "Golden Kamuy", "aliases": ["Golden Kamuy", "Golden Kamui"] },
+    { "caseId": "manga-complete-02", "mediaFormat": "manga", "query": "Monster", "aliases": ["Monster"] },
+    { "caseId": "manga-mainstream-03", "mediaFormat": "manga", "query": "Attack on Titan", "aliases": ["Attack on Titan", "Shingeki no Kyojin"] },
+    { "caseId": "manga-catalog-04", "mediaFormat": "manga", "query": "Dorohedoro", "aliases": ["Dorohedoro"] },
+    { "caseId": "comic-complete-01", "mediaFormat": "comic", "query": "Invincible", "aliases": ["Invincible", "Invincible (2003)"] },
+    { "caseId": "comic-catalog-02", "mediaFormat": "comic", "query": "Saga", "aliases": ["Saga"] },
+    { "caseId": "comic-complete-03", "mediaFormat": "comic", "query": "Y The Last Man", "aliases": ["Y: The Last Man", "Y The Last Man"] },
+    { "caseId": "comic-franchise-04", "mediaFormat": "comic", "query": "Darth Vader", "aliases": ["Darth Vader", "Star Wars: Darth Vader", "Darth Vader (2015)"] },
+    { "caseId": "webtoon-complete-01", "mediaFormat": "webtoon", "query": "Solo Leveling", "aliases": ["Solo Leveling", "I Alone Level Up"] },
+    { "caseId": "webtoon-longrun-02", "mediaFormat": "webtoon", "query": "Tower of God", "aliases": ["Tower of God"] },
+    { "caseId": "webtoon-catalog-03", "mediaFormat": "webtoon", "query": "Omniscient Reader", "aliases": ["Omniscient Reader", "Omniscient Reader's Viewpoint"] }
+  ],
+  "extensionCandidates": [
+    { "packageName": "eu.kanade.tachiyomi.extension.all.mangadex", "displayName": "MangaDex", "formats": ["manga"], "role": "baseline", "priority": 1, "contentWarning": "CONTENT_WARNING_MIXED", "languages": ["en"], "sourceIds": ["2499283573021220255"] },
+    { "packageName": "eu.kanade.tachiyomi.extension.en.mangareadersite", "displayName": "MangaReader.site", "formats": ["manga"], "role": "baseline", "priority": 1, "contentWarning": "CONTENT_WARNING_SAFE", "languages": ["en"], "sourceIds": ["2527199067559866087"] },
+    { "packageName": "eu.kanade.tachiyomi.extension.en.mangack", "displayName": "Mangack", "formats": ["manga"], "role": "baseline", "priority": 2, "contentWarning": "CONTENT_WARNING_SAFE", "languages": ["en"], "sourceIds": ["7208855238528281651"] },
+    { "packageName": "eu.kanade.tachiyomi.extension.all.comicklive", "displayName": "Comick (Unoriginal)", "formats": ["manga", "comic", "webtoon"], "role": "baseline", "priority": 1, "contentWarning": "CONTENT_WARNING_MIXED", "languages": ["all"], "sourceIds": ["4972933717624256217"] },
+    { "packageName": "eu.kanade.tachiyomi.extension.en.xoxocomics", "displayName": "XOXO Comics", "formats": ["comic"], "role": "baseline", "priority": 1, "contentWarning": "CONTENT_WARNING_SAFE", "languages": ["en"], "sourceIds": ["2385956107618754468"] },
+    { "packageName": "eu.kanade.tachiyomi.extension.en.readcomiconline", "displayName": "ReadComicOnline", "formats": ["comic"], "role": "baseline", "priority": 1, "contentWarning": "CONTENT_WARNING_SAFE", "languages": ["en"], "sourceIds": ["8061953015808280611"] },
+    { "packageName": "eu.kanade.tachiyomi.extension.en.mangamob", "displayName": "Comivex", "formats": ["webtoon"], "role": "baseline", "priority": 1, "contentWarning": "CONTENT_WARNING_SAFE", "languages": ["en"], "sourceIds": ["954997815643613941"] },
+    { "packageName": "eu.kanade.tachiyomi.extension.all.manhwa18cc", "displayName": "Manhwa18.cc", "formats": ["webtoon"], "role": "excluded", "priority": 99, "contentWarning": "CONTENT_WARNING_NSFW", "languages": ["en", "all"], "sourceIds": ["4841602236575491202", "993336618407081332"] },
+    { "packageName": "eu.kanade.tachiyomi.extension.en.weebcentral", "displayName": "Weeb Central", "formats": ["manga"], "role": "candidate", "priority": 1, "contentWarning": "CONTENT_WARNING_MIXED", "languages": ["en"], "sourceIds": ["2131019126180322627"] },
+    { "packageName": "eu.kanade.tachiyomi.extension.all.mangafire", "displayName": "MangaFire", "formats": ["manga"], "role": "candidate", "priority": 2, "contentWarning": "CONTENT_WARNING_MIXED", "languages": ["en"], "sourceIds": ["6084907896154116083"] },
+    { "packageName": "eu.kanade.tachiyomi.extension.en.readallcomicscom", "displayName": "ReadAllComics", "formats": ["comic"], "role": "candidate", "priority": 1, "contentWarning": "CONTENT_WARNING_SAFE", "languages": ["en"], "sourceIds": ["58328287106519523"] },
+    { "packageName": "eu.kanade.tachiyomi.extension.en.readcomicsonline", "displayName": "Read Comics Online", "formats": ["comic"], "role": "candidate", "priority": 2, "contentWarning": "CONTENT_WARNING_SAFE", "languages": ["en"], "sourceIds": ["7185601298150078890"] },
+    { "packageName": "eu.kanade.tachiyomi.extension.all.webtoons", "displayName": "Webtoons.com", "formats": ["webtoon"], "role": "candidate", "priority": 1, "contentWarning": "CONTENT_WARNING_SAFE", "languages": ["en"], "sourceIds": ["2522335540328470744"] },
+    { "packageName": "eu.kanade.tachiyomi.extension.en.asurascans", "displayName": "Asura Scans", "formats": ["webtoon"], "role": "candidate", "priority": 2, "contentWarning": "CONTENT_WARNING_SAFE", "languages": ["en"], "sourceIds": ["6247824327199706550"] },
+    { "packageName": "eu.kanade.tachiyomi.extension.en.flamecomics", "displayName": "Flame Comics", "formats": ["webtoon"], "role": "candidate", "priority": 3, "contentWarning": "CONTENT_WARNING_SAFE", "languages": ["en"], "sourceIds": ["8531542650987673943"] }
+  ]
+}

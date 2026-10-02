@@ -58,9 +58,11 @@ test("private-source titles, resume state, moments, and MangaBaka sync are hidde
   }))).toBe(false);
 
   await page.locator("#nav-moments").click();
-  await expect(page.locator(".moment-card")).toHaveCount(1);
+  await expect(page.locator("#moments-grid .moment-card")).toHaveCount(1);
+  await expect(page.locator("#moment-rediscovery-card .moment-card")).toHaveCount(1);
   await expect(page.locator("#moments-grid")).toContainText("Saga");
   await expect(page.locator("#moments-grid")).not.toContainText("Private Lessons");
+  await expect(page.locator("#moment-rediscovery-card")).not.toContainText("Private Lessons");
 
   await page.locator("#nav-settings").click();
   await page.locator("#show-nsfw-sources").evaluate((checkbox) => {
@@ -71,7 +73,8 @@ test("private-source titles, resume state, moments, and MangaBaka sync are hidde
   await expect(page.locator("#library-list")).toContainText("Private Lessons");
   await expect(page.locator("#nav-reader")).toBeVisible();
   await page.locator("#nav-moments").click();
-  await expect(page.locator(".moment-card")).toHaveCount(2);
+  await expect(page.locator("#moments-grid .moment-card")).toHaveCount(2);
+  await expect(page.locator("#moment-rediscovery-card .moment-card")).toHaveCount(1);
 });
 
 test("LibraryThing key can be stored from Settings without remaining in the DOM", async ({ page }) => {

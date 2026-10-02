@@ -14,6 +14,7 @@
   --shadow: 0 18px 50px rgba(35, 42, 37, 0.12);
   --radius: 12px;
   --reader-motion-duration: 220ms;
+  --reader-motion-easing: cubic-bezier(0.25, 0.1, 0.25, 1);
   --app-nav-height: 4.55rem;
   --app-nav-bottom-inset: max(0.65rem, env(safe-area-inset-bottom));
   --app-nav-stack-bottom: calc(var(--app-nav-bottom-inset) + var(--app-nav-height) + 0.5rem);
@@ -238,7 +239,7 @@ h2 {
   max-width: none;
   max-height: none;
   transform-origin: 0 0;
-  transition: transform var(--reader-motion-duration) cubic-bezier(0.25, 0.1, 0.25, 1);
+  transition: transform var(--reader-motion-duration) var(--reader-motion-easing);
   will-change: transform, opacity;
   box-shadow: var(--shadow);
   background: #fff;
@@ -251,6 +252,8 @@ h2 {
 }
 
 body.reader-full-page #stage-image,
+body.reader-page-reveal #stage-image,
+body.reader-page-reveal .stage-strip,
 body.reader-full-page .stage-strip {
   box-shadow: none;
 }
@@ -277,7 +280,7 @@ body.reader-full-page .stage-strip {
   max-height: none;
   overflow: hidden;
   transform-origin: 0 0;
-  transition: transform var(--reader-motion-duration) cubic-bezier(0.22, 1, 0.36, 1);
+  transition: transform var(--reader-motion-duration) var(--reader-motion-easing);
   will-change: transform, opacity;
   box-shadow: var(--shadow);
   background: #fff;
@@ -321,6 +324,44 @@ body.webtoon-scroll .stage-strip {
 #stage-image.camera-jump,
 .stage-strip.camera-jump {
   transition: none !important;
+}
+
+#stage-image.cinematic-keyframes,
+.stage-strip.cinematic-keyframes {
+  transition: none !important;
+}
+
+body.reader-overview-active .stage {
+  cursor: zoom-out;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+body.reader-overview-active #stage-image,
+body.reader-overview-active .stage-strip {
+  transition: transform 190ms cubic-bezier(0.22, 1, 0.36, 1) !important;
+}
+
+body.reader-overview-restoring #stage-image,
+body.reader-overview-restoring .stage-strip {
+  transition: transform 240ms cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+
+.reader-overview-hint {
+  position: absolute;
+  top: max(0.8rem, env(safe-area-inset-top));
+  left: 50%;
+  z-index: 7;
+  max-width: calc(100% - 2rem);
+  transform: translateX(-50%);
+  border-radius: 999px;
+  padding: 0.45rem 0.75rem;
+  background: rgba(30, 36, 33, 0.86);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 780;
+  text-align: center;
+  pointer-events: none;
 }
 
 #stage-image.page-fade,
@@ -708,7 +749,7 @@ body.webtoon-scroll .stage-strip {
 
 .test-summary {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
   gap: 0.75rem;
   margin-bottom: 1rem;
 }
@@ -1122,6 +1163,31 @@ body.webtoon-scroll .stage-strip {
 
 .manga-card-badge.muted-badge {
   background: rgba(32, 37, 34, 0.78);
+}
+
+.test-feedback {
+  align-items: stretch;
+  margin-top: 0.65rem;
+}
+
+.test-feedback .segmented,
+.test-feedback .test-issue {
+  min-height: 2.75rem;
+}
+
+.test-feedback .segmented[aria-pressed="true"] {
+  border-color: var(--accent-2);
+  background: #e5f1f0;
+  color: var(--ink);
+}
+
+.test-issue {
+  min-width: min(12rem, 100%);
+  flex: 1 1 10rem;
+}
+
+.test-suite-controls {
+  margin-top: 0.8rem;
 }
 
 .manga-card-badge.offline-readiness-badge {
@@ -3053,6 +3119,41 @@ body.has-network-status.reader-focus .reader-topbar {
   gap: 1rem;
 }
 
+.moment-rediscovery {
+  margin-bottom: 1rem;
+  overflow: hidden;
+  background: linear-gradient(145deg, #f7fbfa, #fff8e9);
+}
+
+#moment-rediscovery-card .moment-card-featured {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(12rem, 0.8fr);
+  border-color: rgba(35, 108, 110, 0.2);
+  box-shadow: none;
+}
+
+#moment-rediscovery-card .moment-image-link,
+#moment-rediscovery-card .moment-image-link img {
+  min-height: 14rem;
+  max-height: 28rem;
+}
+
+#moment-rediscovery-card .moment-copy {
+  align-content: center;
+}
+
+@media (max-width: 620px) {
+  #moment-rediscovery-card .moment-card-featured {
+    grid-template-columns: 1fr;
+  }
+
+  #moment-rediscovery-card .moment-image-link,
+  #moment-rediscovery-card .moment-image-link img {
+    min-height: 10rem;
+    max-height: 24rem;
+  }
+}
+
 .moments-grid > .app-empty-state {
   grid-column: 1 / -1;
 }
@@ -3941,6 +4042,7 @@ body.reader-active .reader-controls > button {
 .reader-options-sheet > strong,
 .reader-options-sheet .padding-control,
 .reader-options-sheet .checkbox-field,
+.reader-options-sheet .reader-select-field,
 .reader-options-sheet .reader-wake-lock,
 .sheet-handle {
   grid-column: 1 / -1;
@@ -3948,6 +4050,23 @@ body.reader-active .reader-controls > button {
 
 .reader-options-sheet .checkbox-field {
   margin-top: 0;
+}
+
+.reader-select-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(9rem, 1.2fr);
+  align-items: center;
+  gap: 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.55rem 0.7rem;
+  background: #f7f8f5;
+  color: var(--ink);
+  font-weight: 780;
+}
+
+.reader-select-field select {
+  min-width: 0;
 }
 
 .sheet-handle {

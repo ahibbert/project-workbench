@@ -1,4 +1,12 @@
+import {
+  aggregateDetectionQuality,
+  detectionQualityEntry,
+  summarizeDetectionSuite,
+} from "./detection-quality.js";
+import { classifyPageSpread } from "./page-spread.js";
+
 const expectationStoreKey = "panel-pilot-panel-expectations-v1";
+const feedbackStoreKey = "panel-pilot-panel-quality-feedback-v1";
 
 const testEl = {
   version: document.querySelector("#test-version"),
@@ -10,6 +18,7 @@ const testEl = {
   comicUrl: document.querySelector("#test-comic-url"),
   chapter: document.querySelector("#test-chapter"),
   pageLimit: document.querySelector("#test-page-limit"),
+  format: document.querySelector("#test-format"),
   direction: document.querySelector("#test-direction"),
   load: document.querySelector("#test-load"),
   run: document.querySelector("#test-run"),
@@ -22,6 +31,13 @@ const testEl = {
   summaryMatches: document.querySelector("#summary-matches"),
   summaryAccuracy: document.querySelector("#summary-accuracy"),
   summaryRisky: document.querySelector("#summary-risky"),
+  summaryConfidence: document.querySelector("#summary-confidence"),
+  summaryFallbacks: document.querySelector("#summary-fallbacks"),
+  summaryApproved: document.querySelector("#summary-approved"),
+  suiteFile: document.querySelector("#test-suite-file"),
+  suitePrevious: document.querySelector("#test-suite-previous"),
+  suiteNext: document.querySelector("#test-suite-next"),
+  suiteNote: document.querySelector("#test-suite-note"),
 };
 
 const testState = {
@@ -30,6 +46,9 @@ const testState = {
   pages: [],
   rows: [],
   expectations: loadExpectations(),
+  feedback: loadFeedback(),
+  suite: [],
+  suiteIndex: -1,
 };
 
 testEl.version.textContent = window.PanelPilot?.detectorVersion || "Detector";
@@ -38,6 +57,9 @@ testEl.run.addEventListener("click", runDetection);
 testEl.export.addEventListener("click", exportReport);
 testEl.clear.addEventListener("click", clearExpectations);
 testEl.sourceType.addEventListener("change", updateSourceFields);
+testEl.suiteFile.addEventListener("change", loadSuiteManifest);
+testEl.suitePrevious.addEventListener("click", () => moveSuiteCase(-1));
+testEl.suiteNext.addEventListener("click", () => moveSuiteCase(1));
 applyUrlOptions();
 updateSourceFields();
 
@@ -66,6 +88,7 @@ function applyUrlOptions() {
   if (params.get("chapter")) testEl.chapter.value = params.get("chapter");
   if (params.get("pages")) testEl.pageLimit.value = params.get("pages");
   if (params.get("direction")) testEl.direction.value = params.get("direction");
+  if (["manga", "comic", "webtoon"].includes(params.get("format"))) testEl.format.value = params.get("format");
   if (params.get("autoload") === "1" || params.get("autorun") === "1") {
     window.setTimeout(async () => {
       await loadTestChapter();
@@ -80,6 +103,70 @@ function updateSourceFields() {
   const suwayomi = testEl.sourceType.value === "suwayomi";
   testEl.suwayomiFields.hidden = !suwayomi;
   testEl.comickFields.hidden = suwayomi;
+}
+
+async function loadSuiteManifest(event) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  try {
+    if (file.size > 256 * 1024) throw new Error("Suite manifest must be smaller than 256 KB.");
+    const manifest = JSON.parse(await file.text());
+    const summary = summarizeDetectionSuite(manifest);
+    testState.suite = manifest.cases.slice();
+    testState.suiteIndex = 0;
+    applySuiteCase(testState.suite[0]);
+    renderSuiteStatus(summary);
+    setTestNote("Suite loaded. Review the first case, then load its chapter.", "good");
+  } catch (error) {
+    testState.suite = [];
+    testState.suiteIndex = -1;
+    renderSuiteStatus();
+    setTestNote(`Could not load suite: ${error.message}`, "bad");
+  } finally {
+    event.target.value = "";
+  }
+}
+
+function applySuiteCase(item) {
+  if (!item) return;
+  testEl.format.value = item.format;
+  testEl.direction.value = item.direction === "rtl" ? "rtl" : "ltr";
+  testEl.pageLimit.value = Number(item.maxPages) > 0 ? String(item.maxPages) : "";
+  const isSuwayomi = Number(item.chapterId) > 0;
+  testEl.sourceType.value = isSuwayomi ? "suwayomi" : "comick";
+  if (isSuwayomi) {
+    testEl.mangaId.value = Number(item.mangaId) > 0 ? String(item.mangaId) : "";
+    testEl.chapterId.value = String(item.chapterId);
+  } else {
+    testEl.comicUrl.value = item.url || "";
+    testEl.chapter.value = item.chapter || "1";
+  }
+  updateSourceFields();
+  renderSuiteStatus();
+}
+
+function moveSuiteCase(delta) {
+  const next = testState.suiteIndex + delta;
+  if (next < 0 || next >= testState.suite.length) return;
+  testState.suiteIndex = next;
+  applySuiteCase(testState.suite[next]);
+  setTestNote("Suite case selected. Load the chapter when ready.");
+}
+
+function renderSuiteStatus(summary = null) {
+  const count = testState.suite.length;
+  const index = testState.suiteIndex;
+  testEl.suitePrevious.disabled = index <= 0;
+  testEl.suiteNext.disabled = index < 0 || index >= count - 1;
+  if (!count) {
+    testEl.suiteNote.textContent = "No suite loaded.";
+    return;
+  }
+  const item = testState.suite[index];
+  const totals = summary?.formats
+    ? ` · ${summary.formats.manga} manga · ${summary.formats.comic} comic · ${summary.formats.webtoon} webtoon`
+    : "";
+  testEl.suiteNote.textContent = `Case ${index + 1} of ${count}${item.label ? ` · ${item.label}` : ""}${totals}`;
 }
 
 async function loadTestChapter() {
@@ -124,6 +211,9 @@ async function loadTestChapter() {
       error: "",
       panels: [],
       image: null,
+      reliability: null,
+      decision: null,
+      spread: null,
     }));
     testState.rows = [];
     renderPendingRows();
@@ -180,6 +270,8 @@ async function loadSuwayomiTestChapter() {
       panels: [],
       image: null,
       reliability: null,
+      decision: null,
+      spread: null,
     }));
     testState.rows = [];
     renderPendingRows();
@@ -251,16 +343,67 @@ function makeResultRow(page) {
   expectedWrap.append(expectedText, expected);
   const delta = metric("Delta", "-");
   const overlap = metric("Overlap", "-");
-  metrics.append(detected.node, expectedWrap, delta.node, overlap.node);
+  const confidence = metric("Confidence", "-");
+  const presentation = metric("Presentation", "-");
+  metrics.append(detected.node, expectedWrap, delta.node, overlap.node, confidence.node, presentation.node);
+
+  const feedback = document.createElement("div");
+  feedback.className = "button-row test-feedback";
+  const looksGood = document.createElement("button");
+  looksGood.type = "button";
+  looksGood.className = "segmented";
+  looksGood.textContent = "Looks good";
+  const needsWork = document.createElement("button");
+  needsWork.type = "button";
+  needsWork.className = "segmented";
+  needsWork.textContent = "Needs work";
+  const issue = document.createElement("select");
+  issue.className = "test-issue";
+  issue.setAttribute("aria-label", `Issue on page ${page.index + 1}`);
+  [
+    ["", "Choose issue"],
+    ["missed-panel", "Missed panel"],
+    ["extra-split", "Incorrect split"],
+    ["bubble-crop", "Bubble cropped"],
+    ["reading-order", "Reading order"],
+    ["spread", "Spread handling"],
+    ["bad-fallback", "Wrong fallback"],
+    ["other", "Other"],
+  ].forEach(([value, label]) => issue.add(new Option(label, value)));
+  const savedFeedback = getSavedFeedback(page);
+  issue.value = savedFeedback.issues?.[0] || "";
+  looksGood.setAttribute("aria-pressed", savedFeedback.verdict === "good" ? "true" : "false");
+  needsWork.setAttribute("aria-pressed", savedFeedback.verdict === "bad" ? "true" : "false");
+  looksGood.addEventListener("click", () => setRowFeedback(row, "good"));
+  needsWork.addEventListener("click", () => setRowFeedback(row, "bad"));
+  issue.addEventListener("change", () => setRowFeedback(row, issue.value ? "bad" : row.page.verdict || "unrated", issue.value));
+  feedback.append(looksGood, needsWork, issue);
 
   const detail = document.createElement("p");
   detail.className = "note";
   detail.textContent = "Waiting for detection.";
 
-  body.append(heading, metrics, detail);
+  body.append(heading, metrics, feedback, detail);
   node.append(canvas, body);
 
-  const row = { node, canvas, status, detected, expected, delta, overlap, detail, page };
+  const row = {
+    node,
+    canvas,
+    status,
+    detected,
+    expected,
+    delta,
+    overlap,
+    confidence,
+    presentation,
+    looksGood,
+    needsWork,
+    issue,
+    detail,
+    page,
+  };
+  page.verdict = savedFeedback.verdict || "unrated";
+  page.issues = savedFeedback.issues || [];
   return row;
 }
 
@@ -295,17 +438,38 @@ async function runDetection() {
     row.detail.textContent = "Loading image and detecting panels.";
     try {
       const image = await loadImageWithTimeout(page.url);
-      const panels = await window.PanelPilot.detectPanels(image, testEl.direction.value);
+      const panels = await window.PanelPilot.detectPanelsForMode(
+        image,
+        testEl.direction.value,
+        testEl.format.value,
+        page.url,
+      );
       page.image = image;
       page.panels = panels;
       page.detected = panels.length;
       page.reliability = panelReliability(panels);
+      page.decision = window.PanelPilot.choosePanelDetectionFallback({
+        panels,
+        pageWidth: image.naturalWidth,
+        pageHeight: image.naturalHeight,
+        direction: testEl.direction.value,
+        viewportAspect: window.innerWidth / Math.max(1, window.innerHeight),
+      });
+      page.spread = classifyPageSpread({
+        pageWidth: image.naturalWidth,
+        pageHeight: image.naturalHeight,
+        panels,
+      });
       page.error = "";
       row.node.dataset.panels = JSON.stringify(panels.map(serializePanel));
       row.detected.value.textContent = String(panels.length);
       row.overlap.value.textContent = page.reliability.riskyPairs
         ? String(page.reliability.riskyPairs)
         : "0";
+      row.confidence.value.textContent = `${Math.round((page.decision.confidence || 0) * 100)}%`;
+      row.presentation.value.textContent = page.spread.isSpread
+        ? "Spread"
+        : page.decision.strategy === "panels" ? "Panels" : page.decision.fallback?.label || "Fallback";
       drawOverlay(row.canvas, image, panels);
       scoreRow(row);
     } catch (error) {
@@ -328,6 +492,26 @@ function scoreRow(row) {
   const expected = normalizedExpected(row.expected.value);
   const detected = row.page.detected;
   if (detected === null) return;
+
+  if (row.page.verdict === "bad") {
+    row.node.className = "test-card failed";
+    row.status.textContent = "Needs work";
+    row.detail.textContent = row.page.issues?.length
+      ? `Marked for review: ${row.page.issues.join(", ").replaceAll("-", " ")}.`
+      : "Marked for review.";
+    row.delta.value.textContent = expected === null ? "-" : String(detected - expected);
+    return;
+  }
+
+  if (row.page.verdict === "good") {
+    row.node.className = "test-card passed";
+    row.status.textContent = "Looks good";
+    row.detail.textContent = row.page.spread?.isSpread
+      ? "Verified spread presentation."
+      : "Verified detection and framing.";
+    row.delta.value.textContent = expected === null ? "-" : String(detected - expected);
+    return;
+  }
 
   if (expected === null) {
     const risky = row.page.reliability?.riskyPairs > 0;
@@ -420,6 +604,14 @@ function updateSummary() {
   testEl.summaryRisky.textContent = String(
     testState.pages.reduce((sum, page) => sum + (page.reliability?.riskyPairs || 0), 0)
   );
+  const quality = aggregateDetectionQuality(testState.pages
+    .filter((page) => page.detected !== null)
+    .map((page) => qualityEntryForPage(page)));
+  testEl.summaryConfidence.textContent = quality.averageConfidence === null
+    ? "-"
+    : `${Math.round(quality.averageConfidence * 100)}%`;
+  testEl.summaryFallbacks.textContent = String(quality.fallbacks);
+  testEl.summaryApproved.textContent = String(testState.pages.filter((page) => page.verdict === "good").length);
 }
 
 function resetSummary() {
@@ -428,6 +620,29 @@ function resetSummary() {
   testEl.summaryMatches.textContent = "0";
   testEl.summaryAccuracy.textContent = "-";
   testEl.summaryRisky.textContent = "0";
+  testEl.summaryConfidence.textContent = "-";
+  testEl.summaryFallbacks.textContent = "0";
+  testEl.summaryApproved.textContent = "0";
+}
+
+function qualityEntryForPage(page) {
+  return detectionQualityEntry({
+    format: testEl.format.value,
+    decision: page.decision,
+    detectedCount: page.detected,
+    expectedCount: getExpectedCount(page),
+    verdict: page.verdict,
+    issues: page.issues,
+  });
+}
+
+function exportQualityEntryForPage(page) {
+  return detectionQualityEntry({
+    format: testEl.format.value,
+    decision: page.decision,
+    detectedCount: page.detected,
+    expectedCount: getExpectedCount(page),
+  });
 }
 
 function panelReliability(panels) {
@@ -499,11 +714,49 @@ function loadExpectations() {
   }
 }
 
+function loadFeedback() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(feedbackStoreKey) || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function getSavedFeedback(page) {
+  const saved = testState.feedback[expectationKey(page)];
+  return saved && typeof saved === "object" ? saved : { verdict: "unrated", issues: [] };
+}
+
+function setRowFeedback(row, verdict, issue = row.issue.value) {
+  row.page.verdict = verdict === "good" || verdict === "bad" ? verdict : "unrated";
+  row.page.issues = issue ? [issue] : [];
+  row.looksGood.setAttribute("aria-pressed", row.page.verdict === "good" ? "true" : "false");
+  row.needsWork.setAttribute("aria-pressed", row.page.verdict === "bad" ? "true" : "false");
+  if (row.page.verdict === "good") {
+    row.page.issues = [];
+    row.issue.value = "";
+  }
+  testState.feedback[expectationKey(row.page)] = { verdict: row.page.verdict, issues: row.page.issues };
+  localStorage.setItem(feedbackStoreKey, JSON.stringify(testState.feedback));
+  scoreRow(row);
+  updateSummary();
+}
+
 function clearExpectations() {
-  testState.pages.forEach((page) => delete testState.expectations[expectationKey(page)]);
+  testState.pages.forEach((page) => {
+    delete testState.expectations[expectationKey(page)];
+    delete testState.feedback[expectationKey(page)];
+    page.verdict = "unrated";
+    page.issues = [];
+  });
   localStorage.setItem(expectationStoreKey, JSON.stringify(testState.expectations));
+  localStorage.setItem(feedbackStoreKey, JSON.stringify(testState.feedback));
   testState.rows.forEach((row) => {
     row.expected.value = "";
+    row.issue.value = "";
+    row.looksGood.setAttribute("aria-pressed", "false");
+    row.needsWork.setAttribute("aria-pressed", "false");
     scoreRow(row);
   });
   updateSummary();
@@ -511,12 +764,15 @@ function clearExpectations() {
 }
 
 function exportReport() {
+  const qualityEntries = testState.pages.map((page) => exportQualityEntryForPage(page));
   const report = {
     title: testState.title,
     chapterUrl: testState.chapterUrl,
     detectorVersion: window.PanelPilot?.detectorVersion || "",
     direction: testEl.direction.value,
+    format: testEl.format.value,
     generatedAt: new Date().toISOString(),
+    qualitySummary: aggregateDetectionQuality(qualityEntries),
     pages: testState.pages.map((page) => ({
       index: page.index + 1,
       sourceUrl: page.sourceUrl,
@@ -530,6 +786,9 @@ function exportReport() {
         h: round(panel.h),
       })),
       reliability: page.reliability,
+      presentation: page.decision,
+      spread: page.spread,
+      quality: exportQualityEntryForPage(page),
       error: page.error,
     })),
   };

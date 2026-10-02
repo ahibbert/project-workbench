@@ -18,10 +18,13 @@ sys.path.insert(0, str(ROOT))
 
 from source_benchmark import (  # noqa: E402
     BenchmarkError,
-    DEFAULT_CASES,
     SourceBenchmarkRunner,
     assert_sanitized_report,
+    benchmark_summary,
     classify_exception,
+    load_benchmark_checkpoint,
+    load_suite_manifest,
+    save_benchmark_checkpoint,
 )
 
 
@@ -141,6 +144,8 @@ class PanelsBenchmarkGateway:
 
     def post_report(self, report):
         assert_sanitized_report(report)
+        if report["benchmark"]["run"]["status"] != "completed":
+            raise BenchmarkError("blocked")
         run_id = report["benchmark"]["run"]["runId"]
         existing = self.request_json(
             "/api/source-intelligence/benchmarks?"
@@ -192,6 +197,7 @@ def parse_args(argv=None):
     )
     parser.add_argument("--app", default="http://127.0.0.1:8013")
     parser.add_argument("--base", default="http://localhost:4567")
+    parser.add_argument("--manifest", type=pathlib.Path, default=ROOT / "tools" / "source_suite_manifest.json")
     parser.add_argument("--username", default=os.environ.get("PANEL_PILOT_AUTH_USER", ""))
     parser.add_argument(
         "--password-env",
@@ -208,6 +214,9 @@ def parse_args(argv=None):
     parser.add_argument("--timeout", type=int, default=30)
     parser.add_argument("--app-version", default=os.environ.get("PANEL_PILOT_BUILD_ID", "benchmark-cli-1"))
     parser.add_argument("--run-id")
+    parser.add_argument("--checkpoint", type=pathlib.Path)
+    parser.add_argument("--resume", action="store_true", help="Resume the exact run stored in --checkpoint.")
+    parser.add_argument("--summary-only", action="store_true", help="Print aggregate coverage, quality, and reliability only.")
     parser.add_argument(
         "--execute",
         action="store_true",
@@ -256,20 +265,26 @@ def main(argv=None):
     args = parse_args(argv)
     if args.post and not args.execute:
         raise SystemExit("--post requires --execute")
+    if args.resume and not args.checkpoint:
+        raise SystemExit("--resume requires --checkpoint")
+    if args.summary_only and not args.execute:
+        raise SystemExit("--summary-only requires --execute")
     if args.delay_ms < 0 or args.timeout < 1:
         raise SystemExit("Delay and timeout must be positive")
     password = os.environ.get(args.password_env, "")
     try:
         opener = authenticated_opener(args.app, args.username, password, args.timeout)
         gateway = PanelsBenchmarkGateway(args.app, args.base, opener, args.timeout)
+        manifest = load_suite_manifest(args.manifest)
         sources = select_sources(
             gateway.inventory(), args.format, args.source_id, args.all_sources, args.max_sources
         )
         if not sources:
             raise ValueError("Select at least one eligible source with --source-id or --all-sources")
         selected_formats = set(args.format or ("manga", "comic", "webtoon"))
-        selected_cases = tuple(case for case in DEFAULT_CASES if case.media_format in selected_formats)
+        selected_cases = tuple(case for case in manifest["cases"] if case.media_format in selected_formats)
         plan = {
+            "suiteVersion": manifest["suiteVersion"],
             "sourceIds": [source["sourceId"] for source in sources],
             "caseIds": [case.case_id for case in selected_cases],
             "combinationCount": sum(
@@ -283,17 +298,40 @@ def main(argv=None):
         if not args.execute:
             print(json.dumps({"mode": "plan", **plan}, indent=2))
             return 0
-        run_id = args.run_id or default_run_id()
+        resume_report = None
+        if args.resume:
+            resume_report = load_benchmark_checkpoint(args.checkpoint)
+        elif args.checkpoint and args.checkpoint.exists():
+            raise ValueError("Checkpoint already exists; pass --resume or choose a new path")
+        previous_run = (resume_report or {}).get("benchmark", {}).get("run", {})
+        run_id = previous_run.get("runId") or args.run_id or default_run_id()
+        if args.run_id and previous_run and args.run_id != previous_run.get("runId"):
+            raise ValueError("--run-id does not match the checkpoint")
+        app_version = previous_run.get("appVersion") or args.app_version
         runner = SourceBenchmarkRunner(
             gateway,
             cases=selected_cases,
             images_per_case=args.images_per_case,
             delay_seconds=args.delay_ms / 1000,
         )
-        report = runner.run(sources, run_id, app_version=args.app_version)
+        checkpoint = (
+            (lambda partial: save_benchmark_checkpoint(args.checkpoint, partial))
+            if args.checkpoint else None
+        )
+        report = runner.run(
+            sources,
+            run_id,
+            suite_version=manifest["suiteVersion"],
+            app_version=app_version,
+            resume_report=resume_report,
+            checkpoint=checkpoint,
+        )
+        summary = benchmark_summary(report)
         if args.post:
             posted = gateway.post_report(report)
-            print(json.dumps({"mode": "posted", **plan, **posted}, indent=2))
+            print(json.dumps({"mode": "posted", **plan, **posted, "summary": summary}, indent=2))
+        elif args.summary_only:
+            print(json.dumps(summary, indent=2))
         else:
             print(json.dumps(report, indent=2))
         return 0

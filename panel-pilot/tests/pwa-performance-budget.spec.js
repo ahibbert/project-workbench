@@ -6,13 +6,13 @@ import { fileURLToPath } from "node:url";
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const distRoot = join(projectRoot, "dist");
 const budgets = {
-  indexHtml: 47 * 1024,
-  // Includes offline milestones, source health and source selection, detector
-  // fallback, device repair controls, local reading sessions, and retention.
-  mainJavaScript: 350 * 1024,
+  indexHtml: 50 * 1024,
+  // Includes offline milestones, source intelligence, the Detection Lab,
+  // per-series calibration, spread handling, and enhanced-reader controls.
+  mainJavaScript: 385 * 1024,
   mainCss: 72 * 1024,
-  criticalPath: 490 * 1024,
-  installShell: 725 * 1024,
+  criticalPath: 525 * 1024,
+  installShell: 770 * 1024,
   domContentLoadedMs: 1_500,
   loadMs: 2_000,
   applicationReadyMs: 2_500,

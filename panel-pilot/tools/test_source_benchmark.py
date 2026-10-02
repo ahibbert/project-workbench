@@ -2,6 +2,7 @@ import json
 import pathlib
 import struct
 import sys
+import tempfile
 import unittest
 
 
@@ -13,7 +14,13 @@ from source_benchmark import (  # noqa: E402
     BenchmarkCase,
     SourceBenchmarkRunner,
     assert_sanitized_report,
+    benchmark_summary,
+    build_extension_plan,
     image_metadata,
+    load_benchmark_checkpoint,
+    load_suite_manifest,
+    parse_keiyoushi_catalog,
+    save_benchmark_checkpoint,
 )
 from run_source_benchmark import PanelsBenchmarkGateway, select_sources  # noqa: E402
 
@@ -87,6 +94,15 @@ class FakeOpener:
 
 
 class SourceBenchmarkTests(unittest.TestCase):
+    def test_checked_in_suite_is_format_aware_and_uses_opaque_case_ids(self):
+        manifest = load_suite_manifest(ROOT / "tools" / "source_suite_manifest.json")
+        self.assertEqual(manifest["suiteVersion"], "source-suite-2")
+        formats = {case.media_format for case in manifest["cases"]}
+        self.assertEqual(formats, {"manga", "comic", "webtoon"})
+        self.assertEqual(len({case.case_id for case in manifest["cases"]}), len(manifest["cases"]))
+        self.assertTrue(all(" " not in case.case_id for case in manifest["cases"]))
+        self.assertTrue(all(candidate["role"] == "excluded" for candidate in manifest["extensionCandidates"] if candidate["contentWarning"] == "CONTENT_WARNING_NSFW"))
+
     def test_successful_run_measures_quality_without_persisting_titles_or_urls(self):
         gateway = FakeGateway()
         benchmark_case = BenchmarkCase(
@@ -235,6 +251,175 @@ class SourceBenchmarkTests(unittest.TestCase):
         serialized = json.dumps(posted)
         self.assertNotIn("Golden Kamuy", serialized)
         self.assertNotIn("http://", serialized)
+
+    def test_interrupted_run_resumes_without_repeating_completed_cases(self):
+        cases = (
+            BenchmarkCase("manga-resume-01", "manga", "Golden Kamuy", ("Golden Kamuy",)),
+            BenchmarkCase("manga-resume-02", "manga", "Golden Kamuy", ("Golden Kamuy",)),
+        )
+        first_gateway = FakeGateway()
+        runner = SourceBenchmarkRunner(
+            first_gateway,
+            cases=cases,
+            delay_seconds=0,
+            clock=StepClock(),
+            timestamp=lambda: "2026-10-02T00:00:00Z",
+            sleeper=lambda _seconds: None,
+        )
+        checkpoints = []
+
+        def stop_after_first(report):
+            checkpoints.append(json.loads(json.dumps(report)))
+            raise KeyboardInterrupt
+
+        with self.assertRaises(KeyboardInterrupt):
+            runner.run(
+                [{"sourceId": "source-001", "formats": ["manga"]}],
+                "resume-run",
+                suite_version="resume-suite-1",
+                app_version="test-1",
+                checkpoint=stop_after_first,
+            )
+        self.assertEqual(len(checkpoints[0]["benchmark"]["results"]), 1)
+        self.assertEqual(checkpoints[0]["benchmark"]["run"]["status"], "cancelled")
+
+        resumed_gateway = FakeGateway()
+        resumed = SourceBenchmarkRunner(
+            resumed_gateway,
+            cases=cases,
+            delay_seconds=0,
+            clock=StepClock(),
+            timestamp=lambda: "2026-10-02T00:01:00Z",
+            sleeper=lambda _seconds: None,
+        ).run(
+            [{"sourceId": "source-001", "formats": ["manga"]}],
+            "resume-run",
+            suite_version="resume-suite-1",
+            app_version="test-1",
+            resume_report=checkpoints[0],
+        )
+        self.assertEqual(len(resumed["benchmark"]["results"]), 2)
+        self.assertEqual(sum(1 for call in resumed_gateway.calls if call[0] == "search"), 1)
+        self.assertEqual(resumed["benchmark"]["run"]["status"], "completed")
+
+    def test_checkpoint_file_is_atomic_sanitized_and_summarizable(self):
+        cases = (
+            BenchmarkCase("manga-summary-01", "manga", "Golden Kamuy", ("Golden Kamuy",)),
+            BenchmarkCase("manga-summary-02", "manga", "Golden Kamuy", ("Golden Kamuy",)),
+        )
+        report = SourceBenchmarkRunner(
+            FakeGateway(),
+            cases=cases,
+            delay_seconds=0,
+            clock=StepClock(),
+            timestamp=lambda: "2026-10-02T00:00:00Z",
+            sleeper=lambda _seconds: None,
+        ).run([{"sourceId": "source-001", "formats": ["manga"]}], "summary-run")
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "checkpoint.json"
+            save_benchmark_checkpoint(path, report)
+            loaded = load_benchmark_checkpoint(path)
+            self.assertEqual(loaded, report)
+            serialized = path.read_text(encoding="utf-8")
+            self.assertNotIn("Golden Kamuy", serialized)
+            self.assertNotIn("private.example", serialized)
+        summary = benchmark_summary(report)
+        score = summary["sources"][0]
+        self.assertEqual(score["caseCount"], 2)
+        self.assertEqual(score["usableCases"], 2)
+        self.assertGreater(score["coverage"], 90)
+        self.assertGreater(score["quality"], 65)
+        self.assertGreater(score["reliability"], 75)
+        self.assertEqual(score["verdict"], "recommended")
+
+    def test_catalog_plan_verifies_package_and_variant_identity_without_apk_urls(self):
+        manifest = load_suite_manifest(ROOT / "tools" / "source_suite_manifest.json")
+        selected_packages = {
+            "eu.kanade.tachiyomi.extension.en.readallcomicscom",
+            "eu.kanade.tachiyomi.extension.all.webtoons",
+        }
+        manifest = {
+            **manifest,
+            "extensionCandidates": tuple(
+                item for item in manifest["extensionCandidates"] if item["packageName"] in selected_packages
+            ),
+        }
+        extensions = []
+        for candidate in manifest["extensionCandidates"]:
+            extensions.append({
+                "name": candidate["displayName"],
+                "packageName": candidate["packageName"],
+                "versionName": "1.6.1",
+                "contentWarning": candidate["contentWarning"],
+                "resources": {"apkUrl": "https://private.example/not-persisted.apk"},
+                "sources": [{
+                    "id": source_id,
+                    "name": candidate["displayName"],
+                    "language": candidate["languages"][0],
+                    "homeUrl": "https://private.example/not-persisted",
+                } for source_id in candidate["sourceIds"]],
+            })
+        catalog = parse_keiyoushi_catalog({
+            "signingKey": manifest["store"]["signingKey"],
+            "extensionList": {"extensions": extensions},
+        }, manifest["store"]["signingKey"])
+        plan = build_extension_plan(manifest, catalog, [])
+        self.assertEqual(set(plan["safeInstallRecommendations"]), selected_packages)
+        serialized = json.dumps(plan)
+        self.assertNotIn("apkUrl", serialized)
+        self.assertNotIn("private.example", serialized)
+
+        extensions[0]["sources"][0]["id"] = "999"
+        drifted = parse_keiyoushi_catalog({
+            "signingKey": manifest["store"]["signingKey"],
+            "extensionList": {"extensions": extensions},
+        }, manifest["store"]["signingKey"])
+        drifted_plan = build_extension_plan(manifest, drifted, [])
+        self.assertIn("hold", {item["action"] for item in drifted_plan["packages"]})
+
+    def test_catalog_rejects_unreviewed_signing_key(self):
+        manifest = load_suite_manifest(ROOT / "tools" / "source_suite_manifest.json")
+        with self.assertRaisesRegex(ValueError, "signing key"):
+            parse_keiyoushi_catalog({
+                "signingKey": "0" * 64,
+                "extensionList": {"extensions": []},
+            }, manifest["store"]["signingKey"])
+
+    def test_catalog_marks_obsolete_or_version_drifted_installs_for_review(self):
+        manifest = load_suite_manifest(ROOT / "tools" / "source_suite_manifest.json")
+        candidate = next(
+            item for item in manifest["extensionCandidates"]
+            if item["packageName"] == "eu.kanade.tachiyomi.extension.en.mangack"
+        )
+        manifest = {**manifest, "extensionCandidates": (candidate,)}
+        catalog = parse_keiyoushi_catalog({
+            "signingKey": manifest["store"]["signingKey"],
+            "extensionList": {"extensions": [{
+                "name": candidate["displayName"],
+                "packageName": candidate["packageName"],
+                "versionName": "1.6.0",
+                "contentWarning": candidate["contentWarning"],
+                "sources": [{
+                    "id": candidate["sourceIds"][0],
+                    "name": candidate["displayName"],
+                    "language": "en",
+                }],
+            }]},
+        }, manifest["store"]["signingKey"])
+        obsolete = build_extension_plan(manifest, catalog, [{
+            "packageName": candidate["packageName"],
+            "installed": True,
+            "obsolete": True,
+            "extensionVersion": "1.6.0",
+        }])
+        self.assertEqual(obsolete["updateRecommendations"], [candidate["packageName"]])
+        drifted = build_extension_plan(manifest, catalog, [{
+            "packageName": candidate["packageName"],
+            "installed": True,
+            "obsolete": False,
+            "extensionVersion": "1.5.9",
+        }])
+        self.assertEqual(drifted["updateRecommendations"], [candidate["packageName"]])
 
 
 if __name__ == "__main__":

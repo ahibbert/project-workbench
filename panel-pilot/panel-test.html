@@ -48,6 +48,14 @@
 
         <div class="test-grid">
           <label class="field">
+            <span>Format</span>
+            <select id="test-format">
+              <option value="manga" selected>Manga</option>
+              <option value="comic">Western comic</option>
+              <option value="webtoon">Webtoon</option>
+            </select>
+          </label>
+          <label class="field">
             <span>Chapter</span>
             <input id="test-chapter" type="text" inputmode="decimal" value="1">
           </label>
@@ -70,6 +78,19 @@
           <button id="test-export" type="button" disabled>Export JSON</button>
           <button id="test-clear" type="button" disabled>Clear Expected</button>
         </div>
+        <details class="settings-detail test-suite-controls" open>
+          <summary>Representative test suite</summary>
+          <p class="note">Load a local JSON manifest to step through manga, comic, and webtoon cases. The manifest stays in this browser and is never uploaded.</p>
+          <label class="field">
+            <span>Suite manifest</span>
+            <input id="test-suite-file" type="file" accept="application/json,.json">
+          </label>
+          <div class="button-row">
+            <button id="test-suite-previous" type="button" disabled>Previous case</button>
+            <button id="test-suite-next" type="button" disabled>Next case</button>
+          </div>
+          <p class="note" id="test-suite-note" role="status" aria-live="polite">No suite loaded.</p>
+        </details>
         <p class="note" id="test-note">Load a Suwayomi manga chapter, then run detection. Overlap risks are flagged automatically; add expected panel counts when you want count accuracy too.</p>
       </section>
 
@@ -93,6 +114,18 @@
         <div>
           <strong id="summary-risky">0</strong>
           <span>overlap risks</span>
+        </div>
+        <div>
+          <strong id="summary-confidence">-</strong>
+          <span>confidence</span>
+        </div>
+        <div>
+          <strong id="summary-fallbacks">0</strong>
+          <span>fallbacks</span>
+        </div>
+        <div>
+          <strong id="summary-approved">0</strong>
+          <span>looks good</span>
         </div>
       </section>
 

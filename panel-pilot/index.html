@@ -42,6 +42,9 @@
           <div class="stage-image-wrap" id="stage-image-wrap">
             <img id="stage-image" alt="Current manga page">
           </div>
+          <div class="reader-overview-hint" id="reader-overview-hint" role="status" aria-live="polite" hidden>
+            Release to return to the panel
+          </div>
           <div class="stage-empty" id="stage-empty">
             <strong>No chapter loaded</strong>
             <span>Choose something from Library or Browse.</span>
@@ -117,6 +120,18 @@
               <label class="checkbox-field">
                 <input id="bubble-aware-framing-reader" type="checkbox" checked>
                 <span>Keep speech bubbles in frame</span>
+              </label>
+              <label class="reader-select-field" for="page-reveal-reader">
+                <span>Whole-page reveal</span>
+                <select id="page-reveal-reader">
+                  <option value="off">Off</option>
+                  <option value="before">Before the panels</option>
+                  <option value="after">After the panels</option>
+                </select>
+              </label>
+              <label class="checkbox-field">
+                <input id="cinematic-motion-reader" type="checkbox">
+                <span>Use cinematic panel motion</span>
               </label>
               <div class="reader-wake-lock">
                 <label for="keep-screen-awake">
@@ -298,6 +313,16 @@
           </div>
           <span class="small-count" id="moments-count">0 saved</span>
         </header>
+        <section class="panel moment-rediscovery" id="moment-rediscovery" aria-labelledby="moment-rediscovery-title" hidden>
+          <div class="panel-heading">
+            <div>
+              <p class="kicker">From your collection</p>
+              <h2 id="moment-rediscovery-title">Rediscover a moment</h2>
+            </div>
+            <button class="mini-button" id="moment-rediscovery-next" type="button">Another</button>
+          </div>
+          <div id="moment-rediscovery-card"></div>
+        </section>
         <div class="moments-grid" id="moments-grid" aria-live="polite">
           <div class="app-empty-state" id="moments-empty">
             <strong>No saved moments yet</strong>
@@ -526,6 +551,18 @@
             <button class="segmented" id="motion-quick" type="button">Quick</button>
             <button class="segmented" id="motion-instant" type="button">Instant</button>
           </div>
+          <label class="field" for="page-reveal">
+            <span>Whole-page reveal</span>
+            <select id="page-reveal">
+              <option value="off">Off</option>
+              <option value="before">Before the panels</option>
+              <option value="after">After the panels</option>
+            </select>
+          </label>
+          <label class="checkbox-field">
+            <input id="cinematic-motion" type="checkbox">
+            <span>Use cinematic motion between panels</span>
+          </label>
           <details class="settings-detail">
             <summary>Panel detection</summary>
             <label class="checkbox-field">

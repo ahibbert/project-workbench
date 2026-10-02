@@ -19,6 +19,18 @@ import { reconcileReadingProgress } from "./progress-reconciliation.js";
 import { createReadingStatsClient } from "./reading-stats.js";
 import { createReadingSession, restoreReadingSession } from "./reading-session.js";
 import { choosePanelDetectionFallback } from "./detection-policy.js";
+import {
+  chooseMomentForRediscovery,
+  normalizeMomentRediscoveryState,
+} from "./moments-rediscovery.js";
+import {
+  applyPanelCalibration,
+  framePanelForBubbles,
+  learnPanelCalibration,
+  makePanelCalibrationSeriesId,
+  normalizePanelCalibration,
+} from "./panel-calibration.js";
+import { classifyPageSpread, orderSpreadPanels } from "./page-spread.js";
 
 const storeKey = "panel-pilot-settings";
 const panelModeStoreKey = "panel-pilot-panel-mode";
@@ -42,6 +54,8 @@ const progressOutboxStoreKey = "panel-pilot-progress-outbox";
 const mangabakaOutboxStoreKey = "panel-pilot-mangabaka-outbox";
 const tapHintStoreKey = "panel-pilot-tap-hint-seen";
 const readingSessionStoreKey = "panel-pilot-reading-session-v1";
+const momentRediscoveryStoreKey = "panel-pilot-moment-rediscovery-v1";
+const panelCalibrationStoreKey = "panel-pilot-panel-calibration-v1";
 const readingSessionTickMs = 15 * 1000;
 const readingSessionMaxActiveGapMs = 30 * 1000;
 const reconnectIntervalMs = 45 * 1000;
@@ -243,6 +257,7 @@ const el = {
   readerView: document.querySelector("#reader-view"),
   stageImage: document.querySelector("#stage-image"),
   stageImageWrap: document.querySelector("#stage-image-wrap"),
+  readerOverviewHint: document.querySelector("#reader-overview-hint"),
   readerLoading: document.querySelector("#reader-loading"),
   readerLoadingBar: document.querySelector("#reader-loading-bar"),
   readerLoadingText: document.querySelector("#reader-loading-text"),
@@ -281,6 +296,10 @@ const el = {
   panelPaddingValue: document.querySelector("#panel-padding-value"),
   bubbleAwareFraming: document.querySelector("#bubble-aware-framing"),
   bubbleAwareFramingReader: document.querySelector("#bubble-aware-framing-reader"),
+  pageReveal: document.querySelector("#page-reveal"),
+  pageRevealReader: document.querySelector("#page-reveal-reader"),
+  cinematicMotion: document.querySelector("#cinematic-motion"),
+  cinematicMotionReader: document.querySelector("#cinematic-motion-reader"),
   toggleFit: document.querySelector("#toggle-fit"),
   hideReaderControls: document.querySelector("#hide-reader-controls"),
   toggleReaderMode: document.querySelector("#toggle-reader-mode"),
@@ -292,6 +311,9 @@ const el = {
   finishReadingSession: document.querySelector("#finish-reading-session"),
   momentsGrid: document.querySelector("#moments-grid"),
   momentsCount: document.querySelector("#moments-count"),
+  momentRediscovery: document.querySelector("#moment-rediscovery"),
+  momentRediscoveryCard: document.querySelector("#moment-rediscovery-card"),
+  momentRediscoveryNext: document.querySelector("#moment-rediscovery-next"),
   mangaMode: document.querySelector("#manga-mode"),
   comicMode: document.querySelector("#comic-mode"),
   webtoonMode: document.querySelector("#webtoon-mode"),
@@ -477,6 +499,9 @@ const state = {
   libraryItems: [],
   moments: [],
   momentsLoaded: false,
+  momentRediscoveryState: normalizeMomentRediscoveryState(),
+  momentRediscoveryMomentId: "",
+  panelCalibration: normalizePanelCalibration(),
   librarySavePromise: null,
   librarySavePending: false,
   pendingResume: null,
@@ -496,8 +521,19 @@ const state = {
   panelModeUserOverride: false,
   panelPadding: 8,
   bubbleAwareFraming: true,
+  pageReveal: "off",
+  pageRevealActive: false,
   readingDirection: "rtl",
   readerMotion: "smooth",
+  cinematicMotion: false,
+  readerCamera: null,
+  readerCameraAnimation: null,
+  readerOverview: null,
+  readerOverviewRestoreTimer: 0,
+  readerHoldTimer: 0,
+  readerHoldPointer: null,
+  readerPinch: null,
+  suppressReaderTapUntil: 0,
   connected: false,
   comickChapters: [],
   comickPage: 0,
@@ -789,6 +825,39 @@ function restoreLocalReadingSession() {
   renderReadingSession();
 }
 
+function restorePrivateReaderModels() {
+  try {
+    state.momentRediscoveryState = normalizeMomentRediscoveryState(
+      JSON.parse(localStorage.getItem(momentRediscoveryStoreKey) || "{}")
+    );
+  } catch {
+    state.momentRediscoveryState = normalizeMomentRediscoveryState();
+  }
+  try {
+    state.panelCalibration = normalizePanelCalibration(
+      JSON.parse(localStorage.getItem(panelCalibrationStoreKey) || "{}")
+    );
+  } catch {
+    state.panelCalibration = normalizePanelCalibration();
+  }
+}
+
+function persistMomentRediscoveryState() {
+  try {
+    localStorage.setItem(momentRediscoveryStoreKey, JSON.stringify(state.momentRediscoveryState));
+  } catch {
+    // Rediscovery remains optional when device storage is unavailable.
+  }
+}
+
+function persistPanelCalibration() {
+  try {
+    localStorage.setItem(panelCalibrationStoreKey, JSON.stringify(state.panelCalibration));
+  } catch {
+    // Calibration is a private convenience and never blocks reading.
+  }
+}
+
 let networkReconnectPromise = null;
 let suwayomiRecoveryPromise = null;
 let networkStatusHideTimer = 0;
@@ -822,6 +891,8 @@ function loadSettings() {
     if (libraryFormatFilterValues.includes(saved.libraryFormatFilter)) state.libraryFormatFilter = saved.libraryFormatFilter;
     if (Number.isFinite(saved.panelPadding)) state.panelPadding = clamp(saved.panelPadding, 0, 25);
     if (typeof saved.bubbleAwareFraming === "boolean") state.bubbleAwareFraming = saved.bubbleAwareFraming;
+    if (["off", "before", "after"].includes(saved.pageReveal)) state.pageReveal = saved.pageReveal;
+    if (typeof saved.cinematicMotion === "boolean") state.cinematicMotion = saved.cinematicMotion;
     if (typeof saved.keepScreenAwake === "boolean") state.keepScreenAwake = saved.keepScreenAwake;
   } catch {
     // Ignore malformed local storage.
@@ -839,6 +910,7 @@ function loadSettings() {
   updateSuwayomiLink();
   if (el.panelPadding) el.panelPadding.value = String(state.panelPadding);
   updateBubbleAwareFramingControls();
+  updateReaderInteractionControls();
   if (el.keepScreenAwake) el.keepScreenAwake.checked = state.keepScreenAwake;
   updatePaddingControl();
   updatePanelModeControls();
@@ -868,6 +940,8 @@ function saveSettings() {
       libraryFormatFilter: state.libraryFormatFilter,
       panelPadding: state.panelPadding,
       bubbleAwareFraming: state.bubbleAwareFraming,
+      pageReveal: state.pageReveal,
+      cinematicMotion: state.cinematicMotion,
       keepScreenAwake: state.keepScreenAwake,
       suwayomiSetupOpen: state.suwayomiSetupOpen,
       showNsfwSources: state.showNsfwSources,
@@ -1302,6 +1376,7 @@ function applyReaderMotion() {
   const motion = durations[state.readerMotion] ? state.readerMotion : "smooth";
   state.readerMotion = motion;
   document.documentElement.style.setProperty("--reader-motion-duration", durations[motion]);
+  document.documentElement.style.setProperty("--reader-motion-easing", "cubic-bezier(0.25, 0.1, 0.25, 1)");
   [[el.motionSmooth, "smooth"], [el.motionQuick, "quick"], [el.motionInstant, "instant"]].forEach(([button, value]) => {
     button?.classList.toggle("active", motion === value);
     button?.setAttribute("aria-pressed", motion === value ? "true" : "false");
@@ -1340,6 +1415,9 @@ function setActiveView(view, options = {}) {
   }
   if (view !== "reader") {
     clearWebtoonAutoAdvance();
+    clearReaderHoldGesture();
+    state.readerPinch = null;
+    if (state.readerOverview) endReaderOverview({ cancelled: true });
     state.previousView = view;
   }
 
@@ -5814,6 +5892,7 @@ async function finishChapterAndLoadNext() {
   await loadNextChapter();
   if (keepFullPageReading && state.pages.length) {
     state.fullPage = true;
+    state.pageRevealActive = false;
     updateAfterNavigation();
   }
 }
@@ -7994,6 +8073,7 @@ async function loadChapter(pageUrls, title, options = {}) {
   state.pageIndex = 0;
   state.panelIndex = 0;
   state.fullPage = false;
+  state.pageRevealActive = false;
   clearWebtoonAutoAdvance();
   state.webtoonScrollIntent = false;
   prepareReadingStatsChapterAttempt();
@@ -8053,6 +8133,7 @@ async function loadChapter(pageUrls, title, options = {}) {
     await applyPendingResume(generation, requestIsCurrent);
     if (!loadIsCurrent()) return;
     if (state.panelMode === "webtoon") state.fullPage = true;
+    else if (!resumeMatches && state.pageReveal === "before") state.pageRevealActive = true;
     updateReaderViewToggle();
     setReaderLoading(true, "Rendering reader...", 92);
     if (!loadIsCurrent()) return;
@@ -8101,6 +8182,7 @@ async function applyPendingResume(generation, requestIsCurrent = () => true) {
   const page = state.pages[state.pageIndex];
   state.panelIndex = clamp(Number(resume.panelIndex) || 0, 0, Math.max(0, (page?.panels.length || 1) - 1));
   state.fullPage = resumeMode === "webtoon";
+  state.pageRevealActive = false;
   state.pendingResume = null;
 }
 
@@ -8288,12 +8370,29 @@ async function preparePageEntry(page, index, totalPages, options = {}) {
   page.detectionStrategy = detectionDecision?.strategy || "panels";
   page.detectionConfidence = detectionDecision?.confidence ?? null;
   page.detectionReasons = detectionDecision?.reasonCodes || [];
-  page.panels = detectionDecision?.strategy === "full-width"
+  let presentationPanels = detectionDecision?.strategy === "full-width"
     ? makeFullWidthFallbackPanels(naturalWidth, naturalHeight, viewport)
     : detectionDecision?.strategy === "full-page"
       ? [fullPagePanel(naturalWidth, naturalHeight)]
       : sanitizePanels(detectionDecision?.panels || detectedPanels, naturalWidth, naturalHeight);
+  page.spread = classifyPageSpread({
+    pageWidth: naturalWidth,
+    pageHeight: naturalHeight,
+    panels: presentationPanels,
+  });
+  if (page.detectionStrategy === "panels" && page.spread.safeToReorder) {
+    presentationPanels = orderSpreadPanels(presentationPanels, {
+      classification: page.spread,
+      direction,
+    });
+  }
+  page.panels = presentationPanels;
+  if (page.spread.isSpread) page.detectionReasons = [...new Set([...page.detectionReasons, "two-page-spread"])];
   page.bubbles = mode === "manga" ? sanitizeDetectionBoxes(detectedPanels?.bubbles) : [];
+  page.calibrationSeriesId = currentPanelCalibrationSeriesId();
+  page.calibrationBasePanels = page.panels.map((panel) => ({ ...panel }));
+  page.calibrationCommitted = false;
+  page.calibrationReportedBad = false;
   page.detected = true;
   page.panelMode = mode;
   page.readingDirection = direction;
@@ -9276,6 +9375,12 @@ async function detectPanels(image, direction, pageUrl = "") {
   const modelPanels = await detectMangaPanelsWithModel(image, direction, pageUrl).catch(() => null);
   if (modelPanels) return modelPanels;
   return detectPanelsHeuristic(image, direction);
+}
+
+async function detectPanelsForMode(image, direction, mode = "manga", pageUrl = "") {
+  if (mode === "comic") return detectComicPanels(image, direction, pageUrl);
+  if (mode === "webtoon") return makeWebtoonPanels(image);
+  return detectPanels(image, direction, pageUrl);
 }
 
 async function detectMangaPanelsWithModel(image, direction, pageUrl = "") {
@@ -10946,11 +11051,195 @@ function scheduleViewportFit() {
   }, 140);
 }
 
+function currentPanelCalibrationSeriesId() {
+  const sourceIdentity = state.currentManga?.sourceId
+    || state.activeChapter?.chapter?.manga?.source?.id
+    || state.activeChapter?.type
+    || activeChapterSourceLabel();
+  const titleIdentity = state.currentManga?.mangaId
+    || state.currentManga?.id
+    || state.activeChapter?.chapter?.manga?.id
+    || state.activeChapter?.comicUrl
+    || "";
+  return makePanelCalibrationSeriesId(sourceIdentity, titleIdentity);
+}
+
+function enhancedPanelRect(page, panel) {
+  if (!panel) return panel;
+  let framed = panel;
+  if (state.bubbleAwareFraming && state.panelMode === "manga") {
+    framed = framePanelForBubbles({
+      panel,
+      bubbles: page?.bubbles,
+      panels: page?.panels,
+    }) || panel;
+  }
+  return applyPanelCalibration(
+    framed,
+    state.panelCalibration,
+    page?.calibrationSeriesId || currentPanelCalibrationSeriesId(),
+  );
+}
+
+function commitPageCalibration(page) {
+  if (!page || page.calibrationCommitted) return false;
+  page.calibrationCommitted = true;
+  if (
+    page.panelMode !== "manga"
+    || page.detectionStrategy !== "panels"
+    || !page.calibrationSeriesId
+    || !Array.isArray(page.calibrationBasePanels)
+    || !page.calibrationBasePanels.length
+    || !Array.isArray(page.bubbles)
+    || !page.bubbles.length
+  ) return false;
+  const acceptedPanels = page.calibrationBasePanels.map((panel) => framePanelForBubbles({
+    panel,
+    bubbles: page.bubbles,
+    panels: page.calibrationBasePanels,
+  }) || panel);
+  const changed = acceptedPanels.some((panel, index) => {
+    const base = page.calibrationBasePanels[index];
+    return ["x", "y", "w", "h"].some((key) => Math.abs(Number(panel[key]) - Number(base[key])) > 0.0005);
+  });
+  if (!changed) return false;
+  const result = learnPanelCalibration(state.panelCalibration, {
+    seriesId: page.calibrationSeriesId,
+    accepted: true,
+    strategy: page.detectionStrategy,
+    confidenceFallback: page.detectionStrategy !== "panels",
+    reportedBad: page.calibrationReportedBad === true,
+    detectorConfidence: page.detectionConfidence,
+    detectedPanels: page.calibrationBasePanels,
+    acceptedPanels,
+  });
+  if (!result.learned) return false;
+  state.panelCalibration = result.calibration;
+  persistPanelCalibration();
+  return true;
+}
+
+function cameraTransform(camera) {
+  return `matrix3d(${camera.scale}, 0, 0, 0, 0, ${camera.scale}, 0, 0, 0, 0, 1, 0, ${camera.left}, ${camera.top}, 0, 1)`;
+}
+
+function cameraForTarget(page, target, stageRect) {
+  const imageWidth = page.naturalWidth;
+  const imageHeight = page.naturalHeight;
+  let scale = Math.min(
+    stageRect.width / (imageWidth * target.w),
+    stageRect.height / (imageHeight * target.h)
+  );
+  if (state.panelMode === "webtoon" && !state.fullPage && !state.pageRevealActive) {
+    const widthFitScale = stageRect.width / imageWidth;
+    scale = Math.max(scale, widthFitScale * 0.5);
+  }
+  const renderedWidth = imageWidth * scale;
+  const renderedHeight = imageHeight * scale;
+  const centerX = (target.x + target.w / 2) * renderedWidth;
+  const centerY = (target.y + target.h / 2) * renderedHeight;
+  return {
+    pageIndex: state.pageIndex,
+    panelIndex: state.panelIndex,
+    scale,
+    left: stageRect.width / 2 - centerX,
+    top: stageRect.height / 2 - centerY,
+    centerX: target.x + target.w / 2,
+    centerY: target.y + target.h / 2,
+    aspect: (imageWidth * target.w) / Math.max(1, imageHeight * target.h),
+    target,
+  };
+}
+
+function cinematicTransitionForCameras(previous, next, options = {}) {
+  const baseDuration = Number.isFinite(options.baseDuration) ? options.baseDuration : readerMotionDurationMs();
+  const enabled = options.enabled === undefined ? state.cinematicMotion : Boolean(options.enabled);
+  if (!enabled || baseDuration <= 0 || !previous || !next || previous.pageIndex !== next.pageIndex) {
+    return {
+      duration: Math.max(0, baseDuration),
+      easing: "cubic-bezier(0.25, 0.1, 0.25, 1)",
+      pan: baseDuration <= 0 ? "instant" : "standard",
+      distance: 0,
+      aspectChange: 0,
+    };
+  }
+  const distance = Math.hypot(next.centerX - previous.centerX, next.centerY - previous.centerY);
+  const aspectChange = Math.abs(Math.log(Math.max(0.001, next.aspect) / Math.max(0.001, previous.aspect)));
+  const zoomChange = Math.abs(Math.log(Math.max(0.001, next.scale) / Math.max(0.001, previous.scale)));
+  const pan = distance > 0.38 ? "sweep" : aspectChange > 0.42 || zoomChange > 0.48 ? "reframe" : "glide";
+  const duration = Math.round(clamp(
+    baseDuration * (0.82 + Math.min(0.85, distance) * 0.9 + Math.min(0.8, aspectChange) * 0.32 + Math.min(0.8, zoomChange) * 0.24),
+    Math.min(100, baseDuration),
+    state.readerMotion === "quick" ? 300 : 520
+  ));
+  const easing = pan === "sweep"
+    ? "cubic-bezier(0.22, 1, 0.36, 1)"
+    : pan === "reframe"
+      ? "cubic-bezier(0.16, 1, 0.3, 1)"
+      : "cubic-bezier(0.33, 1, 0.68, 1)";
+  return { duration, easing, pan, distance, aspectChange };
+}
+
+function finishReaderCameraAnimation(animation, element) {
+  if (state.readerCameraAnimation !== animation) return;
+  state.readerCameraAnimation = null;
+  element.classList.remove("cinematic-keyframes");
+}
+
+function applyReaderCamera(element, camera, { pageChanged = false } = {}) {
+  const previous = state.readerCamera;
+  const transition = cinematicTransitionForCameras(previous, camera, {
+    baseDuration: readerMotionDurationMs(),
+    enabled: state.cinematicMotion && !pageChanged && !state.readerOverview,
+  });
+  const targetTransform = cameraTransform(camera);
+  state.readerCameraAnimation?.cancel();
+  state.readerCameraAnimation = null;
+  element.classList.remove("cinematic-keyframes");
+  element.style.setProperty("--reader-motion-duration", `${transition.duration}ms`);
+  element.style.setProperty("--reader-motion-easing", transition.easing);
+  element.dataset.cinematicPan = transition.pan;
+  element.dataset.cinematicDuration = String(transition.duration);
+
+  if (
+    !pageChanged
+    && (transition.pan === "sweep" || transition.pan === "reframe")
+    && typeof element.animate === "function"
+    && previous?.pageIndex === camera.pageIndex
+  ) {
+    const startTransform = getComputedStyle(element).transform === "none"
+      ? element.style.transform
+      : getComputedStyle(element).transform;
+    const zoomOut = transition.pan === "sweep" ? 0.1 : 0.065;
+    const middle = {
+      scale: Math.min(previous.scale, camera.scale) * (1 - zoomOut),
+      left: (previous.left + camera.left) / 2,
+      top: (previous.top + camera.top) / 2,
+    };
+    element.style.transform = targetTransform;
+    element.classList.add("cinematic-keyframes");
+    const animation = element.animate([
+      { transform: startTransform, offset: 0, easing: "cubic-bezier(0.3, 0, 0.5, 1)" },
+      { transform: cameraTransform(middle), offset: 0.42, easing: transition.easing },
+      { transform: targetTransform, offset: 1 },
+    ], { duration: transition.duration, fill: "none" });
+    state.readerCameraAnimation = animation;
+    animation.finished.then(
+      () => finishReaderCameraAnimation(animation, element),
+      () => finishReaderCameraAnimation(animation, element)
+    );
+  } else {
+    element.style.transform = targetTransform;
+  }
+  state.readerCamera = camera;
+}
+
 function fitStage() {
   const page = state.pages[state.pageIndex];
   if (!page?.naturalWidth || !page?.naturalHeight) return;
 
-  const rect = state.fullPage ? fullPagePanel(page.naturalWidth, page.naturalHeight) : currentPanel();
+  const wholePage = state.fullPage || state.pageRevealActive;
+  const rect = wholePage ? fullPagePanel(page.naturalWidth, page.naturalHeight) : currentPanel();
   const stageRect = el.stage.getBoundingClientRect();
   if (continuousWebtoonReading()) {
     layoutContinuousWebtoon(page);
@@ -10958,28 +11247,11 @@ function fitStage() {
   }
   const imageWidth = page.naturalWidth;
   const imageHeight = page.naturalHeight;
-  const framedRect = !state.fullPage && state.bubbleAwareFraming && state.panelMode === "manga"
-    ? bubbleAwarePanelRect(rect, page.bubbles, page.panels)
-    : rect;
-  const target = state.fullPage
+  const framedRect = wholePage ? rect : enhancedPanelRect(page, rect);
+  const target = wholePage
     ? fullPagePanel(imageWidth, imageHeight)
     : expandPanelRect(framedRect || fullPagePanel(imageWidth, imageHeight), state.panelPadding / 100);
-  const margin = 1;
-  let scale = Math.min(
-    stageRect.width / (imageWidth * target.w),
-    stageRect.height / (imageHeight * target.h)
-  ) * margin;
-  if (state.panelMode === "webtoon" && !state.fullPage) {
-    const widthFitScale = stageRect.width / imageWidth;
-    scale = Math.max(scale, widthFitScale * 0.5);
-  }
-
-  const renderedWidth = imageWidth * scale;
-  const renderedHeight = imageHeight * scale;
-  const centerX = (target.x + target.w / 2) * renderedWidth;
-  const centerY = (target.y + target.h / 2) * renderedHeight;
-  const left = stageRect.width / 2 - centerX;
-  const top = stageRect.height / 2 - centerY;
+  const camera = cameraForTarget(page, target, stageRect);
 
   const targetElement = page.stripImages ? ensureStageStrip() : el.stageImage;
   const pageChanged = state.cameraPageChanged;
@@ -10990,13 +11262,179 @@ function fitStage() {
   targetElement.style.width = `${imageWidth}px`;
   targetElement.style.height = `${imageHeight}px`;
   targetElement.style.transformOrigin = "0 0";
-  targetElement.style.transform = `matrix3d(${scale}, 0, 0, 0, 0, ${scale}, 0, 0, 0, 0, 1, 0, ${left}, ${top}, 0, 1)`;
+  applyReaderCamera(targetElement, camera, { pageChanged });
   state.performanceStats.cameraFits += 1;
   state.performanceStats.transformWrites += 1;
   if (pageChanged) {
     window.setTimeout(() => targetElement.classList.remove("camera-jump"), 0);
     window.setTimeout(() => targetElement.classList.remove("page-fade"), Math.max(140, motionDuration));
   }
+}
+
+function readerCameraElement(page = state.pages[state.pageIndex]) {
+  return page?.stripImages ? ensureStageStrip() : el.stageImage;
+}
+
+function readerOverviewAvailable() {
+  return Boolean(
+    state.activeView === "reader"
+    && state.pages[state.pageIndex]?.naturalWidth
+    && !activeReaderModal()
+    && !state.navigationPending
+    && !continuousWebtoonReading()
+    && !state.fullPage
+    && !state.pageRevealActive
+  );
+}
+
+function applyReaderOverviewProgress(progress = 1) {
+  const overview = state.readerOverview;
+  if (!overview?.element?.isConnected) return false;
+  const amount = clamp(Number(progress) || 0, 0, 1);
+  const start = overview.camera;
+  const end = overview.overviewCamera;
+  overview.element.style.transform = cameraTransform({
+    scale: start.scale + (end.scale - start.scale) * amount,
+    left: start.left + (end.left - start.left) * amount,
+    top: start.top + (end.top - start.top) * amount,
+  });
+  overview.progress = amount;
+  return true;
+}
+
+function beginReaderOverview(kind = "hold") {
+  if (state.readerOverview || !readerOverviewAvailable()) return false;
+  const page = state.pages[state.pageIndex];
+  const element = readerCameraElement(page);
+  const stageRect = el.stage.getBoundingClientRect();
+  const camera = state.readerCamera?.pageIndex === state.pageIndex
+    ? { ...state.readerCamera }
+    : cameraForTarget(page, expandPanelRect(currentPanel(), state.panelPadding / 100), stageRect);
+  const overviewCamera = cameraForTarget(page, fullPagePanel(page.naturalWidth, page.naturalHeight), stageRect);
+  state.readerCameraAnimation?.cancel();
+  state.readerCameraAnimation = null;
+  element.classList.remove("cinematic-keyframes");
+  window.clearTimeout(state.readerOverviewRestoreTimer);
+  document.body.classList.remove("reader-overview-restoring");
+  state.readerOverview = {
+    kind,
+    pageIndex: state.pageIndex,
+    panelIndex: state.panelIndex,
+    element,
+    camera,
+    overviewCamera,
+    transform: element.style.transform,
+    width: element.style.width,
+    height: element.style.height,
+    progress: 0,
+  };
+  document.body.classList.add("reader-overview-active");
+  if (el.readerOverviewHint) {
+    el.readerOverviewHint.textContent = kind === "pinch"
+      ? "Release both fingers to return to the panel"
+      : "Release to return to the panel";
+    el.readerOverviewHint.hidden = false;
+  }
+  applyReaderOverviewProgress(kind === "pinch" ? 0.45 : 1);
+  return true;
+}
+
+function endReaderOverview({ cancelled = false } = {}) {
+  const overview = state.readerOverview;
+  if (!overview) return false;
+  state.readerOverview = null;
+  document.body.classList.remove("reader-overview-active");
+  if (el.readerOverviewHint) el.readerOverviewHint.hidden = true;
+  const sameCrop = (
+    overview.element?.isConnected
+    && overview.pageIndex === state.pageIndex
+    && overview.panelIndex === state.panelIndex
+    && !state.fullPage
+    && !state.pageRevealActive
+  );
+  if (sameCrop) {
+    document.body.classList.add("reader-overview-restoring");
+    overview.element.style.width = overview.width;
+    overview.element.style.height = overview.height;
+    overview.element.style.transform = overview.transform;
+    const restoreDuration = readerMotionDurationMs() > 0 ? 240 : 0;
+    window.clearTimeout(state.readerOverviewRestoreTimer);
+    state.readerOverviewRestoreTimer = window.setTimeout(() => {
+      state.readerOverviewRestoreTimer = 0;
+      document.body.classList.remove("reader-overview-restoring");
+    }, restoreDuration);
+  } else {
+    document.body.classList.remove("reader-overview-restoring");
+    scheduleCameraFit();
+  }
+  state.suppressReaderTapUntil = performance.now() + (cancelled ? 120 : 420);
+  return true;
+}
+
+function clearReaderHoldGesture() {
+  window.clearTimeout(state.readerHoldTimer);
+  state.readerHoldTimer = 0;
+  state.readerHoldPointer = null;
+}
+
+function handleReaderPointerDown(event) {
+  if (!event.isPrimary || event.button > 0 || !readerOverviewAvailable() || isInteractiveTarget(event.target)) return;
+  clearReaderHoldGesture();
+  state.readerHoldPointer = {
+    pointerId: event.pointerId,
+    x: event.clientX,
+    y: event.clientY,
+  };
+  state.readerHoldTimer = window.setTimeout(() => {
+    state.readerHoldTimer = 0;
+    if (!state.readerHoldPointer || state.readerPinch || !beginReaderOverview("hold")) return;
+    try { el.stage.setPointerCapture?.(state.readerHoldPointer.pointerId); } catch { /* Capture is best-effort on iPad Safari. */ }
+  }, 360);
+}
+
+function handleReaderPointerMove(event) {
+  const hold = state.readerHoldPointer;
+  if (!hold || hold.pointerId !== event.pointerId || state.readerOverview?.kind === "hold") return;
+  if (Math.hypot(event.clientX - hold.x, event.clientY - hold.y) > 12) clearReaderHoldGesture();
+}
+
+function handleReaderPointerEnd(event) {
+  const hold = state.readerHoldPointer;
+  if (!hold || hold.pointerId !== event.pointerId) return;
+  clearReaderHoldGesture();
+  if (state.readerOverview?.kind === "hold") endReaderOverview({ cancelled: event.type === "pointercancel" });
+}
+
+function touchDistance(touches) {
+  if (!touches || touches.length < 2) return 0;
+  return Math.hypot(
+    Number(touches[0].clientX) - Number(touches[1].clientX),
+    Number(touches[0].clientY) - Number(touches[1].clientY)
+  );
+}
+
+function handleReaderTouchStart(event) {
+  if (continuousWebtoonReading() || event.touches.length < 2 || !readerOverviewAvailable()) return;
+  clearReaderHoldGesture();
+  const distance = Math.max(1, touchDistance(event.touches));
+  if (!beginReaderOverview("pinch")) return;
+  state.readerPinch = { startDistance: distance };
+  event.preventDefault();
+}
+
+function handleReaderTouchMove(event) {
+  if (!state.readerPinch || state.readerOverview?.kind !== "pinch") return;
+  if (event.touches.length < 2) return;
+  const ratio = touchDistance(event.touches) / state.readerPinch.startDistance;
+  applyReaderOverviewProgress(clamp(0.45 + (1 - ratio) * 1.8, 0.3, 1));
+  event.preventDefault();
+}
+
+function handleReaderTouchEnd(event) {
+  if (!state.readerPinch || event.touches.length >= 2) return;
+  state.readerPinch = null;
+  endReaderOverview({ cancelled: event.type === "touchcancel" });
+  event.preventDefault();
 }
 
 async function recoverStripImageNode(page, node, segment) {
@@ -11191,6 +11629,32 @@ function setBubbleAwareFraming(enabled) {
   if (state.activeView === "reader") scheduleCameraFit();
 }
 
+function updateReaderInteractionControls() {
+  [el.pageReveal, el.pageRevealReader].forEach((control) => {
+    if (control) control.value = state.pageReveal;
+  });
+  [el.cinematicMotion, el.cinematicMotionReader].forEach((control) => {
+    if (control) control.checked = state.cinematicMotion;
+  });
+}
+
+function setPageReveal(value) {
+  if (!["off", "before", "after"].includes(value)) return;
+  state.pageReveal = value;
+  if (value === "off" && state.pageRevealActive) {
+    state.pageRevealActive = false;
+    updateAfterNavigation();
+  }
+  updateReaderInteractionControls();
+  saveSettings();
+}
+
+function setCinematicMotion(enabled) {
+  state.cinematicMotion = Boolean(enabled);
+  updateReaderInteractionControls();
+  saveSettings();
+}
+
 function updatePanelModeControls() {
   el.mangaMode?.classList.toggle("active", state.panelMode === "manga");
   el.comicMode?.classList.toggle("active", state.panelMode === "comic");
@@ -11245,6 +11709,7 @@ async function setPanelMode(mode) {
     state.pageIndex = 0;
     state.panelIndex = 0;
     state.fullPage = mode === "webtoon";
+    state.pageRevealActive = mode !== "webtoon" && state.pageReveal === "before";
     if (mode === "webtoon") exitReaderFullscreen();
     renderCurrentPage();
     updateAfterNavigation();
@@ -11343,7 +11808,7 @@ function cancelReaderNavigation() {
 }
 
 function movePanel(delta) {
-  if (activeReaderModal() || !state.pages.length || !Number.isFinite(Number(delta)) || Number(delta) === 0) return;
+  if (activeReaderModal() || state.readerOverview || !state.pages.length || !Number.isFinite(Number(delta)) || Number(delta) === 0) return;
   state.panelMoveQueue.push(Number(delta) > 0 ? 1 : -1);
   state.performanceStats.queuedPanelMoves += 1;
   state.performanceStats.maxPanelMoveQueue = Math.max(
@@ -11378,11 +11843,29 @@ async function performPanelMove(delta) {
     page.panels = sanitizePanels(page?.panels, page?.naturalWidth || 1, page?.naturalHeight || 1);
     state.panelIndex = 0;
   }
+  if (state.pageRevealActive) {
+    if ((state.pageReveal === "before" && delta > 0) || (state.pageReveal === "after" && delta < 0)) {
+      state.pageRevealActive = false;
+      state.panelIndex = delta > 0 ? 0 : Math.max(0, page.panels.length - 1);
+      updateAfterNavigation();
+      return true;
+    }
+    return moveToAdjacentPage(delta);
+  }
   const nextPanel = state.panelIndex + delta;
 
   if (nextPanel >= 0 && nextPanel < page.panels.length) {
     state.panelIndex = nextPanel;
     state.fullPage = false;
+    updateAfterNavigation();
+    return true;
+  }
+
+  if (
+    (delta > 0 && state.pageReveal === "after" && state.panelIndex === page.panels.length - 1)
+    || (delta < 0 && state.pageReveal === "before" && state.panelIndex === 0)
+  ) {
+    state.pageRevealActive = true;
     updateAfterNavigation();
     return true;
   }
@@ -11397,6 +11880,7 @@ async function moveToAdjacentPage(delta) {
   const nextPage = fromPageIndex + delta;
 
   if (nextPage < 0) return false;
+  commitPageCalibration(state.pages[fromPageIndex]);
   if (nextPage >= state.pages.length) {
     if (delta > 0 && state.panelMode === "webtoon" && !state.pages[0]?.complete) {
       const webtoonPage = state.pages[0];
@@ -11498,6 +11982,10 @@ async function moveToAdjacentPage(delta) {
     const panels = state.pages[nextPage].panels;
     state.pageIndex = nextPage;
     state.panelIndex = delta > 0 ? 0 : Math.max(0, panels.length - 1);
+    state.pageRevealActive = (
+      (delta > 0 && state.pageReveal === "before")
+      || (delta < 0 && state.pageReveal === "after")
+    );
     renderCurrentPage();
     updateAfterNavigation();
     trimReaderMemory();
@@ -11666,32 +12154,36 @@ function updateStats() {
   const continuousWebtoon = continuousWebtoonReading();
   el.panelStat.textContent = continuousWebtoon
     ? "Continuous scroll"
+    : state.pageRevealActive ? `Full page reveal · ${state.pageReveal}`
     : state.fullPage ? "Full page"
     : page?.detectionStrategy === "full-page" ? "Full page fallback"
     : page?.detectionStrategy === "full-width" ? `Full width ${state.panelIndex + 1} / ${totalPanels}`
     : totalPanels ? `${unit} ${state.panelIndex + 1} / ${totalPanels}` : `${unit} 0`;
+  if (!continuousWebtoon && page?.spread?.isSpread) el.panelStat.textContent += " · spread";
   const detectedPages = state.pages.filter((item) => item.detected).length;
   const detectedPanels = state.pages.reduce((sum, item) => sum + item.panels.length, 0);
   el.panelCount.textContent = `${detectedPanels} ${unit.toLowerCase()}s on ${detectedPages} pages`;
   if (el.nextPanel) {
     const label = continuousWebtoon
       ? "Scroll down through the webtoon"
+      : state.pageRevealActive ? `Continue from the full-page reveal on page ${state.pageIndex + 1}`
       : state.fullPage ? `Next page. Current page ${state.pageIndex + 1} of ${totalPages}`
       : totalPanels
         ? `Next panel. Current panel ${state.panelIndex + 1} of ${totalPanels}`
         : "Next panel";
     el.nextPanel.setAttribute("aria-label", label);
-    el.nextPanel.title = continuousWebtoon ? "Scroll down" : state.fullPage ? "Next page" : "Next panel";
+    el.nextPanel.title = continuousWebtoon ? "Scroll down" : state.pageRevealActive ? "Continue reading" : state.fullPage ? "Next page" : "Next panel";
   }
   if (el.prevPanel) {
     const label = continuousWebtoon
       ? "Scroll up through the webtoon"
+      : state.pageRevealActive ? `Go back from the full-page reveal on page ${state.pageIndex + 1}`
       : state.fullPage ? `Previous page. Current page ${state.pageIndex + 1} of ${totalPages}`
       : totalPanels
         ? `Previous panel. Current panel ${state.panelIndex + 1} of ${totalPanels}`
         : "Previous panel";
     el.prevPanel.setAttribute("aria-label", label);
-    el.prevPanel.title = continuousWebtoon ? "Scroll up" : state.fullPage ? "Previous page" : "Previous panel";
+    el.prevPanel.title = continuousWebtoon ? "Scroll up" : state.pageRevealActive ? "Go back" : state.fullPage ? "Previous page" : "Previous panel";
   }
   recordCurrentReadingSessionPage();
 }
@@ -11707,7 +12199,7 @@ function renderPanelStrip() {
   const signature = `${state.pageIndex}:${page.panels.map((panel) => [panel.x, panel.y, panel.w, panel.h].map((value) => Number(value).toFixed(4)).join(",")).join("|")}`;
   if (el.panelStrip.dataset.signature === signature) {
     [...el.panelStrip.children].forEach((button, index) => {
-      button.classList.toggle("active", index === state.panelIndex && !state.fullPage);
+      button.classList.toggle("active", index === state.panelIndex && !state.fullPage && !state.pageRevealActive);
     });
     updateStats();
     return;
@@ -11719,7 +12211,7 @@ function renderPanelStrip() {
 
   page.panels.forEach((panel, index) => {
     const button = document.createElement("button");
-    button.className = `panel-thumb${index === state.panelIndex && !state.fullPage ? " active" : ""}`;
+    button.className = `panel-thumb${index === state.panelIndex && !state.fullPage && !state.pageRevealActive ? " active" : ""}`;
     button.type = "button";
     button.dataset.panelIndex = String(index);
     button.title = `${panel.label || "Panel"}, page ${state.pageIndex + 1}`;
@@ -11728,6 +12220,7 @@ function renderPanelStrip() {
       if (state.navigationPending) return;
       state.panelIndex = index;
       state.fullPage = false;
+      state.pageRevealActive = false;
       updateAfterNavigation();
     });
 
@@ -11769,6 +12262,7 @@ async function redetectCurrentPage() {
     await preparePage(state.pageIndex, { force: true });
     state.panelIndex = 0;
     state.fullPage = false;
+    state.pageRevealActive = state.pageReveal === "before";
     updateAfterNavigation();
   } finally {
     setReaderLoading(false);
@@ -11790,6 +12284,7 @@ async function redetectChapterPanels() {
   state.pageIndex = 0;
   state.panelIndex = 0;
   state.fullPage = state.panelMode === "webtoon";
+  state.pageRevealActive = state.panelMode !== "webtoon" && state.pageReveal === "before";
 
   try {
     if (state.panelMode === "webtoon") {
@@ -11815,10 +12310,7 @@ async function redetectChapterPanels() {
 
 function momentCaptureRect(page) {
   const panel = currentPanel() || fullPagePanel(page.naturalWidth, page.naturalHeight);
-  const bubbleAware = state.panelMode === "manga" && state.bubbleAwareFraming
-    ? bubbleAwarePanelRect(panel, page.bubbles, page.panels)
-    : panel;
-  return expandPanelRect(bubbleAware, Math.min(0.08, state.panelPadding / 100));
+  return expandPanelRect(enhancedPanelRect(page, panel), Math.min(0.08, state.panelPadding / 100));
 }
 
 function blobDataUrl(blob) {
@@ -11955,55 +12447,100 @@ function renderMoments() {
   if (el.momentsCount) el.momentsCount.textContent = `${visibleMoments.length} saved`;
   el.momentsGrid.replaceChildren();
   if (!visibleMoments.length) {
+    renderMomentRediscovery([]);
     el.momentsGrid.append(createMomentsEmptyState(
       "No saved moments yet",
       "While reading, open the reader controls and choose “Save this moment.” Panels keeps a high-resolution crop here."
     ));
     return;
   }
+  renderMomentRediscovery(visibleMoments);
   const fragment = document.createDocumentFragment();
   visibleMoments.forEach((moment) => {
-    const card = document.createElement("article");
-    card.className = "moment-card";
-    const imageLink = document.createElement("a");
-    imageLink.className = "moment-image-link";
-    imageLink.href = appUrl(moment.imageUrl);
-    imageLink.target = "_blank";
-    imageLink.rel = "noopener";
-    imageLink.setAttribute("aria-label", `Open ${moment.title || "saved moment"} image`);
-    const image = document.createElement("img");
-    image.src = appUrl(moment.imageUrl);
-    image.alt = `Saved panel from ${moment.title || "Untitled"}`;
-    image.loading = "lazy";
-    image.decoding = "async";
-    imageLink.append(image);
-    const copy = document.createElement("div");
-    copy.className = "moment-copy";
-    const title = document.createElement("strong");
-    title.textContent = moment.title || "Untitled";
-    const chapter = document.createElement("span");
-    chapter.textContent = moment.chapterTitle || `Page ${Number(moment.pageIndex || 0) + 1}`;
-    const details = document.createElement("small");
-    const savedAt = moment.createdAt ? new Date(moment.createdAt).toLocaleDateString() : "Saved";
-    details.textContent = `${savedAt} · ${moment.width || 0}×${moment.height || 0} · ${formatStorageBytes(moment.byteSize, "Image")}`;
-    const actions = document.createElement("div");
-    actions.className = "moment-actions";
-    const download = document.createElement("a");
-    download.className = "text-button moment-download";
-    download.href = appUrl(moment.imageUrl);
-    download.download = `${String(moment.title || "panels-moment").replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").slice(0, 80) || "panels-moment"}.jpg`;
-    download.textContent = "Download";
-    const remove = document.createElement("button");
-    remove.className = "text-button danger-button";
-    remove.type = "button";
-    remove.textContent = "Remove";
-    remove.addEventListener("click", () => { void removeMoment(moment, remove); });
-    actions.append(download, remove);
-    copy.append(title, chapter, details, actions);
-    card.append(imageLink, copy);
-    fragment.append(card);
+    fragment.append(createMomentCard(moment));
   });
   el.momentsGrid.append(fragment);
+}
+
+function createMomentCard(moment, { featured = false } = {}) {
+  const card = document.createElement("article");
+  card.className = featured ? "moment-card moment-card-featured" : "moment-card";
+  const imageLink = document.createElement("a");
+  imageLink.className = "moment-image-link";
+  imageLink.href = appUrl(moment.imageUrl);
+  imageLink.target = "_blank";
+  imageLink.rel = "noopener";
+  imageLink.setAttribute("aria-label", `Open ${moment.title || "saved moment"} image`);
+  const image = document.createElement("img");
+  image.src = appUrl(moment.imageUrl);
+  image.alt = `Saved panel from ${moment.title || "Untitled"}`;
+  image.loading = featured ? "eager" : "lazy";
+  image.decoding = "async";
+  imageLink.append(image);
+  const copy = document.createElement("div");
+  copy.className = "moment-copy";
+  const title = document.createElement("strong");
+  title.textContent = moment.title || "Untitled";
+  const chapter = document.createElement("span");
+  chapter.textContent = moment.chapterTitle || `Page ${Number(moment.pageIndex || 0) + 1}`;
+  const details = document.createElement("small");
+  const savedAt = moment.createdAt ? new Date(moment.createdAt).toLocaleDateString() : "Saved";
+  details.textContent = `${savedAt} · ${moment.width || 0}×${moment.height || 0} · ${formatStorageBytes(moment.byteSize, "Image")}`;
+  const actions = document.createElement("div");
+  actions.className = "moment-actions";
+  const download = document.createElement("a");
+  download.className = "text-button moment-download";
+  download.href = appUrl(moment.imageUrl);
+  download.download = `${String(moment.title || "panels-moment").replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").slice(0, 80) || "panels-moment"}.jpg`;
+  download.textContent = "Download";
+  const remove = document.createElement("button");
+  remove.className = "text-button danger-button";
+  remove.type = "button";
+  remove.textContent = "Remove";
+  remove.addEventListener("click", () => { void removeMoment(moment, remove); });
+  actions.append(download, remove);
+  copy.append(title, chapter, details, actions);
+  card.append(imageLink, copy);
+  return card;
+}
+
+function renderMomentRediscovery(visibleMoments, { advance = false } = {}) {
+  if (!el.momentRediscovery || !el.momentRediscoveryCard) return;
+  if (!visibleMoments.length) {
+    state.momentRediscoveryMomentId = "";
+    el.momentRediscovery.hidden = true;
+    el.momentRediscoveryCard.replaceChildren();
+    return;
+  }
+  let moment = !advance
+    ? visibleMoments.find((candidate) => candidate.id === state.momentRediscoveryMomentId)
+    : null;
+  if (!moment) {
+    const selection = chooseMomentForRediscovery(visibleMoments, {
+      state: state.momentRediscoveryState,
+    });
+    moment = selection?.moment || null;
+    if (selection && state.activeView === "moments") {
+      state.momentRediscoveryState = selection.nextState;
+      persistMomentRediscoveryState();
+    }
+  }
+  if (!moment) {
+    el.momentRediscovery.hidden = true;
+    return;
+  }
+  state.momentRediscoveryMomentId = moment.id;
+  el.momentRediscovery.hidden = false;
+  el.momentRediscoveryCard.replaceChildren(createMomentCard(moment, { featured: true }));
+  if (el.momentRediscoveryNext) el.momentRediscoveryNext.disabled = visibleMoments.length < 2;
+}
+
+function showAnotherMoment() {
+  const visibleMoments = state.showNsfwSources
+    ? state.moments
+    : state.moments.filter((moment) => !isNsfwLibraryItem(moment));
+  state.momentRediscoveryMomentId = "";
+  renderMomentRediscovery(visibleMoments, { advance: true });
 }
 
 async function removeMoment(moment, button) {
@@ -12026,6 +12563,7 @@ async function reportBadPanels() {
     setConnection(state.connected, "Load a page before reporting bad panels.", "bad");
     return;
   }
+  page.calibrationReportedBad = true;
 
   setBusy(el.reportBadPanels, true, "Reporting");
   try {
@@ -12489,6 +13027,7 @@ function syncReaderPresentationClasses() {
   const webtoonScroll = readerActive && state.panelMode === "webtoon" && state.fullPage;
   document.body.classList.toggle("webtoon-scroll", webtoonScroll);
   document.body.classList.toggle("reader-full-page", readerActive && state.fullPage && !webtoonScroll);
+  document.body.classList.toggle("reader-page-reveal", readerActive && state.pageRevealActive);
 }
 
 function scrollContinuousWebtoonToPanel(index = state.panelIndex, behavior = "auto") {
@@ -12618,6 +13157,7 @@ function toggleFullPage() {
   const webtoon = state.panelMode === "webtoon";
   const selectedPanel = state.panelIndex;
   state.fullPage = !state.fullPage;
+  state.pageRevealActive = false;
   if (el.readerOptions?.open) el.readerOptions.open = false;
   if (webtoon) {
     exitReaderFullscreen();
@@ -12825,6 +13365,7 @@ function startBackgroundHealthChecks() {
 }
 
 function handleStageTap(event) {
+  if (performance.now() < state.suppressReaderTapUntil || state.readerOverview || state.readerPinch) return;
   if (activeReaderModal()) return;
   if (el.readerOptions?.open) {
     el.readerOptions.open = false;
@@ -13044,11 +13585,16 @@ function wireEvents() {
   el.panelPadding.addEventListener("input", (event) => setPanelPadding(event.target.value));
   el.bubbleAwareFraming?.addEventListener("change", (event) => setBubbleAwareFraming(event.target.checked));
   el.bubbleAwareFramingReader?.addEventListener("change", (event) => setBubbleAwareFraming(event.target.checked));
+  el.pageReveal?.addEventListener("change", (event) => setPageReveal(event.target.value));
+  el.pageRevealReader?.addEventListener("change", (event) => setPageReveal(event.target.value));
+  el.cinematicMotion?.addEventListener("change", (event) => setCinematicMotion(event.target.checked));
+  el.cinematicMotionReader?.addEventListener("change", (event) => setCinematicMotion(event.target.checked));
   el.toggleFit.addEventListener("click", toggleFullPage);
   el.hideReaderControls?.addEventListener("click", hideReaderControls);
   el.toggleReaderMode?.addEventListener("click", toggleReaderFocus);
   el.redetect.addEventListener("click", redetectCurrentPage);
   el.saveMoment?.addEventListener("click", () => { void saveCurrentMoment(); });
+  el.momentRediscoveryNext?.addEventListener("click", showAnotherMoment);
   el.finishReadingSession?.addEventListener("click", finishReadingSession);
   el.reportBadPanels?.addEventListener("click", reportBadPanels);
   el.redetectChapter?.addEventListener("click", redetectChapterPanels);
@@ -13126,6 +13672,14 @@ function wireEvents() {
   });
 
   el.stage.addEventListener("click", handleStageTap);
+  el.stage.addEventListener("pointerdown", handleReaderPointerDown, { passive: true });
+  el.stage.addEventListener("pointermove", handleReaderPointerMove, { passive: true });
+  el.stage.addEventListener("pointerup", handleReaderPointerEnd, { passive: true });
+  el.stage.addEventListener("pointercancel", handleReaderPointerEnd, { passive: true });
+  el.stage.addEventListener("touchstart", handleReaderTouchStart, { passive: false });
+  el.stage.addEventListener("touchmove", handleReaderTouchMove, { passive: false });
+  el.stage.addEventListener("touchend", handleReaderTouchEnd, { passive: false });
+  el.stage.addEventListener("touchcancel", handleReaderTouchEnd, { passive: false });
   el.stageImageWrap?.addEventListener("scroll", handleWebtoonScroll, { passive: true });
   el.stageImageWrap?.addEventListener("pointerdown", markWebtoonScrollIntent, { passive: true });
   el.stageImageWrap?.addEventListener("touchstart", markWebtoonScrollIntent, { passive: true });
@@ -13230,12 +13784,16 @@ window.PanelPilot = {
   detectorVersion,
   bubbleAwarePanelRect,
   bubblePanelIndex,
+  cinematicTransitionForCameras,
   consolidateMangaPanels,
   detectComicPanels,
   detectComicPanelsWithModel,
   detectPanels,
+  detectPanelsForMode,
   fullPagePanel,
   choosePanelDetectionFallback,
+  classifyPageSpread,
+  orderSpreadPanels,
   makeFullWidthFallbackPanels,
   inferredMediaFormat,
   loadImage,
@@ -13245,6 +13803,22 @@ window.PanelPilot = {
   sanitizeMangaBakaOutbox,
   sortPanels,
   getReaderLifecycleDiagnostics,
+  getReaderInteractionDiagnostics: () => ({
+    overviewActive: Boolean(state.readerOverview),
+    overviewKind: state.readerOverview?.kind || null,
+    pageReveal: state.pageReveal,
+    pageRevealActive: state.pageRevealActive,
+    cinematicMotion: state.cinematicMotion,
+    camera: state.readerCamera ? {
+      pageIndex: state.readerCamera.pageIndex,
+      panelIndex: state.readerCamera.panelIndex,
+      scale: state.readerCamera.scale,
+      left: state.readerCamera.left,
+      top: state.readerCamera.top,
+    } : null,
+    cinematicPan: readerCameraElement()?.dataset?.cinematicPan || "",
+    cinematicDuration: Number(readerCameraElement()?.dataset?.cinematicDuration || 0),
+  }),
   handleReaderVisibilityChange,
   pauseReaderLifecycle,
   resumeReaderLifecycle,
@@ -13284,6 +13858,7 @@ if (el.stage) {
   renderVersionNote();
   initializeInstallExperience();
   loadSettings();
+  restorePrivateReaderModels();
   restoreLocalReadingSession();
   resetReaderVisibilityController();
   renderWakeLockState();
