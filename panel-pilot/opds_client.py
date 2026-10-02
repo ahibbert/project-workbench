@@ -78,7 +78,7 @@ def parse_opds_feed(xml_bytes: bytes, feed_url: str) -> dict[str, Any]:
         raise OpdsError("CWA response is not an OPDS feed", code="invalid_feed")
 
     books: list[dict[str, Any]] = []
-    navigation_hrefs: list[str] = []
+    navigation_entries: list[tuple[str, str]] = []
     for entry in root.findall(ATOM + "entry"):
         entry_id = _text(entry.find(ATOM + "id"), 1000)
         title = _text(entry.find(ATOM + "title"), 1000)
@@ -100,9 +100,13 @@ def parse_opds_feed(xml_bytes: bytes, feed_url: str) -> dict[str, Any]:
         cover = next((link["href"] for link in links if "image" in link["rel"] and link["type"].startswith("image/")), "")
         identifiers = [_text(node, 300) for node in entry.findall(DC + "identifier")]
         isbn = next((value.split(":")[-1] for value in identifiers if "isbn" in value.lower()), "")
-        navigation = next((link["href"] for link in links if link["type"] in ("application/atom+xml", "application/xml") and link["rel"] in ("alternate", "subsection", "http://opds-spec.org/subsection")), "")
+        navigation = next((
+            link["href"] for link in links
+            if link["type"].split(";", 1)[0] in ("application/atom+xml", "application/xml")
+            and link["rel"] in ("", "alternate", "subsection", "http://opds-spec.org/subsection")
+        ), "")
         if navigation and not acquisition:
-            navigation_hrefs.append(navigation)
+            navigation_entries.append((title, navigation))
             continue
         if not acquisition:
             continue
@@ -117,7 +121,7 @@ def parse_opds_feed(xml_bytes: bytes, feed_url: str) -> dict[str, Any]:
             "isbn": isbn[:40],
             "language": _text(entry.find(DC + "language"), 40),
             "publisher": _text(entry.find(DC + "publisher"), 500),
-            "publishedDate": _text(entry.find(DC + "issued"), 80),
+            "publishedDate": _text(entry.find(DC + "issued"), 80) or _text(entry.find(ATOM + "published"), 80),
             "coverHref": cover,
             "acquisitionHref": acquisition,
             "updatedAt": _text(entry.find(ATOM + "updated"), 80),
@@ -131,6 +135,13 @@ def parse_opds_feed(xml_bytes: bytes, feed_url: str) -> dict[str, Any]:
             next_href = urljoin(feed_url, href)
         if rel == "search" and href:
             search_template = urljoin(feed_url, href)
+    # CWA's root catalog offers many overlapping classifications. Following all
+    # of them would duplicate every book and needlessly exhaust OPDS rate limits.
+    # Prefer its canonical alphabetical catalog, then the "All" subsection.
+    preferred = [item for item in navigation_entries if urlparse(item[1]).path.rstrip("/").endswith("/books")]
+    if not preferred:
+        preferred = [item for item in navigation_entries if item[0].strip().casefold() == "all"]
+    navigation_hrefs = [preferred[0][1]] if preferred else [item[1] for item in navigation_entries[:1]]
     return {
         "title": _text(root.find(ATOM + "title")),
         "books": books,
@@ -189,6 +200,8 @@ class OpdsClient:
         if result["nextHref"]:
             result["nextHref"] = self._safe_url(result["nextHref"])
         result["navigationHrefs"] = [self._safe_url(href) for href in result["navigationHrefs"]]
+        if result["searchTemplate"]:
+            result["searchTemplate"] = self._safe_url(result["searchTemplate"])
         return result
 
     def catalog(self, *, maximum_feeds: int = 100, maximum_books: int = 10_000) -> list[dict[str, Any]]:
@@ -210,6 +223,30 @@ class OpdsClient:
                     pending.append(link)
         if pending:
             raise OpdsError("CWA OPDS catalog exceeded the safe pagination limit", code="catalog_too_large")
+        return books
+
+    def search(self, query: str, *, maximum_feeds: int = 20, maximum_books: int = 500) -> list[dict[str, Any]]:
+        query = str(query or "").strip()
+        if len(query) < 2:
+            raise ValueError("OPDS search query must contain at least two characters")
+        root = self.page(self.catalog_url)
+        template = root.get("searchTemplate", "")
+        if not template or "{searchTerms}" not in template:
+            raise OpdsError("CWA OPDS does not advertise search", code="search_unavailable")
+        pending = [template.replace("{searchTerms}", quote_plus(query))]
+        visited: set[str] = set()
+        books: list[dict[str, Any]] = []
+        while pending and len(visited) < maximum_feeds and len(books) < maximum_books:
+            target = self._safe_url(pending.pop(0))
+            if target in visited:
+                continue
+            visited.add(target)
+            page = self.page(target)
+            books.extend(page["books"][:maximum_books - len(books)])
+            if page.get("nextHref") and page["nextHref"] not in visited:
+                pending.append(page["nextHref"])
+        if pending:
+            raise OpdsError("CWA OPDS search exceeded the safe pagination limit", code="catalog_too_large")
         return books
 
     def cover(self, url: str) -> tuple[bytes, str]:
@@ -265,14 +302,3 @@ class OpdsClient:
     def health(self) -> dict[str, Any]:
         page = self.page()
         return {"ok": True, "title": page["title"], "bookCount": len(page["books"])}
-
-    def search(self, query: str) -> dict[str, Any]:
-        query = str(query or "").strip()[:300]
-        if len(query) < 2:
-            raise ValueError("Book search query must contain at least two characters")
-        root = self.page()
-        template = root.get("searchTemplate", "")
-        if template and "{searchTerms}" in template:
-            return self.page(template.replace("{searchTerms}", quote_plus(query)))
-        separator = "&" if "?" in self.catalog_url else "?"
-        return self.page(f"{self.catalog_url}{separator}query={quote_plus(query)}")

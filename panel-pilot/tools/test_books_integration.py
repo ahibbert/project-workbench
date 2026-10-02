@@ -93,13 +93,19 @@ class UpstreamHandler(BaseHTTPRequestHandler):
             return
         host = f"http://127.0.0.1:{self.server.server_address[1]}"
         if parsed.path == "/opds":
-            body = f'''<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><id>root</id><title>Fixture</title><entry><id>nav</id><title>Books</title><link rel="subsection" type="application/atom+xml" href="{host}/opds/books?page=1"/></entry></feed>'''.encode()
-            self.send_payload(200, "application/atom+xml", body)
-        elif parsed.path == "/opds/books" and parse_qs(parsed.query).get("page") == ["1"]:
-            body = f'''<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><id>page1</id><title>Books</title><link rel="next" href="{host}/opds/books?page=2"/><entry><id>urn:alice</id><title>Alice</title><author><name>Lewis Carroll</name></author><link rel="http://opds-spec.org/image" type="image/jpeg" href="{host}/cover.jpg"/><link rel="http://opds-spec.org/acquisition" type="application/epub+zip" href="{host}/alice.epub"/></entry></feed>'''.encode()
+            body = f'''<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><id>root</id><title>Fixture</title><link rel="search" type="application/atom+xml" href="{host}/opds/search/{{searchTerms}}"/><entry><id>nav</id><title>Alphabetical Books</title><link type="application/atom+xml;profile=opds-catalog" href="{host}/opds/books"/></entry></feed>'''.encode()
             self.send_payload(200, "application/atom+xml", body)
         elif parsed.path == "/opds/books":
+            body = f'''<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><id>letters</id><title>Books</title><entry><id>all</id><title>All</title><link rel="subsection" type="application/atom+xml;profile=opds-catalog" href="{host}/opds/books/letter/00?page=1"/></entry></feed>'''.encode()
+            self.send_payload(200, "application/atom+xml", body)
+        elif parsed.path == "/opds/books/letter/00" and parse_qs(parsed.query).get("page") == ["1"]:
+            body = f'''<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><id>page1</id><title>Books</title><link rel="next" href="{host}/opds/books/letter/00?page=2"/><entry><id>urn:alice</id><title>Alice</title><author><name>Lewis Carroll</name></author><link rel="http://opds-spec.org/image" type="image/jpeg" href="{host}/cover.jpg"/><link rel="http://opds-spec.org/acquisition" type="application/epub+zip" href="{host}/alice.epub"/></entry></feed>'''.encode()
+            self.send_payload(200, "application/atom+xml", body)
+        elif parsed.path == "/opds/books/letter/00":
             body = f'''<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><id>page2</id><title>Books</title><entry><id>urn:pride</id><title>Pride and Prejudice</title><author><name>Jane Austen</name></author><link rel="http://opds-spec.org/acquisition" type="application/epub+zip" href="{host}/missing.epub"/></entry></feed>'''.encode()
+            self.send_payload(200, "application/atom+xml", body)
+        elif parsed.path == "/opds/search/Alice":
+            body = f'''<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><id>search</id><title>Search</title><entry><id>urn:alice</id><title>Alice</title><author><name>Lewis Carroll</name></author><link rel="http://opds-spec.org/acquisition" type="application/epub+zip" href="{host}/alice.epub"/></entry></feed>'''.encode()
             self.send_payload(200, "application/atom+xml", body)
         elif parsed.path == "/cover.jpg":
             self.send_payload(200, "image/jpeg", b"\xff\xd8\xff\xd9")
@@ -159,6 +165,7 @@ class OpdsIntegrationTests(unittest.TestCase):
             client = OpdsClient(OpdsConfig(f"{base}/opds", "reader", "fixture-password"))
             books = client.catalog()
             self.assertEqual([book["title"] for book in books], ["Alice", "Pride and Prejudice"])
+            self.assertEqual([book["title"] for book in client.search("Alice")], ["Alice"])
             cover, content_type = client.cover(books[0]["coverHref"])
             self.assertEqual(content_type, "image/jpeg")
             self.assertEqual(cover[:2], b"\xff\xd8")

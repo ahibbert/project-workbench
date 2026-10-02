@@ -275,6 +275,20 @@ class OpdsParsingTests(unittest.TestCase):
         self.assertEqual(book["description"], "A public-domain adventure.")
         self.assertEqual(book["acquisitionHref"], "http://cwa:8083/download/alice.epub")
 
+    def test_cwa_profile_navigation_prefers_books_then_all(self):
+        root = parse_opds_feed(b'''<feed xmlns="http://www.w3.org/2005/Atom">
+          <id>root</id><title>CWA</title>
+          <entry><id>authors</id><title>Authors</title><link href="/opds/author" type="application/atom+xml;profile=opds-catalog"/></entry>
+          <entry><id>books</id><title>Alphabetical Books</title><link href="/opds/books" type="application/atom+xml;profile=opds-catalog"/></entry>
+        </feed>''', "http://cwa:8083/opds")
+        self.assertEqual(root["navigationHrefs"], ["http://cwa:8083/opds/books"])
+        letters = parse_opds_feed(b'''<feed xmlns="http://www.w3.org/2005/Atom">
+          <id>letters</id><title>CWA</title>
+          <entry><id>all</id><title>All</title><link rel="subsection" href="/opds/books/letter/00" type="application/atom+xml;profile=opds-catalog"/></entry>
+          <entry><id>a</id><title>A</title><link rel="subsection" href="/opds/books/letter/A" type="application/atom+xml;profile=opds-catalog"/></entry>
+        </feed>''', "http://cwa:8083/opds/books")
+        self.assertEqual(letters["navigationHrefs"], ["http://cwa:8083/opds/books/letter/00"])
+
     def test_malformed_feed_has_normalized_error(self):
         with self.assertRaises(OpdsError) as raised:
             parse_opds_feed(b"<not-closed", "http://cwa:8083/opds")
