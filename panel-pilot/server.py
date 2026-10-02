@@ -1483,13 +1483,9 @@ class DownloadBufferManager:
                 for failure in reversed(failure_records)
             ],
         })
-        detail_ids = list(dict.fromkeys([
-            *requested,
-            *(failure["chapterId"] for failure in reversed(failure_records)),
-        ]))
-        if detail_ids:
+        if requested:
             try:
-                details = self.chapter_download_details(detail_ids)
+                details = self.chapter_download_details(requested)
                 status["windowChapters"] = []
                 for chapter_id in requested:
                     detail = details.get(chapter_id, {"chapterId": chapter_id})
@@ -1516,9 +1512,16 @@ class DownloadBufferManager:
                     })
                 status["downloaded"] = sum(1 for detail in status["windowChapters"] if detail.get("isDownloaded"))
                 status["downloadStateKnown"] = True
+            except Exception as error:
+                status["statusError"] = str(error)[:300]
+        if failure_records:
+            try:
+                failure_details = self.chapter_download_details([
+                    failure["chapterId"] for failure in reversed(failure_records[-25:])
+                ])
                 status["failedChapters"] = [
                     {
-                        **details.get(failure["chapterId"], {"chapterId": failure["chapterId"]}),
+                        **failure_details.get(failure["chapterId"], {"chapterId": failure["chapterId"]}),
                         "state": "failed",
                         "attempts": failure.get("attempts", 0),
                         "lastError": str(failure.get("lastError") or "")[:500],
@@ -1528,7 +1531,7 @@ class DownloadBufferManager:
                     for failure in reversed(failure_records)
                 ]
             except Exception as error:
-                status["statusError"] = str(error)[:300]
+                status["statusError"] = str(error)[:300] if not status.get("statusError") else status["statusError"]
         return status
 
     def remove(self, chapter_ids):
