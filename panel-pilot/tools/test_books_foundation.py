@@ -9,7 +9,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 import sys
 sys.path.insert(0, str(ROOT))
 
-from books import BookStore, BooksConfig  # noqa: E402
+from books import BookStore, BooksConfig, BooksService  # noqa: E402
 from opds_client import OpdsClient, OpdsError, parse_opds_feed  # noqa: E402
 from shelfmark_client import normalize_metadata_results, normalize_releases  # noqa: E402
 from server import PanelPilotHandler  # noqa: E402
@@ -149,6 +149,56 @@ class ShelfmarkNormalizationTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in releases], ["epub-1"])
         self.assertEqual(releases[0]["format"], "EPUB")
         self.assertEqual(releases[0]["sizeBytes"], 1234)
+
+    def test_release_tokens_keep_raw_download_urls_server_side(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = BooksConfig(
+                enabled=True,
+                database_path=str(pathlib.Path(temporary) / "books.sqlite3"),
+                cache_path=str(pathlib.Path(temporary) / "cache"),
+                sync_interval_seconds=300,
+                shelfmark_base_url="http://shelfmark:8084",
+                shelfmark_api_key="secret-key",
+                cwa_opds_url="http://cwa:8083/opds",
+                cwa_username="reader",
+                cwa_password="password",
+            )
+            service = BooksService(config)
+
+            class FakeShelfmark:
+                queued = None
+
+                def releases(self, provider, provider_book_id):
+                    return [{
+                        "id": "release-1", "source": "direct_download", "title": "Alice EPUB",
+                        "language": "en", "format": "EPUB", "sizeBytes": 2048, "seeders": None,
+                        "_release": {
+                            "source": "direct_download", "source_id": "release-1", "format": "epub",
+                            "download_url": "https://secret-upstream.invalid/alice.epub",
+                        },
+                    }]
+
+                def queue_download(self, release):
+                    self.queued = release
+                    return {"status": "queued"}
+
+            fake = FakeShelfmark()
+            service.shelfmark_client = lambda: fake
+            service._book_tokens["book-token"] = (9999999999, {
+                "provider": "openlibrary", "providerBookId": "alice", "title": "Alice",
+                "authors": ["Lewis Carroll"], "isbn": "9780000000001",
+            })
+            public = service.releases("openlibrary", "alice")
+            self.assertEqual(len(public), 1)
+            self.assertIn("token", public[0])
+            self.assertNotIn("_release", public[0])
+            self.assertNotIn("download_url", repr(public))
+            download = service.queue_download(public[0]["token"], "book-token")
+            self.assertEqual(download["status"], "queued")
+            self.assertEqual(download["taskId"], "release-1")
+            self.assertEqual(fake.queued["download_url"], "https://secret-upstream.invalid/alice.epub")
+            with self.assertRaisesRegex(ValueError, "expired"):
+                service.queue_download(public[0]["token"], "book-token")
 
 
 class OpdsParsingTests(unittest.TestCase):

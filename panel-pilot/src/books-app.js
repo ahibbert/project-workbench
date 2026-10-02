@@ -25,6 +25,10 @@ function bookByline(book) {
 export function createBooksApp({ root, navigate }) {
   let initialized = false;
   let status = null;
+  let searchResults = [];
+  let selectedBook = null;
+  let releaseResults = [];
+  let downloadPoll = 0;
 
   function shell() {
     if (initialized) return;
@@ -61,6 +65,8 @@ export function createBooksApp({ root, navigate }) {
       if (action === "sync") void syncLibrary(event.target.closest("button"));
       if (action === "test-cwa") void testConnection("cwa", event.target.closest("button"));
       if (action === "test-shelfmark") void testConnection("shelfmark", event.target.closest("button"));
+      if (action === "select-book") void loadReleases(Number(event.target.closest("button").dataset.resultIndex));
+      if (action === "queue-release") void queueRelease(Number(event.target.closest("button").dataset.releaseIndex), event.target.closest("button"));
       if (action === "search") navigate("books-search");
       const card = event.target.closest("[data-book-id]");
       if (card) navigate("book-detail", { id: card.dataset.bookId });
@@ -183,14 +189,177 @@ export function createBooksApp({ root, navigate }) {
     }
   }
 
-  function renderSearchPlaceholder() {
+  function humanSize(bytes) {
+    if (!Number.isFinite(bytes) || bytes <= 0) return "Size unknown";
+    const units = ["B", "KB", "MB", "GB"];
+    let value = bytes;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+      value /= 1024;
+      unit += 1;
+    }
+    return `${value >= 10 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
+  }
+
+  function downloadLabel(download) {
+    return {
+      queued: "Queued in Shelfmark",
+      downloading: "Downloading",
+      importing: "Waiting for CWA import",
+      ready: "In library",
+      failed: "Failed",
+      cancelled: "Cancelled",
+    }[download.status] || download.status;
+  }
+
+  async function renderDownloads(container) {
+    try {
+      const { downloads } = await request("/api/books/downloads");
+      container.replaceChildren();
+      if (!downloads?.length) return;
+      const section = element("section", "books-downloads");
+      section.append(element("h2", "", "Acquisition status"));
+      for (const download of downloads) {
+        const row = element("div", "books-download-row");
+        row.dataset.state = download.status;
+        const copy = element("span");
+        copy.append(element("strong", "", download.title), element("small", "", download.error || downloadLabel(download)));
+        row.append(copy);
+        if (download.status === "ready" && download.bookId) {
+          const read = element("button", "mini-button", "Open");
+          read.type = "button";
+          read.addEventListener("click", () => navigate("book-detail", { id: download.bookId }));
+          row.append(read);
+        } else {
+          row.append(element("span", "book-status-pill", downloadLabel(download)));
+        }
+        section.append(row);
+      }
+      container.append(section);
+    } catch {
+      // A Shelfmark outage is reflected in connection state and must not hide search.
+    }
+  }
+
+  function renderSearch() {
     const content = root.querySelector("#books-content");
     const back = element("button", "text-button books-back", "‹ Books");
     back.type = "button";
     back.dataset.booksAction = "back";
-    const panel = element("section", "panel books-search-placeholder");
-    panel.append(element("h2", "", "Find a book"), element("p", "", "Shelfmark search and EPUB release selection arrive in the next phase."));
-    content.replaceChildren(back, panel);
+    const panel = element("section", "panel books-search-panel");
+    panel.append(element("h2", "", "Find a book"), element("p", "books-search-help", "Search Shelfmark metadata, then choose an EPUB release for CWA to import."));
+    const form = element("form", "books-search-form");
+    const input = element("input");
+    input.type = "search";
+    input.name = "query";
+    input.placeholder = "The Mercy of Gods";
+    input.autocomplete = "off";
+    input.minLength = 2;
+    input.required = true;
+    input.setAttribute("aria-label", "Book title or author");
+    const submit = element("button", "primary-button", "Search");
+    submit.type = "submit";
+    form.append(input, submit);
+    const results = element("div", "books-search-results");
+    results.id = "books-search-results";
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      submit.disabled = true;
+      results.replaceChildren(element("p", "books-loading", "Searching Shelfmark…"));
+      try {
+        const payload = await request(`/api/books/search?query=${encodeURIComponent(input.value.trim())}`);
+        searchResults = payload.books || [];
+        selectedBook = null;
+        releaseResults = [];
+        results.replaceChildren();
+        if (!searchResults.length) {
+          results.append(element("p", "books-empty-result", "No matching metadata was found."));
+        }
+        searchResults.forEach((book, index) => {
+          const result = element("button", "book-search-result");
+          result.type = "button";
+          result.dataset.booksAction = "select-book";
+          result.dataset.resultIndex = index;
+          const copy = element("span");
+          copy.append(element("strong", "", book.title), element("small", "", [bookByline(book), book.publishedDate, book.language].filter(Boolean).join(" · ")));
+          result.append(copy, element("span", "", "Choose ›"));
+          results.append(result);
+        });
+      } catch (error) {
+        results.replaceChildren(element("p", "books-error", error.message));
+      } finally {
+        submit.disabled = false;
+      }
+    });
+    panel.append(form, results);
+    const downloadHost = element("div");
+    downloadHost.id = "books-downloads-container";
+    content.replaceChildren(back, panel, downloadHost);
+    void renderDownloads(downloadHost);
+    input.focus({ preventScroll: true });
+  }
+
+  function scheduleDownloadPoll() {
+    downloadPoll = window.setTimeout(async () => {
+      const container = root.querySelector("#books-downloads-container");
+      if (!container || !location.hash.startsWith("#books-search")) return;
+      await renderDownloads(container);
+      scheduleDownloadPoll();
+    }, 10_000);
+  }
+
+  async function loadReleases(index) {
+    selectedBook = searchResults[index];
+    if (!selectedBook) return;
+    const results = root.querySelector("#books-search-results");
+    results.replaceChildren(element("p", "books-loading", `Finding EPUB releases for ${selectedBook.title}…`));
+    try {
+      const payload = await request(`/api/books/releases?provider=${encodeURIComponent(selectedBook.provider)}&bookId=${encodeURIComponent(selectedBook.providerBookId)}`);
+      releaseResults = payload.releases || [];
+      results.replaceChildren();
+      const heading = element("div", "books-release-heading");
+      heading.append(element("strong", "", selectedBook.title), element("span", "", `${releaseResults.length} EPUB release${releaseResults.length === 1 ? "" : "s"}`));
+      results.append(heading);
+      if (!releaseResults.length) {
+        results.append(element("p", "books-empty-result", "Shelfmark found no EPUB releases for this edition. Try another metadata result."));
+        return;
+      }
+      releaseResults.forEach((release, releaseIndex) => {
+        const row = element("div", "book-release-row");
+        const copy = element("span");
+        copy.append(
+          element("strong", "", release.title || `${selectedBook.title} EPUB`),
+          element("small", "", [release.source, release.language || "Language unknown", humanSize(release.sizeBytes), Number.isFinite(release.seeders) ? `${release.seeders} seeders` : ""].filter(Boolean).join(" · ")),
+        );
+        const add = element("button", "primary-button", "Add to Library");
+        add.type = "button";
+        add.dataset.booksAction = "queue-release";
+        add.dataset.releaseIndex = releaseIndex;
+        row.append(copy, add);
+        results.append(row);
+      });
+    } catch (error) {
+      results.replaceChildren(element("p", "books-error", error.message));
+    }
+  }
+
+  async function queueRelease(index, button) {
+    const release = releaseResults[index];
+    if (!release || !selectedBook) return;
+    button.disabled = true;
+    button.textContent = "Queueing…";
+    try {
+      await request("/api/books/downloads", {
+        method: "POST",
+        body: JSON.stringify({ releaseToken: release.token, bookToken: selectedBook.token }),
+      });
+      renderSearch();
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = "Try again";
+      const failure = element("p", "books-error", error.message);
+      button.parentElement.append(failure);
+    }
   }
 
   async function syncLibrary(button) {
@@ -210,13 +379,18 @@ export function createBooksApp({ root, navigate }) {
 
   return {
     async show(route) {
+      window.clearTimeout(downloadPoll);
       shell();
       await loadStatus().catch((error) => {
         root.querySelector("#books-connection-copy").textContent = error.message;
       });
       const id = new URLSearchParams(route.bookQuery || "").get("id");
       if (route.bookRoute === "book-detail" && id) return renderDetail(id);
-      if (route.bookRoute === "books-search") return renderSearchPlaceholder();
+      if (route.bookRoute === "books-search") {
+        renderSearch();
+        scheduleDownloadPoll();
+        return;
+      }
       if (route.bookRoute === "book-read") return renderDetail(id);
       return renderLibrary();
     },

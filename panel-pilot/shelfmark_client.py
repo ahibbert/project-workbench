@@ -86,8 +86,9 @@ def _authors(value: Any) -> list[str]:
 def normalize_metadata_results(payload: Any) -> list[dict[str, Any]]:
     """Normalize known Shelfmark metadata-provider response shapes."""
     normalized: list[dict[str, Any]] = []
+    default_provider = _text(payload.get("provider"), 100) if isinstance(payload, dict) else ""
     for item in _first_list(payload, ("results", "books", "items", "data")):
-        provider = _text(item.get("provider") or item.get("source"), 100)
+        provider = _text(item.get("provider") or item.get("source") or default_provider, 100)
         provider_id = _text(
             item.get("book_id") or item.get("bookId") or item.get("provider_id") or item.get("provider_book_id") or item.get("id"),
             300,
@@ -96,6 +97,7 @@ def normalize_metadata_results(payload: Any) -> list[dict[str, Any]]:
         if not provider_id or not title:
             continue
         identifiers = item.get("identifiers") if isinstance(item.get("identifiers"), dict) else {}
+        isbn = item.get("isbn_13") or item.get("isbn_10") or item.get("isbn") or identifiers.get("isbn") or identifiers.get("ISBN")
         normalized.append({
             "provider": provider,
             "providerBookId": provider_id,
@@ -104,9 +106,12 @@ def normalize_metadata_results(payload: Any) -> list[dict[str, Any]]:
             "authors": _authors(item.get("authors") or item.get("author")),
             "description": _text(item.get("description") or item.get("summary"), 5000),
             "coverUrl": _text(item.get("cover_url") or item.get("coverUrl") or item.get("thumbnail"), 2000),
-            "isbn": _text(item.get("isbn") or identifiers.get("isbn") or identifiers.get("ISBN"), 40),
+            "isbn": _text(isbn, 40),
             "language": _text(item.get("language"), 40),
-            "publishedDate": _text(item.get("published_date") or item.get("publishedDate") or item.get("year"), 40),
+            "publisher": _text(item.get("publisher"), 500),
+            "publishedDate": _text(item.get("published_date") or item.get("publishedDate") or item.get("publish_year") or item.get("year"), 40),
+            "seriesName": _text(item.get("series_name"), 500),
+            "seriesPosition": item.get("series_position") if isinstance(item.get("series_position"), (int, float)) else None,
         })
     return normalized
 
@@ -158,7 +163,7 @@ class ShelfmarkClient:
         redacted = value.replace(self.config.api_key, "[redacted]")
         return redacted.replace(self.base_url.rstrip("/"), "Shelfmark")
 
-    def _request(self, path: str, *, query: dict[str, str] | None = None, method: str = "GET", payload: Any = None, authenticated: bool = True) -> Any:
+    def _request(self, path: str, *, query: dict[str, str] | None = None, method: str = "GET", payload: Any = None, authenticated: bool = True, timeout_seconds: float | None = None) -> Any:
         if not path.startswith("/") or path.startswith("//"):
             raise ValueError("Shelfmark API path must be absolute")
         url = urljoin(self.base_url, path.lstrip("/"))
@@ -173,7 +178,7 @@ class ShelfmarkClient:
             headers["Content-Type"] = "application/json"
         request = Request(url, data=body, headers=headers, method=method)
         try:
-            with self._opener.open(request, timeout=self.config.timeout_seconds) as response:
+            with self._opener.open(request, timeout=timeout_seconds or self.config.timeout_seconds) as response:
                 if _origin(response.geturl()) != _origin(self.base_url):
                     raise ShelfmarkError("Shelfmark returned an unexpected host", code="unsafe_redirect")
                 content = response.read(8_000_001)
@@ -211,7 +216,7 @@ class ShelfmarkClient:
             "provider": _text(provider, 100),
             "book_id": _text(provider_book_id, 300),
             "content_type": "ebook",
-        })
+        }, timeout_seconds=345)
         return normalize_releases(payload)
 
     def queue_download(self, release: dict[str, Any]) -> dict[str, Any]:
@@ -229,3 +234,6 @@ class ShelfmarkClient:
             if error.code not in ("upstream_error", "invalid_response"):
                 raise
             return self._request("/api/status")
+
+    def download_status(self) -> Any:
+        return self._request("/api/status")

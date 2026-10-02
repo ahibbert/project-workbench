@@ -9,8 +9,10 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import sqlite3
 import threading
+import time
 from typing import Any
 
 from opds_client import OpdsClient, OpdsConfig, OpdsError
@@ -331,6 +333,103 @@ class BookStore:
             result = {}
         return {**result, "at": row["updated_at"]}
 
+    def save_download(self, *, task_id: str, provider: str, provider_book_id: str, title: str, isbn: str, authors: list[str]) -> dict[str, Any]:
+        now = utc_now()
+        with self.lock, self.connection() as connection:
+            connection.execute("""
+                INSERT INTO shelfmark_downloads (
+                    task_id, provider, provider_book_id, title, status, progress, error,
+                    expected_isbn, expected_authors_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'queued', 0, '', ?, ?, ?, ?)
+                ON CONFLICT(task_id) DO UPDATE SET
+                    provider = excluded.provider,
+                    provider_book_id = excluded.provider_book_id,
+                    title = excluded.title,
+                    status = 'queued', progress = 0, error = '',
+                    expected_isbn = excluded.expected_isbn,
+                    expected_authors_json = excluded.expected_authors_json,
+                    book_id = NULL, updated_at = excluded.updated_at
+            """, (
+                str(task_id)[:1000], str(provider)[:100], str(provider_book_id)[:300], str(title)[:1000],
+                str(isbn or "")[:40], json.dumps(self._authors(authors), ensure_ascii=True), now, now,
+            ))
+        return self.get_download(task_id)
+
+    @staticmethod
+    def _download_public(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "taskId": row["task_id"],
+            "providerBookId": row["provider_book_id"],
+            "title": row["title"],
+            "status": row["status"],
+            "progress": row["progress"],
+            "error": row["error"],
+            "bookId": row["book_id"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+
+    def get_download(self, task_id: str) -> dict[str, Any] | None:
+        with self.lock, self.connection() as connection:
+            row = connection.execute("SELECT * FROM shelfmark_downloads WHERE task_id = ?", (str(task_id),)).fetchone()
+        return self._download_public(row) if row else None
+
+    def list_downloads(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self.lock, self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM shelfmark_downloads ORDER BY updated_at DESC LIMIT ?",
+                (max(1, min(500, int(limit))),),
+            ).fetchall()
+        return [self._download_public(row) for row in rows]
+
+    def update_download(self, task_id: str, *, status: str, progress: float | None = None, error: str = "") -> None:
+        allowed = {"queued", "downloading", "importing", "ready", "failed", "cancelled"}
+        if status not in allowed:
+            raise ValueError("Invalid book download status")
+        with self.lock, self.connection() as connection:
+            connection.execute(
+                "UPDATE shelfmark_downloads SET status = ?, progress = COALESCE(?, progress), error = ?, updated_at = ? WHERE task_id = ?",
+                (status, progress, str(error or "")[:500], utc_now(), str(task_id)),
+            )
+
+    def reconcile_downloads(self) -> int:
+        ready = 0
+        now = utc_now()
+        with self.lock, self.connection() as connection:
+            downloads = connection.execute(
+                "SELECT * FROM shelfmark_downloads WHERE status NOT IN ('ready', 'failed', 'cancelled')"
+            ).fetchall()
+            books = connection.execute("SELECT * FROM books").fetchall()
+            for download in downloads:
+                candidates = []
+                expected_isbn = str(download["expected_isbn"] or "")
+                if expected_isbn:
+                    candidates = [book for book in books if book["isbn"] == expected_isbn]
+                if not candidates:
+                    title_key = self._normalized_title(download["title"])
+                    try:
+                        expected_authors = json.loads(download["expected_authors_json"] or "[]")
+                    except json.JSONDecodeError:
+                        expected_authors = []
+                    author_key = self._normalized_title(expected_authors[0]) if expected_authors else ""
+                    for book in books:
+                        try:
+                            book_authors = json.loads(book["authors_json"] or "[]")
+                        except json.JSONDecodeError:
+                            book_authors = []
+                        if self._normalized_title(book["title"]) != title_key:
+                            continue
+                        if author_key and (not book_authors or self._normalized_title(book_authors[0]) != author_key):
+                            continue
+                        candidates.append(book)
+                if len(candidates) == 1:
+                    connection.execute(
+                        "UPDATE shelfmark_downloads SET status = 'ready', progress = 1, error = '', book_id = ?, updated_at = ? WHERE task_id = ?",
+                        (int(candidates[0]["id"]), now, download["task_id"]),
+                    )
+                    ready += 1
+        return ready
+
 
 class BooksService:
     def __init__(self, config: BooksConfig):
@@ -342,6 +441,9 @@ class BooksService:
         self._stop_event = threading.Event()
         self._worker: threading.Thread | None = None
         self._last_error = ""
+        self._release_tokens: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._book_tokens: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._release_lock = threading.Lock()
 
     def shelfmark_client(self) -> ShelfmarkClient:
         if not self.config.shelfmark_configured:
@@ -378,6 +480,7 @@ class BooksService:
         try:
             books = self.opds_client().catalog()
             result = self.store.sync_books(books)
+            result["downloadsReady"] = self.store.reconcile_downloads()
             self._last_error = ""
             return {"status": "complete", **result}
         except Exception as error:
@@ -415,6 +518,105 @@ class BooksService:
         if not book["cover_href"]:
             raise KeyError("Book has no cover")
         return self.opds_client().cover(book["cover_href"])
+
+    def search(self, query: str) -> list[dict[str, Any]]:
+        results = self.shelfmark_client().search(query)
+        now = time.monotonic()
+        public = []
+        with self._release_lock:
+            self._book_tokens = {token: value for token, value in self._book_tokens.items() if value[0] > now}
+            for result in results:
+                token = secrets.token_urlsafe(24)
+                self._book_tokens[token] = (now + 30 * 60, dict(result))
+                public.append({**result, "coverUrl": "", "token": token})
+        return public
+
+    def releases(self, provider: str, provider_book_id: str) -> list[dict[str, Any]]:
+        releases = self.shelfmark_client().releases(provider, provider_book_id)
+        now = time.monotonic()
+        public = []
+        with self._release_lock:
+            self._release_tokens = {
+                token: value for token, value in self._release_tokens.items() if value[0] > now
+            }
+            for release in releases:
+                token = secrets.token_urlsafe(24)
+                raw = release.pop("_release")
+                self._release_tokens[token] = (now + 15 * 60, raw)
+                public.append({**release, "token": token})
+            if len(self._release_tokens) > 2000:
+                oldest = sorted(self._release_tokens.items(), key=lambda item: item[1][0])
+                for token, _ in oldest[:len(self._release_tokens) - 2000]:
+                    self._release_tokens.pop(token, None)
+        return public
+
+    def queue_download(self, release_token: str, book_token: str) -> dict[str, Any]:
+        with self._release_lock:
+            cached = self._release_tokens.pop(str(release_token or ""), None)
+            cached_book = self._book_tokens.get(str(book_token or ""))
+        if not cached or cached[0] <= time.monotonic():
+            raise ValueError("This release selection expired; search for releases again")
+        if not cached_book or cached_book[0] <= time.monotonic():
+            raise ValueError("This book selection expired; search for the book again")
+        book = cached_book[1]
+        title = str(book.get("title") or "").strip()[:1000]
+        provider = str(book.get("provider") or "").strip()[:100]
+        provider_book_id = str(book.get("providerBookId") or "").strip()[:300]
+        if not title or not provider or not provider_book_id:
+            raise ValueError("Book metadata is incomplete")
+        raw_release = dict(cached[1])
+        raw_release.update({
+            "title": raw_release.get("title") or title,
+            "author": ", ".join(self.store._authors(book.get("authors"))),
+            "content_type": "ebook",
+        })
+        response = self.shelfmark_client().queue_download(raw_release)
+        task_id = str(
+            response.get("task_id") or response.get("taskId") or response.get("id")
+            or raw_release.get("source_id") or raw_release.get("sourceId") or raw_release.get("id")
+        )
+        download = self.store.save_download(
+            task_id=task_id,
+            provider=provider,
+            provider_book_id=provider_book_id,
+            title=title,
+            isbn=str(book.get("isbn") or ""),
+            authors=self.store._authors(book.get("authors")),
+        )
+        self.store.reconcile_downloads()
+        return self.store.get_download(task_id) or download
+
+    def refresh_downloads(self) -> list[dict[str, Any]]:
+        tracked = {item["taskId"]: item for item in self.store.list_downloads()}
+        if not tracked or not self.config.shelfmark_configured:
+            return list(tracked.values())
+        payload = self.shelfmark_client().download_status()
+        if isinstance(payload, dict):
+            mappings = {
+                "queued": "queued", "resolving": "downloading", "locating": "downloading",
+                "downloading": "downloading", "complete": "importing", "available": "importing",
+                "done": "importing", "error": "failed", "cancelled": "cancelled",
+            }
+            for shelfmark_status, local_status in mappings.items():
+                entries = payload.get(shelfmark_status)
+                if isinstance(entries, dict):
+                    iterator = entries.items()
+                elif isinstance(entries, list):
+                    iterator = ((str(item.get("id") or item.get("source_id") or ""), item) for item in entries if isinstance(item, dict))
+                else:
+                    continue
+                for task_id, item in iterator:
+                    if task_id not in tracked:
+                        continue
+                    progress_value = item.get("progress") if isinstance(item, dict) else None
+                    try:
+                        progress = max(0.0, min(1.0, float(progress_value) / (100 if float(progress_value) > 1 else 1)))
+                    except (TypeError, ValueError):
+                        progress = None
+                    error = "Shelfmark reported a download failure" if local_status == "failed" else ""
+                    self.store.update_download(task_id, status=local_status, progress=progress, error=error)
+        self.store.reconcile_downloads()
+        return self.store.list_downloads()
 
 
 def utc_now() -> str:

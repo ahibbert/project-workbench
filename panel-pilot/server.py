@@ -2723,6 +2723,9 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/books/sync":
                 self.handle_books_sync()
                 return
+            if parsed.path == "/api/books/downloads":
+                self.handle_books_download_post()
+                return
             if parsed.path == "/api/library":
                 self.handle_library_post()
                 return
@@ -2932,6 +2935,15 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/books":
                 self.handle_books_list(parsed)
                 return
+            if parsed.path == "/api/books/search":
+                self.handle_books_search(parsed)
+                return
+            if parsed.path == "/api/books/releases":
+                self.handle_books_releases(parsed)
+                return
+            if parsed.path == "/api/books/downloads":
+                self.handle_books_downloads_get()
+                return
             book_cover = re.fullmatch(r"/api/books/(\d+)/cover", parsed.path)
             if book_cover:
                 self.handle_book_cover(int(book_cover.group(1)))
@@ -3091,6 +3103,45 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         self.send_header("Content-Length", str(len(content)))
         self.end_headers()
         self.wfile.write(content)
+
+    def handle_books_search(self, parsed):
+        if not self.books_config().enabled:
+            self.send_json({"error": "Books are disabled", "code": "feature_disabled"}, status=404)
+            return
+        try:
+            query = parse_qs(parsed.query).get("query", [""])[0]
+            self.send_json({"books": self.books_service().search(query)})
+        except ValueError as error:
+            self.send_json({"error": str(error)}, status=400)
+
+    def handle_books_releases(self, parsed):
+        if not self.books_config().enabled:
+            self.send_json({"error": "Books are disabled", "code": "feature_disabled"}, status=404)
+            return
+        params = parse_qs(parsed.query)
+        provider = params.get("provider", [""])[0]
+        provider_book_id = params.get("bookId", [""])[0]
+        if not provider or not provider_book_id:
+            self.send_json({"error": "provider and bookId are required"}, status=400)
+            return
+        self.send_json({"releases": self.books_service().releases(provider, provider_book_id)})
+
+    def handle_books_download_post(self):
+        if not self.books_config().enabled:
+            self.send_json({"error": "Books are disabled", "code": "feature_disabled"}, status=404)
+            return
+        try:
+            payload = self.read_json_request(65536)
+            download = self.books_service().queue_download(payload.get("releaseToken"), payload.get("bookToken"))
+            self.send_json({"download": download}, status=202)
+        except ValueError as error:
+            self.send_json({"error": str(error)}, status=400)
+
+    def handle_books_downloads_get(self):
+        if not self.books_config().enabled:
+            self.send_json({"error": "Books are disabled", "code": "feature_disabled"}, status=404)
+            return
+        self.send_json({"downloads": self.books_service().refresh_downloads()})
 
     def mangabaka_json(self, path, method="GET", payload=None, token=None):
         if not path.startswith("/") or path.startswith("//"):

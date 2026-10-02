@@ -15,7 +15,7 @@ const book = {
   lastSyncedAt: "2026-10-02T00:00:00Z",
 };
 
-async function stubApp(page, { booksEnabled }) {
+async function stubApp(page, { booksEnabled, queued = [] }) {
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     if (url.pathname === "/api/books/status") {
@@ -40,6 +40,31 @@ async function stubApp(page, { booksEnabled }) {
     }
     if (url.pathname === "/api/books/1") {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ book }) });
+      return;
+    }
+    if (url.pathname === "/api/books/search") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ books: [{
+        provider: "openlibrary", providerBookId: "OL123W", token: "opaque-book-token", title: "The Mercy of Gods",
+        authors: ["James S. A. Corey"], isbn: "9780356517759", language: "en", publishedDate: "2024",
+      }] }) });
+      return;
+    }
+    if (url.pathname === "/api/books/releases") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ releases: [{
+        token: "opaque-release-token", id: "release-1", source: "direct_download",
+        title: "The Mercy of Gods EPUB", language: "en", format: "EPUB", sizeBytes: 2_000_000,
+      }] }) });
+      return;
+    }
+    if (url.pathname === "/api/books/downloads" && route.request().method() === "POST") {
+      queued.push(route.request().postDataJSON());
+      await route.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify({ download: {
+        taskId: "release-1", title: "The Mercy of Gods", status: "queued", progress: 0,
+      } }) });
+      return;
+    }
+    if (url.pathname === "/api/books/downloads") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ downloads: [] }) });
       return;
     }
     if (url.pathname === "/api/library") {
@@ -77,4 +102,24 @@ test("enabled books library is lazy-loaded and opens an isolated detail view", a
   await expect(page).toHaveURL(/#book-detail\?id=1$/);
   await expect(page.locator(".book-detail h2")).toHaveText("Alice's Adventures in Wonderland");
   await expect(page.locator(".book-detail .primary-button")).toBeEnabled();
+});
+
+test("Shelfmark acquisition offers only normalized EPUB choices and queues an opaque token", async ({ page }) => {
+  const queued = [];
+  await stubApp(page, { booksEnabled: true, queued });
+  await page.goto("/", { waitUntil: "networkidle" });
+  await page.locator("#nav-books").click();
+  await page.getByRole("button", { name: "Search" }).click();
+  await expect(page).toHaveURL(/#books-search$/);
+  await page.getByRole("searchbox", { name: "Book title or author" }).fill("The Mercy of Gods");
+  await page.locator(".books-search-form").getByRole("button", { name: "Search" }).click();
+  await page.getByRole("button", { name: /The Mercy of Gods/ }).click();
+  await expect(page.locator(".book-release-row")).toContainText("EPUB");
+  await expect(page.locator(".book-release-row")).not.toContainText("PDF");
+  await page.getByRole("button", { name: "Add to Library" }).click();
+  await expect.poll(() => queued.length).toBe(1);
+  expect(queued[0].releaseToken).toBe("opaque-release-token");
+  expect(queued[0].bookToken).toBe("opaque-book-token");
+  expect(JSON.stringify(queued[0])).not.toContain("download_url");
+  expect(queued[0].book).toBeUndefined();
 });
