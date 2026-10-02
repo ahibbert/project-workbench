@@ -478,6 +478,14 @@ body.webtoon-scroll .stage-strip {
   min-width: 0;
 }
 
+.reader-error-source {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  border-color: #7aa9a7;
+  background: #edf6f5;
+  color: var(--accent-2);
+}
+
 .reader-complete-actions {
   grid-template-columns: 1fr;
 }

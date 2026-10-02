@@ -1196,7 +1196,11 @@ test("loading progress, modal focus, and the Next action remain accessible", asy
   await expect(page.locator("#reader-error")).toBeVisible({ timeout: 15_000 });
   await expect(page.locator("#reader-error-retry")).toBeFocused();
   await page.keyboard.press("Shift+Tab");
+  await expect(page.locator("#reader-error-source")).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
   await expect(page.locator("#reader-error-back")).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(page.locator("#reader-error-source")).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(page.locator("#reader-error-retry")).toBeFocused();
 });

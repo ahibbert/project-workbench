@@ -235,6 +235,7 @@ const el = {
   readerErrorMessage: document.querySelector("#reader-error-message"),
   readerErrorRetry: document.querySelector("#reader-error-retry"),
   readerErrorBack: document.querySelector("#reader-error-back"),
+  readerErrorSource: document.querySelector("#reader-error-source"),
   readerComplete: document.querySelector("#reader-complete"),
   readerCompleteTitle: document.querySelector("#reader-complete-title"),
   readerCompleteMessage: document.querySelector("#reader-complete-message"),
@@ -569,6 +570,7 @@ const state = {
   mangabakaSyncPromise: null,
   mangabakaSyncTimer: null,
   pendingMangaBakaRecommendation: null,
+  sourceMigration: null,
   setupReturnToBrowse: false,
   cameraPageChanged: false,
   readerModalReturnFocus: null,
@@ -1274,7 +1276,9 @@ async function finishSuwayomiSetup() {
   state.setupReturnToBrowse = false;
   setActiveView("browse");
   updateSuwayomiSetupState();
-  if (state.pendingMangaBakaRecommendation) {
+  if (state.sourceMigration) {
+    await continueSourceMigrationSearch();
+  } else if (state.pendingMangaBakaRecommendation) {
     await continuePendingRecommendationSearch();
   } else {
     requestAnimationFrame(() => el.searchQuery?.focus({ preventScroll: true }));
@@ -1767,7 +1771,18 @@ function findMangaBakaSource(series) {
 function updateRecommendationContext() {
   if (!el.recommendationContext) return;
   const series = state.pendingMangaBakaRecommendation;
-  el.recommendationContext.hidden = !series;
+  const migration = state.sourceMigration;
+  el.recommendationContext.hidden = !series && !migration;
+  if (migration) {
+    const sourceName = migration.fromManga?.sourceLabel || migration.fromLibraryItem?.sourceLabel || "current source";
+    if (el.recommendationContextTitle) el.recommendationContextTitle.textContent = `Move ${migration.title} to another source`;
+    if (el.recommendationContextNote) {
+      el.recommendationContextNote.textContent = `Currently using ${sourceName}. Choose a matching result below; your Panels status and reading position will be retained.`;
+    }
+    if (el.clearRecommendationContext) el.clearRecommendationContext.textContent = "Cancel";
+    return;
+  }
+  if (el.clearRecommendationContext) el.clearRecommendationContext.textContent = "Clear";
   if (!series) return;
   const title = mangaBakaTitle(series);
   if (el.recommendationContextTitle) el.recommendationContextTitle.textContent = `Finding ${title}`;
@@ -1778,14 +1793,25 @@ function updateRecommendationContext() {
 
 function clearRecommendationContext() {
   state.pendingMangaBakaRecommendation = null;
+  state.sourceMigration = null;
   state.setupReturnToBrowse = false;
   updateRecommendationContext();
+  updateMangaDetailActions();
 }
 
 async function continuePendingRecommendationSearch() {
   const series = state.pendingMangaBakaRecommendation;
   if (!series) return;
   el.searchQuery.value = mangaBakaTitle(series);
+  el.searchQuery.scrollIntoView({ behavior: "smooth", block: "center" });
+  await searchSource();
+}
+
+async function continueSourceMigrationSearch() {
+  const migration = state.sourceMigration;
+  if (!migration) return;
+  el.searchQuery.value = migration.title;
+  el.sourceSelect.value = allSourcesValue;
   el.searchQuery.scrollIntoView({ behavior: "smooth", block: "center" });
   await searchSource();
 }
@@ -2581,7 +2607,7 @@ async function loadSources() {
         : `Loaded ${state.visibleSources.length} usable sources from ${state.sources.length} installed sources. Indexing titles in the background.`,
       "good"
     );
-    if (state.setupReturnToBrowse && state.pendingMangaBakaRecommendation && state.visibleSources.length) {
+    if (state.setupReturnToBrowse && (state.pendingMangaBakaRecommendation || state.sourceMigration) && state.visibleSources.length) {
       await finishSuwayomiSetup();
     }
     return true;
@@ -2702,10 +2728,19 @@ async function searchSource() {
   setBusy(el.searchSource, true, "Searching");
   let hadIndexedResults = false;
   try {
-    const sources =
+    let sources =
       selectedSource === allSourcesValue
         ? state.visibleSources
         : state.visibleSources.filter((source) => String(source.id) === String(selectedSource));
+    if (state.sourceMigration) {
+      sources = sources.filter((source) => String(source.id) !== String(state.sourceMigration.fromManga?.sourceId));
+      if (!sources.length) {
+        state.mangas = [];
+        renderMangaResults();
+        setConnection(state.connected, "No other enabled source is available for this title.", "bad");
+        return;
+      }
+    }
     const indexedResults = searchIndexedMangas(query, sources);
     hadIndexedResults = indexedResults.length > 0;
     if (hadIndexedResults && isCurrentSearch()) {
@@ -2940,6 +2975,7 @@ function renderMangaResults() {
   el.mangaResults.replaceChildren();
   if (!state.mangas.length) {
     const recommendation = state.pendingMangaBakaRecommendation;
+    const migration = state.sourceMigration;
     const empty = document.createElement("div");
     empty.className = "app-empty-state compact-empty";
     const art = document.createElement("span");
@@ -2947,9 +2983,13 @@ function renderMangaResults() {
     art.setAttribute("aria-hidden", "true");
     art.textContent = "⌕";
     const heading = document.createElement("strong");
-    heading.textContent = recommendation ? `No source match for ${mangaBakaTitle(recommendation)}` : "No matching manga";
+    heading.textContent = migration
+      ? `No alternative source match for ${migration.title}`
+      : recommendation ? `No source match for ${mangaBakaTitle(recommendation)}` : "No matching manga";
     const copy = document.createElement("span");
-    copy.textContent = recommendation
+    copy.textContent = migration
+      ? "Try a shorter title or enable another Suwayomi source, then search again."
+      : recommendation
       ? "Try a shorter title, choose another source, or clear this recommendation."
       : "Try a shorter title or choose another source.";
     const retry = document.createElement("button");
@@ -2970,7 +3010,9 @@ function renderMangaResults() {
     const button = createCoverButton(manga, {
       title: manga.title,
       eyebrow: sourceText || "Source",
-      meta: exactRecommendationMatch
+      meta: state.sourceMigration
+        ? "Use this source"
+        : exactRecommendationMatch
         ? "Exact title match"
         : state.pendingMangaBakaRecommendation
           ? "Alternative source result"
@@ -2996,11 +3038,22 @@ function renderMangaResults() {
         serverUrl: currentDeviceServerUrl(),
       };
       const existingLibraryItem = currentMangaLibraryItem();
-      state.currentManga = taggedMediaItem(
-        { ...state.currentManga, ...existingLibraryItem },
-        existingLibraryItem?.mediaFormat || automaticMediaFormat(state.currentManga),
-        existingLibraryItem?.mediaFormatSource || (existingLibraryItem?.mediaFormat ? "" : "automatic")
-      );
+      const migrationItem = state.sourceMigration?.fromLibraryItem;
+      if (state.sourceMigration) {
+        state.currentManga = taggedMediaItem({
+          ...state.currentManga,
+          mangabakaId: migrationItem?.mangabakaId,
+          mangabakaTitle: migrationItem?.mangabakaTitle,
+          mangabakaMatchSource: migrationItem?.mangabakaMatchSource,
+          mangabakaAccountKey: migrationItem?.mangabakaAccountKey,
+        }, inferredMediaFormat(migrationItem || state.sourceMigration.fromManga), migrationItem?.mediaFormatSource || "automatic");
+      } else {
+        state.currentManga = taggedMediaItem(
+          { ...state.currentManga, ...existingLibraryItem },
+          existingLibraryItem?.mediaFormat || automaticMediaFormat(state.currentManga),
+          existingLibraryItem?.mediaFormatSource || (existingLibraryItem?.mediaFormat ? "" : "automatic")
+        );
+      }
       if (mangabaka) {
         state.pendingMangaBakaRecommendation = null;
         updateRecommendationContext();
@@ -3083,14 +3136,20 @@ function currentMangaLibraryItem() {
 
 function updateMangaDetailActions() {
   const item = currentMangaLibraryItem();
+  const migrationTarget = Boolean(
+    state.sourceMigration &&
+    state.currentManga &&
+    String(state.currentManga.sourceId) !== String(state.sourceMigration.fromManga?.sourceId)
+  );
   if (el.detailPrimary) {
-    el.detailPrimary.textContent = item?.chapterId
-      ? `Continue ${item.chapterTitle || "reading"}`
-      : "Start reading";
+    el.detailPrimary.textContent = migrationTarget
+      ? "Switch source to read"
+      : item?.chapterId ? `Continue ${item.chapterTitle || "reading"}` : "Start reading";
+    el.detailPrimary.disabled = migrationTarget;
   }
   if (el.detailLibrary) {
-    el.detailLibrary.textContent = item ? "In library" : "Add to library";
-    el.detailLibrary.disabled = Boolean(item);
+    el.detailLibrary.textContent = migrationTarget ? "Switch to this source" : item ? "In library" : "Add to library";
+    el.detailLibrary.disabled = migrationTarget ? false : Boolean(item);
   }
 }
 
@@ -3152,6 +3211,167 @@ async function addCurrentMangaToLibrary() {
     showToast("Added to Plan to read.", "good");
   } catch (error) {
     showToast(`Could not add this title: ${friendlySourceErrorMessage(error)}`, "bad");
+  } finally {
+    setBusy(el.detailLibrary, false);
+    updateMangaDetailActions();
+  }
+}
+
+function migrationChapterNumber(chapter) {
+  const direct = Number(chapter?.chapterNumber);
+  if (Number.isFinite(direct)) return direct;
+  const nameMatch = String(chapter?.name || chapter?.chapterTitle || "").match(/(?:chapter|ch\.?)[^0-9]*([0-9]+(?:\.[0-9]+)?)/i);
+  return nameMatch ? Number(nameMatch[1]) : Number.NaN;
+}
+
+function beginSourceMigration() {
+  const fromManga = state.currentManga;
+  if (!fromManga?.id || !fromManga?.sourceId) {
+    showToast("This title is not linked to a Suwayomi source yet.", "bad");
+    return;
+  }
+  const chapterId = Number(el.chapterId?.value || state.activeChapter?.chapterId);
+  const attemptedChapter = state.chapters.find((chapter) => Number(chapter.id) === chapterId)
+    || (Number(state.activeChapter?.chapterId) === chapterId ? state.activeChapter?.chapter : null);
+  const libraryItem = currentMangaLibraryItem();
+  const sameSavedChapter = Number(libraryItem?.chapterId) === chapterId;
+  const pageIndex = sameSavedChapter
+    ? Number(libraryItem?.pageIndex) || 0
+    : Number(state.activeChapter?.chapterId) === chapterId ? currentSuwayomiPageIndex() : 0;
+  const fromLibraryItem = normalizeLibraryItem({
+    ...libraryItem,
+    mangaId: Number(fromManga.id),
+    mangaTitle: fromManga.title,
+    sourceId: fromManga.sourceId,
+    sourceLabel: fromManga.sourceLabel,
+    thumbnailUrl: fromManga.thumbnailUrl || libraryItem?.thumbnailUrl,
+    mediaFormat: fromManga.mediaFormat || libraryItem?.mediaFormat || inferredMediaFormat(fromManga),
+    mediaFormatSource: fromManga.mediaFormatSource || libraryItem?.mediaFormatSource || "automatic",
+    mangabakaId: fromManga.mangabakaId || libraryItem?.mangabakaId,
+    mangabakaTitle: fromManga.mangabakaTitle || libraryItem?.mangabakaTitle,
+    mangabakaMatchSource: fromManga.mangabakaMatchSource || libraryItem?.mangabakaMatchSource,
+    mangabakaAccountKey: fromManga.mangabakaAccountKey || libraryItem?.mangabakaAccountKey,
+    chapterId: Number.isInteger(chapterId) && chapterId > 0 ? chapterId : libraryItem?.chapterId,
+    chapterTitle: attemptedChapter?.name || libraryItem?.chapterTitle,
+    pageIndex,
+    panelIndex: 0,
+    serverUrl: currentDeviceServerUrl(),
+    suwayomiLibrary: true,
+    updatedAt: libraryItem?.updatedAt || new Date().toISOString(),
+  });
+  state.pendingMangaBakaRecommendation = null;
+  state.sourceMigration = {
+    title: fromManga.title || fromLibraryItem.mangaTitle,
+    fromManga: { ...fromManga },
+    fromLibraryItem,
+    chapterNumber: migrationChapterNumber(attemptedChapter),
+    chapterTitle: attemptedChapter?.name || fromLibraryItem.chapterTitle,
+    pageIndex,
+  };
+  hideReaderError({ restoreFocus: false });
+  closeMangaDetail({ history: false });
+  setActiveView("browse");
+  updateRecommendationContext();
+  if (!state.connected || !state.visibleSources.length) {
+    state.setupReturnToBrowse = true;
+    openSuwayomiSetup();
+    showToast("Connect Suwayomi and enable another source to continue.", "bad");
+    return;
+  }
+  void continueSourceMigrationSearch();
+}
+
+function equivalentMigrationChapter(migration, chapters) {
+  const desiredNumber = Number(migration?.chapterNumber);
+  if (Number.isFinite(desiredNumber)) {
+    const exact = chapters.find((chapter) => Math.abs(migrationChapterNumber(chapter) - desiredNumber) < 0.0001);
+    if (exact) return exact;
+  }
+  const desiredTitle = normalizeTitle(migration?.chapterTitle);
+  return desiredTitle ? chapters.find((chapter) => normalizeTitle(chapter.name) === desiredTitle) || null : null;
+}
+
+async function migrateCurrentMangaSource() {
+  const migration = state.sourceMigration;
+  const target = state.currentManga;
+  if (!migration || !target || String(target.sourceId) === String(migration.fromManga?.sourceId)) return;
+  setBusy(el.detailLibrary, true, "Switching");
+  try {
+    const targetAdded = await ensureCurrentMangaInSuwayomiLibrary();
+    if (!targetAdded) throw new Error("The replacement title could not be added to Suwayomi.");
+    const oldMangaId = Number(migration.fromManga?.id || migration.fromLibraryItem?.mangaId);
+    if (Number.isInteger(oldMangaId) && oldMangaId > 0 && oldMangaId !== Number(target.id)) {
+      const removed = await graphQL(
+        queries.updateManga,
+        { input: { id: oldMangaId, patch: { inLibrary: false } } },
+        { timeoutMs: 10000 }
+      );
+      if (removed.updateManga?.manga?.inLibrary !== false) {
+        throw new Error("The old Suwayomi source could not be detached.");
+      }
+    }
+
+    const oldItem = migration.fromLibraryItem || {};
+    const chapters = state.chapterView.length ? state.chapterView : visibleChapters();
+    const matchingChapter = equivalentMigrationChapter(migration, chapters);
+    const targetKey = libraryItemKey(target);
+    const oldKey = libraryItemKey(migration.fromManga || oldItem);
+    const migratedItem = normalizeLibraryItem({
+      ...oldItem,
+      mangaId: Number(target.id),
+      mangaTitle: target.title,
+      sourceId: target.sourceId,
+      sourceLabel: target.sourceLabel,
+      thumbnailUrl: target.thumbnailUrl || oldItem.thumbnailUrl,
+      serverUrl: currentDeviceServerUrl(),
+      suwayomiLibrary: true,
+      ...(matchingChapter ? {
+        chapterId: Number(matchingChapter.id),
+        chapterTitle: matchingChapter.name,
+        pageIndex: Math.min(Number(oldItem.pageIndex) || 0, Math.max(0, Number(matchingChapter.pageCount || 1) - 1)),
+        panelIndex: 0,
+      } : {
+        chapterId: undefined,
+        chapterTitle: undefined,
+        pageIndex: 0,
+        panelIndex: 0,
+      }),
+      updatedAt: new Date().toISOString(),
+    });
+    state.libraryItems = [
+      migratedItem,
+      ...state.libraryItems.filter((item) => {
+        const key = libraryItemKey(item);
+        return key !== oldKey && key !== targetKey;
+      }),
+    ];
+    saveLibraryItems();
+    renderLibrary({ preserveInteractions: false });
+    state.sourceMigration = null;
+    updateRecommendationContext();
+    updateMangaDetailActions();
+
+    if (!matchingChapter) {
+      showToast("Source switched. Choose the closest chapter from this source.", "good");
+      return;
+    }
+    state.pendingResume = {
+      chapterId: Number(matchingChapter.id),
+      pageIndex: migratedItem.pageIndex,
+      panelIndex: 0,
+      panelMode: inferredMediaFormat(migratedItem),
+      readingDirection: migratedItem.readingDirection || (inferredMediaFormat(migratedItem) === "comic" ? "ltr" : "rtl"),
+    };
+    state.panelMode = inferredMediaFormat(migratedItem);
+    state.panelModeUserOverride = false;
+    setReadingDirection(state.pendingResume.readingDirection);
+    updatePanelModeControls();
+    el.chapterId.value = matchingChapter.id;
+    el.chapterTitle.textContent = matchingChapter.name || `Chapter ${matchingChapter.chapterNumber || matchingChapter.id}`;
+    showToast(`Switched to ${target.sourceLabel || "the new source"}.`, "good");
+    await loadChapterPages({ chapter: matchingChapter, returnFocusTarget: el.detailLibrary });
+  } catch (error) {
+    showToast(`Could not switch source: ${friendlySourceErrorMessage(error)}`, "bad");
   } finally {
     setBusy(el.detailLibrary, false);
     updateMangaDetailActions();
@@ -4342,6 +4562,13 @@ function showReaderError(title, message, retryAction = null) {
   el.readerErrorTitle.textContent = title;
   el.readerErrorMessage.textContent = message;
   state.readerErrorRetryAction = typeof retryAction === "function" ? retryAction : null;
+  if (el.readerErrorSource) {
+    el.readerErrorSource.hidden = !(
+      state.currentManga?.id &&
+      state.currentManga?.sourceId &&
+      (state.activeChapter?.type === "suwayomi" || Number(el.chapterId?.value) > 0)
+    );
+  }
   if (el.readerErrorBack) {
     const destination = state.previousView === "browse" ? "Browse" : state.previousView === "settings" ? "Settings" : "Library";
     el.readerErrorBack.textContent = `Back to ${destination}`;
@@ -11466,6 +11693,7 @@ function wireEvents() {
   el.readerLoadingCancel?.addEventListener("click", cancelReaderLoading);
   el.readerErrorRetry?.addEventListener("click", retryReaderError);
   el.readerErrorBack?.addEventListener("click", leaveReaderView);
+  el.readerErrorSource?.addEventListener("click", beginSourceMigration);
   el.readerCompleteNext?.addEventListener("click", () => {
     hideReaderComplete();
     finishChapterAndLoadNext().catch((error) => {
@@ -11537,7 +11765,10 @@ function wireEvents() {
   el.toggleBrowsePanel?.addEventListener("click", toggleBrowsePanel);
   el.closeMangaDetail?.addEventListener("click", closeMangaDetail);
   el.detailPrimary?.addEventListener("click", (event) => { void startOrContinueCurrentManga(event.currentTarget); });
-  el.detailLibrary?.addEventListener("click", () => { void addCurrentMangaToLibrary(); });
+  el.detailLibrary?.addEventListener("click", () => {
+    if (state.sourceMigration) void migrateCurrentMangaSource();
+    else void addCurrentMangaToLibrary();
+  });
   el.browseOpenSettings?.addEventListener("click", () => {
     openSuwayomiSetup();
   });
