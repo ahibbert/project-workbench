@@ -240,7 +240,7 @@ h2 {
   max-height: none;
   transform-origin: 0 0;
   transition: transform var(--reader-motion-duration) var(--reader-motion-easing);
-  will-change: transform, opacity;
+  will-change: opacity;
   box-shadow: var(--shadow);
   background: #fff;
 }
@@ -281,7 +281,7 @@ body.reader-full-page .stage-strip {
   overflow: hidden;
   transform-origin: 0 0;
   transition: transform var(--reader-motion-duration) var(--reader-motion-easing);
-  will-change: transform, opacity;
+  will-change: opacity;
   box-shadow: var(--shadow);
   background: #fff;
 }
@@ -324,6 +324,17 @@ body.webtoon-scroll .stage-strip {
 #stage-image.camera-jump,
 .stage-strip.camera-jump {
   transition: none !important;
+}
+
+#stage-image.camera-animating,
+.stage-strip.camera-animating {
+  will-change: transform, opacity;
+}
+
+#stage-image.reader-camera-settled,
+.stage-strip.reader-camera-settled {
+  transition: none !important;
+  will-change: auto;
 }
 
 #stage-image.cinematic-keyframes,

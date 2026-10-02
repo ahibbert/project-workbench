@@ -158,3 +158,33 @@ test("cinematic motion adapts the pan and respects both its toggle and reduced-m
     cinematicDuration: 0,
   });
 });
+
+test("high-zoom clarity is mirrored and resting panels use settled-size rendering", async ({ page }) => {
+  await openDemo(page, { highZoomClarity: "maximum", readerMotion: "smooth" });
+
+  await expect.poll(() => page.evaluate(() => window.PanelPilot.getReaderInteractionDiagnostics().cameraSettled)).toBe(true);
+  await expect(page.locator("#high-zoom-clarity")).toHaveValue("maximum");
+  await page.locator(".reader-options > summary").click();
+  await expect(page.locator("#high-zoom-clarity-reader")).toHaveValue("maximum");
+
+  const rendering = await page.locator("#stage-image").evaluate((image) => ({
+    baseWidth: Number(image.dataset.cameraBaseWidth),
+    cameraSettled: image.dataset.cameraSettled,
+    transform: image.style.transform,
+    width: Number.parseFloat(image.style.width),
+  }));
+  const camera = await page.evaluate(() => window.PanelPilot.getReaderInteractionDiagnostics().camera);
+  expect(rendering.cameraSettled).toBe("true");
+  expect(rendering.transform).toMatch(/^translate\(/);
+  expect(rendering.width).toBeCloseTo(rendering.baseWidth * camera.scale, 2);
+
+  await page.locator("#high-zoom-clarity-reader").selectOption("off");
+  await expect(page.locator("#high-zoom-clarity")).toHaveValue("off");
+  await expect.poll(() => page.evaluate(() => window.PanelPilot.getReaderInteractionDiagnostics())).toMatchObject({
+    highZoomClarity: "off",
+    clarityApplied: false,
+    cameraSettled: true,
+  });
+  const persisted = await page.evaluate(() => JSON.parse(localStorage.getItem("panel-pilot-settings")));
+  expect(persisted.highZoomClarity).toBe("off");
+});

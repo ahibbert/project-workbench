@@ -31,6 +31,10 @@ import {
   normalizePanelCalibration,
 } from "./panel-calibration.js";
 import { classifyPageSpread, orderSpreadPanels } from "./page-spread.js";
+import {
+  clarityAwarePanelRect,
+  normalizeHighZoomClarity,
+} from "./reader-clarity.js";
 
 const storeKey = "panel-pilot-settings";
 const panelModeStoreKey = "panel-pilot-panel-mode";
@@ -296,6 +300,8 @@ const el = {
   panelPaddingValue: document.querySelector("#panel-padding-value"),
   bubbleAwareFraming: document.querySelector("#bubble-aware-framing"),
   bubbleAwareFramingReader: document.querySelector("#bubble-aware-framing-reader"),
+  highZoomClarity: document.querySelector("#high-zoom-clarity"),
+  highZoomClarityReader: document.querySelector("#high-zoom-clarity-reader"),
   pageReveal: document.querySelector("#page-reveal"),
   pageRevealReader: document.querySelector("#page-reveal-reader"),
   cinematicMotion: document.querySelector("#cinematic-motion"),
@@ -521,6 +527,7 @@ const state = {
   panelModeUserOverride: false,
   panelPadding: 8,
   bubbleAwareFraming: true,
+  highZoomClarity: "balanced",
   pageReveal: "off",
   pageRevealActive: false,
   readingDirection: "rtl",
@@ -528,6 +535,7 @@ const state = {
   cinematicMotion: false,
   readerCamera: null,
   readerCameraAnimation: null,
+  readerCameraSettleTimer: 0,
   readerOverview: null,
   readerOverviewRestoreTimer: 0,
   readerHoldTimer: 0,
@@ -891,6 +899,7 @@ function loadSettings() {
     if (libraryFormatFilterValues.includes(saved.libraryFormatFilter)) state.libraryFormatFilter = saved.libraryFormatFilter;
     if (Number.isFinite(saved.panelPadding)) state.panelPadding = clamp(saved.panelPadding, 0, 25);
     if (typeof saved.bubbleAwareFraming === "boolean") state.bubbleAwareFraming = saved.bubbleAwareFraming;
+    state.highZoomClarity = normalizeHighZoomClarity(saved.highZoomClarity);
     if (["off", "before", "after"].includes(saved.pageReveal)) state.pageReveal = saved.pageReveal;
     if (typeof saved.cinematicMotion === "boolean") state.cinematicMotion = saved.cinematicMotion;
     if (typeof saved.keepScreenAwake === "boolean") state.keepScreenAwake = saved.keepScreenAwake;
@@ -940,6 +949,7 @@ function saveSettings() {
       libraryFormatFilter: state.libraryFormatFilter,
       panelPadding: state.panelPadding,
       bubbleAwareFraming: state.bubbleAwareFraming,
+      highZoomClarity: state.highZoomClarity,
       pageReveal: state.pageReveal,
       cinematicMotion: state.cinematicMotion,
       keepScreenAwake: state.keepScreenAwake,
@@ -10944,6 +10954,9 @@ function continuousWebtoonReading() {
 function layoutContinuousWebtoon(page, { scrollTop = null } = {}) {
   if (!continuousWebtoonReading() || !page?.stripImages?.length) return false;
   const strip = ensureStageStrip();
+  clearReaderCameraSettle();
+  strip.classList.remove("reader-camera-settled", "camera-animating", "cinematic-keyframes");
+  delete strip.dataset.cameraSettled;
   const availableWidth = Math.max(1, el.stageImageWrap.clientWidth || el.stage.clientWidth);
   const scale = availableWidth / Math.max(1, page.naturalWidth);
   strip.style.width = `${availableWidth}px`;
@@ -11122,7 +11135,71 @@ function commitPageCalibration(page) {
 }
 
 function cameraTransform(camera) {
-  return `matrix3d(${camera.scale}, 0, 0, 0, 0, ${camera.scale}, 0, 0, 0, 0, 1, 0, ${camera.left}, ${camera.top}, 0, 1)`;
+  return `matrix(${camera.scale}, 0, 0, ${camera.scale}, ${camera.left}, ${camera.top})`;
+}
+
+function settledCameraTransform(camera) {
+  return `translate(${camera.left}px, ${camera.top}px)`;
+}
+
+function clearReaderCameraSettle() {
+  window.clearTimeout(state.readerCameraSettleTimer);
+  state.readerCameraSettleTimer = 0;
+}
+
+function cameraBaseDimension(element, key, fallback = 1) {
+  return Math.max(1, Number(element?.dataset?.[key]) || Number(fallback) || 1);
+}
+
+function prepareReaderCameraElement(element, camera, { pageChanged = false } = {}) {
+  clearReaderCameraSettle();
+  const baseWidth = cameraBaseDimension(element, "cameraBaseWidth");
+  const baseHeight = cameraBaseDimension(element, "cameraBaseHeight");
+  const previous = state.readerCamera;
+  const wasSettled = element.dataset.cameraSettled === "true";
+  const canRestorePrevious = wasSettled && previous?.pageIndex === camera.pageIndex;
+  const alreadyJumping = element.classList.contains("camera-jump");
+
+  if (canRestorePrevious && !alreadyJumping) element.classList.add("camera-jump");
+  element.classList.remove("reader-camera-settled");
+  element.style.width = `${baseWidth}px`;
+  element.style.height = `${baseHeight}px`;
+  if (canRestorePrevious) {
+    element.style.transform = cameraTransform(previous);
+    // Commit the visually equivalent unscaled layout before starting a new transition.
+    void element.offsetWidth;
+  }
+  delete element.dataset.cameraSettled;
+  if (canRestorePrevious && !alreadyJumping && !pageChanged) element.classList.remove("camera-jump");
+}
+
+function settleReaderCamera(element, camera) {
+  const current = state.readerCamera;
+  if (
+    !element?.isConnected
+    || state.readerOverview
+    || continuousWebtoonReading()
+    || !current
+    || current.pageIndex !== camera.pageIndex
+    || current.panelIndex !== camera.panelIndex
+  ) return false;
+  const baseWidth = cameraBaseDimension(element, "cameraBaseWidth");
+  const baseHeight = cameraBaseDimension(element, "cameraBaseHeight");
+  element.classList.remove("camera-animating", "cinematic-keyframes");
+  element.classList.add("reader-camera-settled");
+  element.style.width = `${baseWidth * camera.scale}px`;
+  element.style.height = `${baseHeight * camera.scale}px`;
+  element.style.transform = settledCameraTransform(camera);
+  element.dataset.cameraSettled = "true";
+  return true;
+}
+
+function scheduleReaderCameraSettle(element, camera, delay = 0) {
+  clearReaderCameraSettle();
+  state.readerCameraSettleTimer = window.setTimeout(() => {
+    state.readerCameraSettleTimer = 0;
+    settleReaderCamera(element, camera);
+  }, Math.max(0, Number(delay) || 0));
 }
 
 function cameraForTarget(page, target, stageRect) {
@@ -11182,10 +11259,11 @@ function cinematicTransitionForCameras(previous, next, options = {}) {
   return { duration, easing, pan, distance, aspectChange };
 }
 
-function finishReaderCameraAnimation(animation, element) {
+function finishReaderCameraAnimation(animation, element, camera) {
   if (state.readerCameraAnimation !== animation) return;
   state.readerCameraAnimation = null;
   element.classList.remove("cinematic-keyframes");
+  settleReaderCamera(element, camera);
 }
 
 function applyReaderCamera(element, camera, { pageChanged = false } = {}) {
@@ -11197,7 +11275,9 @@ function applyReaderCamera(element, camera, { pageChanged = false } = {}) {
   const targetTransform = cameraTransform(camera);
   state.readerCameraAnimation?.cancel();
   state.readerCameraAnimation = null;
+  prepareReaderCameraElement(element, camera, { pageChanged });
   element.classList.remove("cinematic-keyframes");
+  element.classList.toggle("camera-animating", transition.duration > 0);
   element.style.setProperty("--reader-motion-duration", `${transition.duration}ms`);
   element.style.setProperty("--reader-motion-easing", transition.easing);
   element.dataset.cinematicPan = transition.pan;
@@ -11227,13 +11307,14 @@ function applyReaderCamera(element, camera, { pageChanged = false } = {}) {
     ], { duration: transition.duration, fill: "none" });
     state.readerCameraAnimation = animation;
     animation.finished.then(
-      () => finishReaderCameraAnimation(animation, element),
-      () => finishReaderCameraAnimation(animation, element)
+      () => finishReaderCameraAnimation(animation, element, camera),
+      () => finishReaderCameraAnimation(animation, element, camera)
     );
   } else {
     element.style.transform = targetTransform;
   }
   state.readerCamera = camera;
+  if (!state.readerCameraAnimation) scheduleReaderCameraSettle(element, camera, transition.duration + 34);
 }
 
 function fitStage() {
@@ -11250,19 +11331,41 @@ function fitStage() {
   const imageWidth = page.naturalWidth;
   const imageHeight = page.naturalHeight;
   const framedRect = wholePage ? rect : enhancedPanelRect(page, rect);
-  const target = wholePage
+  const paddedTarget = wholePage
     ? fullPagePanel(imageWidth, imageHeight)
     : expandPanelRect(framedRect || fullPagePanel(imageWidth, imageHeight), state.panelPadding / 100);
+  const clarity = wholePage
+    ? {
+      rect: paddedTarget,
+      applied: false,
+      mode: state.highZoomClarity,
+      expansionFactor: 1,
+      deviceScaleBefore: 0,
+      deviceScaleAfter: 0,
+    }
+    : clarityAwarePanelRect(paddedTarget, {
+      pageWidth: imageWidth,
+      pageHeight: imageHeight,
+      stageWidth: stageRect.width,
+      stageHeight: stageRect.height,
+      devicePixelRatio: window.devicePixelRatio || 1,
+    }, state.highZoomClarity);
+  const target = clarity.rect;
   const camera = cameraForTarget(page, target, stageRect);
+  camera.clarity = clarity;
 
   const targetElement = page.stripImages ? ensureStageStrip() : el.stageImage;
+  targetElement.dataset.clarityMode = clarity.mode;
+  targetElement.dataset.clarityApplied = clarity.applied ? "true" : "false";
+  targetElement.dataset.clarityExpansion = clarity.expansionFactor.toFixed(3);
+  targetElement.dataset.clarityDeviceScale = (clarity.deviceScaleAfter || camera.scale * (window.devicePixelRatio || 1)).toFixed(3);
   const pageChanged = state.cameraPageChanged;
   state.cameraPageChanged = false;
   const motionDuration = readerMotionDurationMs();
   if (pageChanged) targetElement.classList.add("camera-jump");
   if (pageChanged && motionDuration > 0) targetElement.classList.add("page-fade");
-  targetElement.style.width = `${imageWidth}px`;
-  targetElement.style.height = `${imageHeight}px`;
+  targetElement.dataset.cameraBaseWidth = String(imageWidth);
+  targetElement.dataset.cameraBaseHeight = String(imageHeight);
   targetElement.style.transformOrigin = "0 0";
   applyReaderCamera(targetElement, camera, { pageChanged });
   state.performanceStats.cameraFits += 1;
@@ -11313,8 +11416,11 @@ function beginReaderOverview(kind = "hold") {
     ? { ...state.readerCamera }
     : cameraForTarget(page, expandPanelRect(currentPanel(), state.panelPadding / 100), stageRect);
   const overviewCamera = cameraForTarget(page, fullPagePanel(page.naturalWidth, page.naturalHeight), stageRect);
+  clearReaderCameraSettle();
   state.readerCameraAnimation?.cancel();
   state.readerCameraAnimation = null;
+  prepareReaderCameraElement(element, camera);
+  element.classList.remove("camera-animating");
   element.classList.remove("cinematic-keyframes");
   window.clearTimeout(state.readerOverviewRestoreTimer);
   document.body.classList.remove("reader-overview-restoring");
@@ -11364,6 +11470,7 @@ function endReaderOverview({ cancelled = false } = {}) {
     state.readerOverviewRestoreTimer = window.setTimeout(() => {
       state.readerOverviewRestoreTimer = 0;
       document.body.classList.remove("reader-overview-restoring");
+      settleReaderCamera(overview.element, overview.camera);
     }, restoreDuration);
   } else {
     document.body.classList.remove("reader-overview-restoring");
@@ -11631,6 +11738,19 @@ function setBubbleAwareFraming(enabled) {
   if (state.activeView === "reader") scheduleCameraFit();
 }
 
+function updateHighZoomClarityControls() {
+  [el.highZoomClarity, el.highZoomClarityReader].forEach((control) => {
+    if (control) control.value = state.highZoomClarity;
+  });
+}
+
+function setHighZoomClarity(value) {
+  state.highZoomClarity = normalizeHighZoomClarity(value);
+  updateHighZoomClarityControls();
+  saveSettings();
+  if (state.activeView === "reader" && !state.fullPage) scheduleCameraFit();
+}
+
 function updateReaderInteractionControls() {
   [el.pageReveal, el.pageRevealReader].forEach((control) => {
     if (control) control.value = state.pageReveal;
@@ -11638,6 +11758,7 @@ function updateReaderInteractionControls() {
   [el.cinematicMotion, el.cinematicMotionReader].forEach((control) => {
     if (control) control.checked = state.cinematicMotion;
   });
+  updateHighZoomClarityControls();
 }
 
 function setPageReveal(value) {
@@ -13587,6 +13708,8 @@ function wireEvents() {
   el.panelPadding.addEventListener("input", (event) => setPanelPadding(event.target.value));
   el.bubbleAwareFraming?.addEventListener("change", (event) => setBubbleAwareFraming(event.target.checked));
   el.bubbleAwareFramingReader?.addEventListener("change", (event) => setBubbleAwareFraming(event.target.checked));
+  el.highZoomClarity?.addEventListener("change", (event) => setHighZoomClarity(event.target.value));
+  el.highZoomClarityReader?.addEventListener("change", (event) => setHighZoomClarity(event.target.value));
   el.pageReveal?.addEventListener("change", (event) => setPageReveal(event.target.value));
   el.pageRevealReader?.addEventListener("change", (event) => setPageReveal(event.target.value));
   el.cinematicMotion?.addEventListener("change", (event) => setCinematicMotion(event.target.checked));
@@ -13720,7 +13843,7 @@ function wireEvents() {
       return;
     }
     if (event.key === "Tab" && el.readerOptions?.open) {
-      const focusable = [...el.readerOptions.querySelectorAll(".reader-options-sheet input, .reader-options-sheet button")]
+      const focusable = [...el.readerOptions.querySelectorAll(".reader-options-sheet input, .reader-options-sheet select, .reader-options-sheet button")]
         .filter((item) => !item.disabled && item.getClientRects().length);
       if (focusable.length) {
         const first = focusable[0];
@@ -13787,6 +13910,7 @@ window.PanelPilot = {
   bubbleAwarePanelRect,
   bubblePanelIndex,
   cinematicTransitionForCameras,
+  clarityAwarePanelRect,
   consolidateMangaPanels,
   detectComicPanels,
   detectComicPanelsWithModel,
@@ -13811,6 +13935,7 @@ window.PanelPilot = {
     pageReveal: state.pageReveal,
     pageRevealActive: state.pageRevealActive,
     cinematicMotion: state.cinematicMotion,
+    highZoomClarity: state.highZoomClarity,
     camera: state.readerCamera ? {
       pageIndex: state.readerCamera.pageIndex,
       panelIndex: state.readerCamera.panelIndex,
@@ -13820,6 +13945,10 @@ window.PanelPilot = {
     } : null,
     cinematicPan: readerCameraElement()?.dataset?.cinematicPan || "",
     cinematicDuration: Number(readerCameraElement()?.dataset?.cinematicDuration || 0),
+    cameraSettled: readerCameraElement()?.dataset?.cameraSettled === "true",
+    clarityApplied: readerCameraElement()?.dataset?.clarityApplied === "true",
+    clarityExpansion: Number(readerCameraElement()?.dataset?.clarityExpansion || 1),
+    clarityDeviceScale: Number(readerCameraElement()?.dataset?.clarityDeviceScale || 0),
   }),
   handleReaderVisibilityChange,
   pauseReaderLifecycle,

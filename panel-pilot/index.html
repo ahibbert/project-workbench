@@ -121,6 +121,14 @@
                 <input id="bubble-aware-framing-reader" type="checkbox" checked>
                 <span>Keep speech bubbles in frame</span>
               </label>
+              <label class="reader-select-field" for="high-zoom-clarity-reader">
+                <span>High-zoom clarity</span>
+                <select id="high-zoom-clarity-reader">
+                  <option value="off">Maximum panel size</option>
+                  <option value="balanced" selected>Balanced</option>
+                  <option value="maximum">Maximum clarity</option>
+                </select>
+              </label>
               <label class="reader-select-field" for="page-reveal-reader">
                 <span>Whole-page reveal</span>
                 <select id="page-reveal-reader">
@@ -562,6 +570,15 @@
           <label class="checkbox-field">
             <input id="cinematic-motion" type="checkbox">
             <span>Use cinematic motion between panels</span>
+          </label>
+          <label class="field" for="high-zoom-clarity">
+            <span>High-zoom clarity</span>
+            <select id="high-zoom-clarity">
+              <option value="off">Maximum panel size</option>
+              <option value="balanced" selected>Balanced</option>
+              <option value="maximum">Maximum clarity</option>
+            </select>
+            <small>Includes a little more page when a crop would otherwise exceed the source resolution.</small>
           </label>
           <details class="settings-detail">
             <summary>Panel detection</summary>
