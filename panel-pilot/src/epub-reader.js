@@ -109,6 +109,7 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
   select("Typeface", "fontFamily", [["publisher", "Publisher"], ["serif", "Serif"], ["sans", "Sans serif"]]);
   select("Text size", "fontSize", [["85", "Small"], ["100", "Default"], ["115", "Large"], ["130", "Larger"], ["150", "Largest"]]);
   select("Line spacing", "lineHeight", [["1.3", "Compact"], ["1.5", "Default"], ["1.8", "Relaxed"], ["2", "Open"]]);
+  select("Page width", "contentWidth", [["560", "Narrow"], ["720", "Default"], ["900", "Wide"], ["1200", "Full"]]);
   select("Reading flow", "readingFlow", [["paginated", "Pages"], ["scrolled", "Scroll"]]);
   select("Alignment", "textAlignment", [["start", "Publisher"], ["left", "Left"], ["justify", "Justified"]]);
 

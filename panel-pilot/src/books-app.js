@@ -223,13 +223,18 @@ export function createBooksApp({ root, navigate }) {
       ]);
       if (generation !== readerGeneration) return;
       readerController?.destroy?.();
-      readerController = await module.createEpubReader({
+      const createdReader = await module.createEpubReader({
         root: content,
         book,
         progress,
         preferences,
         onExit: () => navigate("book-detail", { id: book.id }),
       });
+      if (generation !== readerGeneration) {
+        createdReader?.destroy?.();
+        return;
+      }
+      readerController = createdReader;
     } catch (error) {
       if (generation !== readerGeneration) return;
       const back = element("button", "text-button books-back", "‹ Book details");

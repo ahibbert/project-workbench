@@ -41,16 +41,15 @@ class _SameOriginRedirectHandler(HTTPRedirectHandler):
         self.origin = origin
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        parsed = urlparse(newurl)
-        target = (parsed.scheme.lower(), (parsed.hostname or "").lower(), parsed.port)
-        if target != self.origin:
+        if _origin(newurl) != self.origin:
             raise ShelfmarkError("Shelfmark redirected to an unexpected host", code="unsafe_redirect")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def _origin(url: str) -> tuple[str, str, int | None]:
     parsed = urlparse(url)
-    return (parsed.scheme.lower(), (parsed.hostname or "").lower(), parsed.port)
+    port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+    return (parsed.scheme.lower(), (parsed.hostname or "").lower(), port)
 
 
 def _first_list(payload: Any, keys: tuple[str, ...]) -> list[dict[str, Any]]:
@@ -188,9 +187,12 @@ class ShelfmarkClient:
         except ShelfmarkError:
             raise
         except HTTPError as error:
-            status = 401 if error.code in (401, 403) else 502
-            code = "authentication_failed" if status == 401 else "upstream_error"
-            raise ShelfmarkError(f"Shelfmark request failed (HTTP {error.code})", code=code, status=status) from None
+            try:
+                status = 401 if error.code in (401, 403) else 502
+                code = "authentication_failed" if status == 401 else "upstream_error"
+                raise ShelfmarkError(f"Shelfmark request failed (HTTP {error.code})", code=code, status=status) from None
+            finally:
+                error.close()
         except (URLError, TimeoutError, OSError) as error:
             reason = self._redact(str(getattr(error, "reason", error)))[:300]
             raise ShelfmarkError(f"Shelfmark is unavailable: {reason}", code="unavailable") from None

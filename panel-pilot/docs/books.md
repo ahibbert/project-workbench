@@ -75,6 +75,46 @@ Keep CWA's library and config volumes in the host backup plan. Shelfmark must
 publish completed files atomically into the shared directory; do not expose
 partially written downloads to CWA.
 
+## Backup and restore
+
+Back up the CWA config and library volumes together with Panels' `/app/data`
+volume. The latter contains `books.sqlite3` (reading locations and preferences)
+and the replaceable sanitized EPUB cache. Stop Panels and CWA briefly, or use a
+snapshot mechanism that guarantees a consistent SQLite and Calibre-library
+snapshot. The ingest volume and Shelfmark search cache are disposable.
+
+Restore CWA's config and library first, then Panels data, start CWA, and finally
+start Panels. A manual **Sync library** from Books will reconcile the local book
+index without altering manga data.
+
+## Public-domain smoke-test books
+
+For a legal end-to-end reader test, download an EPUB from Project Gutenberg and
+place the completed file in CWA's ingest volume. Good small examples are
+*Alice's Adventures in Wonderland* (ebook 11) and *Pride and Prejudice* (ebook
+1342). Wait for CWA to remove the ingest copy, then use **Sync library** in
+Panels. Direct sample import tests only the CWA → Panels path; Shelfmark's
+acquisition path still requires a source configured by the operator.
+
+## Manual verification checklist
+
+1. Start Panels with `BOOKS_ENABLED=false` and no book credentials. Confirm it
+   starts normally, Books is absent, and manga browse/reader/progress still work.
+2. Start the `books` Compose profile, complete CWA setup through an SSH tunnel,
+   and configure its authenticated OPDS user.
+3. Enable Books and use the connection panel to test Shelfmark and CWA.
+4. Import a public-domain EPUB into CWA, sync Books, and confirm its metadata,
+   cover, and details appear.
+5. Open the EPUB, use Contents and next/previous, change theme, text size, line
+   spacing, page width, and flow, then close it. Reopen it and confirm the exact
+   location and preferences return.
+6. Search Shelfmark, inspect EPUB-only releases, queue one, and confirm the state
+   advances through queued/downloading/importing/ready after CWA imports it.
+7. Stop Shelfmark and CWA. Confirm book connection errors are contained and
+   existing manga browsing and reading remain available.
+8. Inspect browser storage, network responses, and logs to confirm no upstream
+   credentials or acquisition URLs are exposed.
+
 ## Disabled behavior
 
 With `BOOKS_ENABLED=false`, Panels does not validate book credentials, create

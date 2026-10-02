@@ -24,6 +24,7 @@ from shelfmark_client import ShelfmarkClient, ShelfmarkConfig, ShelfmarkError
 
 
 BOOKS_SCHEMA_VERSION = 1
+BOOK_IMPORT_TIMEOUT_SECONDS = 60 * 60
 
 
 class BookRequestError(ValueError):
@@ -338,6 +339,13 @@ class BookStore:
         isbn = str(book.get("isbn") or "").strip()
         if isbn:
             matches = connection.execute("SELECT id FROM books WHERE isbn = ? LIMIT 2", (isbn,)).fetchall()
+            if len(matches) == 1:
+                return int(matches[0]["id"])
+        content_hash = str(book.get("contentHash") or "").strip().lower()
+        if content_hash:
+            matches = connection.execute(
+                "SELECT id FROM books WHERE content_hash = ? LIMIT 2", (content_hash,)
+            ).fetchall()
             if len(matches) == 1:
                 return int(matches[0]["id"])
         title_key = self._normalized_title(book.get("title", ""))
@@ -684,6 +692,26 @@ class BookStore:
                     ready += 1
         return ready
 
+    def fail_stale_imports(self, timeout_seconds: int = BOOK_IMPORT_TIMEOUT_SECONDS, now: datetime | None = None) -> int:
+        cutoff = (now or datetime.now(timezone.utc)).timestamp() - max(60, int(timeout_seconds))
+        failed = 0
+        with self.lock, self.connection() as connection:
+            rows = connection.execute(
+                "SELECT task_id, updated_at FROM shelfmark_downloads WHERE status = 'importing'"
+            ).fetchall()
+            for row in rows:
+                try:
+                    updated = datetime.fromisoformat(row["updated_at"]).timestamp()
+                except (TypeError, ValueError):
+                    updated = 0
+                if updated <= cutoff:
+                    connection.execute(
+                        "UPDATE shelfmark_downloads SET status = 'failed', error = ?, updated_at = ? WHERE task_id = ?",
+                        ("CWA did not import this EPUB within one hour", utc_now(), row["task_id"]),
+                    )
+                    failed += 1
+        return failed
+
 
 class BooksService:
     def __init__(self, config: BooksConfig):
@@ -793,7 +821,11 @@ class BooksService:
         target = cache_root / f"{int(book_id)}.epub"
         with self._epub_lock:
             if target.exists() and target.is_file() and target.stat().st_size >= 4:
-                return target
+                try:
+                    validate_epub_archive(target)
+                    return target
+                except BookRequestError:
+                    target.unlink()
             temporary_path = None
             sanitized_path = None
             try:
@@ -851,7 +883,7 @@ class BooksService:
                 token = secrets.token_urlsafe(24)
                 raw = release.pop("_release")
                 self._release_tokens[token] = (now + 15 * 60, raw)
-                public.append({**release, "token": token})
+                public.append({**{key: value for key, value in release.items() if key != "id"}, "token": token})
             if len(self._release_tokens) > 2000:
                 oldest = sorted(self._release_tokens.items(), key=lambda item: item[1][0])
                 for token, _ in oldest[:len(self._release_tokens) - 2000]:
@@ -896,8 +928,11 @@ class BooksService:
 
     def refresh_downloads(self) -> list[dict[str, Any]]:
         tracked = {item["taskId"]: item for item in self.store.list_downloads()}
-        if not tracked or not self.config.shelfmark_configured:
+        if not tracked:
             return list(tracked.values())
+        if not self.config.shelfmark_configured:
+            self.store.fail_stale_imports()
+            return self.store.list_downloads()
         payload = self.shelfmark_client().download_status()
         if isinstance(payload, dict):
             mappings = {
@@ -916,6 +951,8 @@ class BooksService:
                 for task_id, item in iterator:
                     if task_id not in tracked:
                         continue
+                    if tracked[task_id]["status"] == "importing" and local_status == "importing":
+                        continue
                     progress_value = item.get("progress") if isinstance(item, dict) else None
                     try:
                         progress = max(0.0, min(1.0, float(progress_value) / (100 if float(progress_value) > 1 else 1)))
@@ -924,6 +961,7 @@ class BooksService:
                     error = "Shelfmark reported a download failure" if local_status == "failed" else ""
                     self.store.update_download(task_id, status=local_status, progress=progress, error=error)
         self.store.reconcile_downloads()
+        self.store.fail_stale_imports()
         return self.store.list_downloads()
 
 

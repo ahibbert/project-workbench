@@ -148,7 +148,7 @@ test("the floating navigation and status surfaces remain separated across mobile
         scrollWidth: document.documentElement.scrollWidth,
         bodyPaddingBottom: Number.parseFloat(getComputedStyle(document.body).paddingBottom),
         navigation: rect(".app-nav"),
-        navigationButtons: [...document.querySelectorAll(".app-nav-button")].map((button) => button.getBoundingClientRect().height),
+        navigationButtons: [...document.querySelectorAll(".app-nav-button:not([hidden])")].map((button) => button.getBoundingClientRect().height),
         miniplayer: rect("#nav-reader"),
         downloads: rect("#download-status-button"),
         navigationBackground: navigationStyle.backgroundColor,

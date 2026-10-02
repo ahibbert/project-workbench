@@ -175,3 +175,19 @@ test("EPUB reader opens a public-domain fixture and persists an exact CFI", asyn
   await expect.poll(() => progressWrites.length, { timeout: 10_000 }).toBeGreaterThan(writesBeforeReopen);
   expect(progressWrites.at(-1).revision).toBe(1);
 });
+
+test("books library and EPUB controls remain usable at phone width", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await stubApp(page, { booksEnabled: true });
+  await page.goto("/", { waitUntil: "networkidle" });
+  await page.locator("#nav-books").click();
+  await expect(page.locator(".book-card")).toBeVisible();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.locator(".book-card").click();
+  await page.getByRole("button", { name: "Read book" }).click();
+  await expect(page.locator(".epub-toolbar")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Next page" })).toBeVisible();
+  await page.locator(".epub-settings summary").click();
+  await expect(page.getByLabel("Page width")).toBeVisible();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});

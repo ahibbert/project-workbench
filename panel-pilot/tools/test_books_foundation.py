@@ -1,5 +1,6 @@
 import os
 import pathlib
+from datetime import datetime, timedelta, timezone
 import tempfile
 import unittest
 from unittest import mock
@@ -164,6 +165,24 @@ class BooksConfigurationTests(unittest.TestCase):
             with self.assertRaisesRegex(BookRequestError, "Invalid book theme"):
                 store.save_preferences("reader", {"theme": "neon"})
 
+    def test_cwa_import_timeout_becomes_a_manageable_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = BookStore(str(pathlib.Path(temporary) / "books.sqlite3"))
+            store.save_download(
+                task_id="stale-import", provider="openlibrary", provider_book_id="alice",
+                title="Alice", isbn="", authors=["Lewis Carroll"],
+            )
+            store.update_download("stale-import", status="importing", progress=1)
+            old = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+            with store.connection() as connection:
+                connection.execute(
+                    "UPDATE shelfmark_downloads SET updated_at = ? WHERE task_id = 'stale-import'", (old,)
+                )
+            self.assertEqual(store.fail_stale_imports(), 1)
+            failed = store.get_download("stale-import")
+            self.assertEqual(failed["status"], "failed")
+            self.assertIn("did not import", failed["error"])
+
 
 class ShelfmarkNormalizationTests(unittest.TestCase):
     def test_metadata_search_normalizes_documented_shape(self):
@@ -219,6 +238,9 @@ class ShelfmarkNormalizationTests(unittest.TestCase):
                     self.queued = release
                     return {"status": "queued"}
 
+                def download_status(self):
+                    return {"error": {"release-1": {"id": "release-1"}}}
+
             fake = FakeShelfmark()
             service.shelfmark_client = lambda: fake
             service._book_tokens["book-token"] = (9999999999, {
@@ -234,6 +256,9 @@ class ShelfmarkNormalizationTests(unittest.TestCase):
             self.assertEqual(download["status"], "queued")
             self.assertEqual(download["taskId"], "release-1")
             self.assertEqual(fake.queued["download_url"], "https://secret-upstream.invalid/alice.epub")
+            failed = service.refresh_downloads()[0]
+            self.assertEqual(failed["status"], "failed")
+            self.assertEqual(failed["error"], "Shelfmark reported a download failure")
             with self.assertRaisesRegex(ValueError, "expired"):
                 service.queue_download(public[0]["token"], "book-token")
 

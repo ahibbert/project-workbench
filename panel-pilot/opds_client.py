@@ -45,7 +45,8 @@ class OpdsConfig:
 
 def _origin(url: str) -> tuple[str, str, int | None]:
     parsed = urlparse(url)
-    return parsed.scheme.lower(), (parsed.hostname or "").lower(), parsed.port
+    port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+    return parsed.scheme.lower(), (parsed.hostname or "").lower(), port
 
 
 class _SameOriginRedirectHandler(HTTPRedirectHandler):
@@ -150,7 +151,8 @@ class OpdsClient:
 
     def _safe_url(self, url: str) -> str:
         absolute = urljoin(self.catalog_url + "/", url)
-        if _origin(absolute) != self.origin:
+        parsed = urlparse(absolute)
+        if parsed.username or parsed.password or _origin(absolute) != self.origin:
             raise OpdsError("OPDS link points to an unexpected host", code="unsafe_link", status=400)
         return absolute
 
@@ -167,9 +169,12 @@ class OpdsClient:
         except OpdsError:
             raise
         except HTTPError as error:
-            status = 401 if error.code in (401, 403) else 502
-            code = "authentication_failed" if status == 401 else "upstream_error"
-            raise OpdsError(f"CWA OPDS request failed (HTTP {error.code})", code=code, status=status) from None
+            try:
+                status = 401 if error.code in (401, 403) else 502
+                code = "authentication_failed" if status == 401 else "upstream_error"
+                raise OpdsError(f"CWA OPDS request failed (HTTP {error.code})", code=code, status=status) from None
+            finally:
+                error.close()
         except (URLError, TimeoutError, OSError):
             raise OpdsError("CWA OPDS is unavailable", code="unavailable") from None
 
@@ -209,7 +214,8 @@ class OpdsClient:
 
     def cover(self, url: str) -> tuple[bytes, str]:
         content, content_type, _ = self.fetch(url, accept="image/avif,image/webp,image/jpeg,image/png", maximum=12_000_000)
-        if not content_type.lower().startswith("image/"):
+        safe_types = {"image/avif", "image/webp", "image/jpeg", "image/png", "image/gif"}
+        if content_type.split(";", 1)[0].lower() not in safe_types:
             raise OpdsError("CWA cover response was not an image", code="invalid_cover")
         return content, content_type.split(";", 1)[0]
 
@@ -247,9 +253,12 @@ class OpdsClient:
         except OpdsError:
             raise
         except HTTPError as error:
-            status = 401 if error.code in (401, 403) else 502
-            code = "authentication_failed" if status == 401 else "acquisition_unavailable"
-            raise OpdsError(f"CWA EPUB acquisition failed (HTTP {error.code})", code=code, status=status) from None
+            try:
+                status = 401 if error.code in (401, 403) else 502
+                code = "authentication_failed" if status == 401 else "acquisition_unavailable"
+                raise OpdsError(f"CWA EPUB acquisition failed (HTTP {error.code})", code=code, status=status) from None
+            finally:
+                error.close()
         except (URLError, TimeoutError, OSError):
             raise OpdsError("CWA EPUB acquisition is unavailable", code="acquisition_unavailable") from None
 
