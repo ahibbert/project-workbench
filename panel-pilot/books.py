@@ -23,8 +23,11 @@ from opds_client import OpdsClient, OpdsConfig, OpdsError
 from shelfmark_client import ShelfmarkClient, ShelfmarkConfig, ShelfmarkError
 
 
-BOOKS_SCHEMA_VERSION = 1
+BOOKS_SCHEMA_VERSION = 2
 BOOK_IMPORT_TIMEOUT_SECONDS = 60 * 60
+BOOK_LIBRARY_STATUSES = {
+    "reading", "plan_to_read", "paused", "completed", "dropped", "rereading", "considering",
+}
 
 
 class BookRequestError(ValueError):
@@ -284,6 +287,22 @@ class BookStore:
                     );
                     PRAGMA user_version = 1;
                 """)
+                version = 1
+            if version < 2:
+                columns = {row[1] for row in connection.execute("PRAGMA table_info(books)")}
+                if "library_status" not in columns:
+                    connection.execute(
+                        "ALTER TABLE books ADD COLUMN library_status TEXT NOT NULL DEFAULT 'plan_to_read'"
+                    )
+                connection.execute("""
+                    UPDATE books SET library_status = 'reading'
+                    WHERE id IN (SELECT book_id FROM book_progress)
+                """)
+                connection.execute("""
+                    UPDATE books SET library_status = 'completed'
+                    WHERE id IN (SELECT book_id FROM book_progress WHERE progression >= 0.995)
+                """)
+                connection.execute("PRAGMA user_version = 2")
 
     def counts(self) -> dict[str, int]:
         with self.lock, self.connection() as connection:
@@ -325,6 +344,7 @@ class BookStore:
             "coverUrl": f"/api/books/{book_id}/cover" if row["cover_href"] else "",
             "epubUrl": f"/api/books/{book_id}/epub" if row["acquisition_href"] else "",
             "hasEpub": bool(row["acquisition_href"]),
+            "libraryStatus": row["library_status"],
             "dateAdded": row["date_added"],
             "lastSyncedAt": row["last_synced_at"],
         }
@@ -512,7 +532,30 @@ class BookStore:
                 str(user_id), int(book_id), locator_type, locator, resource_href,
                 progression, next_revision, now,
             ))
+            if progression is not None and progression >= 0.995:
+                connection.execute(
+                    "UPDATE books SET library_status = 'completed' WHERE id = ? AND library_status IN ('reading', 'rereading', 'plan_to_read', 'considering')",
+                    (int(book_id),),
+                )
+            else:
+                connection.execute(
+                    "UPDATE books SET library_status = 'reading' WHERE id = ? AND library_status IN ('plan_to_read', 'considering')",
+                    (int(book_id),),
+                )
         return self.get_progress(user_id, book_id)
+
+    def set_library_status(self, book_id: int, status: str) -> dict[str, Any]:
+        status = str(status or "").strip()
+        if status not in BOOK_LIBRARY_STATUSES:
+            raise BookRequestError("Invalid book library group")
+        with self.lock, self.connection() as connection:
+            result = connection.execute(
+                "UPDATE books SET library_status = ? WHERE id = ?",
+                (status, int(book_id)),
+            )
+            if result.rowcount != 1:
+                raise BookRequestError("Book not found", status=404, code="not_found")
+        return self.get_book(book_id)
 
     @staticmethod
     def default_preferences() -> dict[str, Any]:
@@ -803,6 +846,9 @@ class BooksService:
 
     def save_progress(self, user_id: str, book_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         return self.store.save_progress(user_id, book_id, payload)
+
+    def set_library_status(self, book_id: int, status: str) -> dict[str, Any]:
+        return self.store.set_library_status(book_id, status)
 
     def preferences(self, user_id: str) -> dict[str, Any]:
         return self.store.get_preferences(user_id)

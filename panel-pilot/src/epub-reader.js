@@ -88,10 +88,10 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
   const loading = node("div", "epub-reader-state", "Opening EPUB…");
   loading.setAttribute("role", "status");
   const viewport = node("div", "epub-viewport");
-  const previous = node("button", "epub-page-control epub-previous", "‹");
+  const previous = node("button", "epub-page-control epub-previous");
   previous.type = "button";
   previous.setAttribute("aria-label", "Previous page");
-  const next = node("button", "epub-page-control epub-next", "›");
+  const next = node("button", "epub-page-control epub-next");
   next.type = "button";
   next.setAttribute("aria-label", "Next page");
   stage.append(viewport, loading, previous, next);
@@ -147,36 +147,50 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
   select("Alignment", "textAlignment", [["start", "Publisher"], ["left", "Left"], ["justify", "Justified"]]);
   settingsPanel.append(node("p", "epub-settings-note", "Panels keeps the screen awake while this reader is open when your browser permits it."));
 
-  function themeRules(theme) {
+  function themePalette(theme) {
     const palettes = {
       light: { background: "#fff", color: "#232620", link: "#236c6e" },
       sepia: { background: "#f4ecd8", color: "#40382b", link: "#72552e" },
       dark: { background: "#171918", color: "#e4e5df", link: "#83c8c5" },
     };
-    const palette = palettes[theme] || palettes.light;
-    return {
-      "html, body": { "background": `${palette.background} !important`, "color": `${palette.color} !important` },
-      body: {
-        "font-family": preferences.fontFamily === "publisher" ? "inherit" : preferences.fontFamily === "serif" ? "Georgia, 'Times New Roman', serif !important" : "system-ui, sans-serif !important",
-        "line-height": `${preferences.lineHeight} !important`,
-        "text-align": `${preferences.textAlignment} !important`,
-        "text-rendering": "optimizeLegibility",
-        "-webkit-font-smoothing": "antialiased",
-      },
-      "p, li, blockquote": { "orphans": "2", "widows": "2" },
-      "a": { "color": `${palette.link} !important` },
-      "img, svg": { "max-width": "100% !important", "height": "auto !important" },
-    };
+    return palettes[theme] || palettes.light;
+  }
+
+  function setImportant(style, property, value) {
+    if (value) style.setProperty(property, value, "important");
+    else style.removeProperty(property);
+  }
+
+  function applyDocumentPreferences(document) {
+    const html = document?.documentElement;
+    const body = document?.body;
+    if (!html || !body) return;
+    const palette = themePalette(preferences.theme);
+    const font = preferences.fontFamily === "serif"
+      ? "Georgia, 'Times New Roman', serif"
+      : preferences.fontFamily === "sans" ? "system-ui, sans-serif" : "";
+    [html, body].forEach((element) => {
+      setImportant(element.style, "background", palette.background);
+      setImportant(element.style, "color", palette.color);
+    });
+    setImportant(body.style, "font-family", font);
+    setImportant(body.style, "font-size", `${preferences.fontSize}%`);
+    setImportant(body.style, "line-height", String(preferences.lineHeight));
+    setImportant(body.style, "text-align", preferences.textAlignment === "start" ? "" : preferences.textAlignment);
+    body.style.setProperty("text-rendering", "optimizeLegibility");
+    body.style.setProperty("-webkit-font-smoothing", "antialiased");
+    document.querySelectorAll("a").forEach((link) => setImportant(link.style, "color", palette.link));
+    document.querySelectorAll("img, svg").forEach((image) => {
+      setImportant(image.style, "max-width", "100%");
+      setImportant(image.style, "height", "auto");
+    });
   }
 
   function applyPreferences() {
-    if (!rendition) return;
     reader.dataset.theme = preferences.theme;
     reader.dataset.flow = preferences.readingFlow;
-    rendition.themes.register("panels-book", themeRules(preferences.theme));
-    rendition.themes.select("panels-book");
-    rendition.themes.fontSize(`${preferences.fontSize}%`);
     stage.style.setProperty("--book-content-width", `${preferences.contentWidth}px`);
+    rendition?.getContents?.().forEach((contents) => applyDocumentPreferences(contents.document));
   }
 
   function setControlsVisible(visible, linger = true) {
@@ -285,6 +299,7 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
   function bindContentInteractions(contents) {
     const document = contents.document;
     sanitizeRenderedDocument(document);
+    applyDocumentPreferences(document);
     let contentGesture = null;
     document.addEventListener("pointerdown", (event) => { contentGesture = { x: event.clientX, y: event.clientY }; }, { passive: true });
     document.addEventListener("pointerup", (event) => {

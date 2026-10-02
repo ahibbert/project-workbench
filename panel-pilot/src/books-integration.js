@@ -1,6 +1,9 @@
 import "./books.css";
 
+export const BOOK_LIBRARY_GROUPS = ["reading", "plan_to_read", "paused", "completed", "dropped", "rereading", "considering"];
+
 export function libraryStatus(book) {
+  if (BOOK_LIBRARY_GROUPS.includes(book?.libraryStatus)) return book.libraryStatus;
   const progression = Number(book?.progress?.progression);
   if (Number.isFinite(progression) && progression >= 0.995) return "completed";
   return book?.progress?.locator ? "reading" : "plan_to_read";
@@ -23,7 +26,7 @@ export function cardSignature(book) {
   });
 }
 
-export function createLibraryCard(book, { createCoverButton, navigate, statusLabels }) {
+export function createLibraryCard(book, { createCoverButton, navigate, statusLabels, onUpdate }) {
   const card = document.createElement("article");
   card.className = "manga-card library-card book-library-card";
   card.dataset.libraryKey = `book:${book.id}`;
@@ -58,7 +61,44 @@ export function createLibraryCard(book, { createCoverButton, navigate, statusLab
   details.className = "quiet-card-action";
   details.textContent = "Details";
   details.addEventListener("click", () => navigate("book-detail", { id: book.id }));
-  actions.append(read, details);
+  const more = document.createElement("details");
+  more.className = "manga-card-more";
+  const moreLabel = document.createElement("summary");
+  moreLabel.textContent = "More";
+  moreLabel.setAttribute("aria-label", `More actions for ${book.title || "book"}`);
+  const menu = document.createElement("div");
+  menu.className = "manga-card-menu";
+  const statusSelect = document.createElement("select");
+  statusSelect.className = "library-status-select";
+  statusSelect.setAttribute("aria-label", `Library group for ${book.title || "book"}`);
+  BOOK_LIBRARY_GROUPS.forEach((status) => {
+    const option = document.createElement("option");
+    option.value = status;
+    option.textContent = statusLabels[status];
+    statusSelect.append(option);
+  });
+  statusSelect.value = libraryStatus(book);
+  statusSelect.addEventListener("change", async () => {
+    const previous = libraryStatus(book);
+    statusSelect.disabled = true;
+    statusSelect.setCustomValidity("");
+    try {
+      const payload = await request(`/api/books/${encodeURIComponent(book.id)}/library-status`, {
+        method: "POST",
+        body: JSON.stringify({ status: statusSelect.value }),
+      });
+      await Promise.resolve(onUpdate?.(payload.book));
+    } catch (error) {
+      statusSelect.value = previous;
+      statusSelect.setCustomValidity(error.message);
+      statusSelect.reportValidity();
+    } finally {
+      statusSelect.disabled = false;
+    }
+  });
+  menu.append(statusSelect, details);
+  more.append(moreLabel, menu);
+  actions.append(read, more);
   card.append(cover, badges, actions);
   return card;
 }

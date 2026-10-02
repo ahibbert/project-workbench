@@ -232,6 +232,7 @@ const el = {
   booksRoot: document.querySelector("#books-root"),
   libraryFormatBooks: document.querySelector("#library-format-books"),
   browseBooks: document.querySelector("#browse-books"),
+  browseMediaSwitch: document.querySelector("#browse-media-switch"),
   bookServicesPanel: document.querySelector("#book-services-panel"),
   bookServicesState: document.querySelector("#book-services-state"),
   bookServicesNote: document.querySelector("#book-services-note"),
@@ -1495,8 +1496,8 @@ async function initializeBooksFeature() {
     el.navBooks?.setAttribute("hidden", "");
     el.libraryFormatBooks?.toggleAttribute("hidden", !state.booksEnabled);
     el.browseBooks?.toggleAttribute("hidden", !state.booksEnabled);
+    el.browseMediaSwitch?.toggleAttribute("hidden", !state.booksEnabled);
     el.bookServicesPanel?.toggleAttribute("hidden", !state.booksEnabled);
-    document.body.classList.toggle("books-enabled", state.booksEnabled);
     if (!state.booksEnabled && state.libraryFormatFilter === "book") state.libraryFormatFilter = "all";
     if (!state.booksEnabled && state.activeView === "books") {
       setActiveView("library", { history: false });
@@ -1525,6 +1526,7 @@ async function initializeBooksFeature() {
     state.booksEnabled = false;
     el.libraryFormatBooks?.setAttribute("hidden", "");
     el.browseBooks?.setAttribute("hidden", "");
+    el.browseMediaSwitch?.setAttribute("hidden", "");
     el.bookServicesPanel?.setAttribute("hidden", "");
     if (state.libraryFormatFilter === "book") state.libraryFormatFilter = "all";
   }
@@ -5003,7 +5005,7 @@ function visibleBookLibraryItems() {
       const status = normalizedBookLibraryStatus(book);
       if (state.libraryFilter === "all") return true;
       if (state.libraryFilter === "reading") return status === "reading";
-      if (state.libraryFilter === "other") return false;
+      if (state.libraryFilter === "other") return ["dropped", "considering"].includes(status);
       return status === state.libraryFilter;
     })
     .slice()
@@ -5022,6 +5024,7 @@ function createBookLibraryCard(book) {
     createCoverButton,
     navigate: navigateBookRoute,
     statusLabels: libraryStatusLabels,
+    onUpdate: async () => refreshIntegratedBookLibrary({ render: true }),
   });
 }
 

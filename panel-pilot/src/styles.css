@@ -3133,10 +3133,6 @@ body.has-network-status.reader-focus .reader-topbar {
   backdrop-filter: none;
 }
 
-body.books-enabled .app-nav {
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-}
-
 .moments-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(16rem, 100%), 1fr));

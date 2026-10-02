@@ -213,10 +213,13 @@
             <h1>Browse</h1>
             <p class="view-subtitle" id="source-count">0 sources available</p>
           </div>
-          <button class="header-action" id="browse-books" type="button" hidden>Find books</button>
         </header>
 
         <section class="browse-discovery" id="browse-body">
+          <div class="browse-media-switch" id="browse-media-switch" role="group" aria-label="What do you want to find?" hidden>
+            <button type="button" aria-pressed="true">Manga &amp; comics</button>
+            <button id="browse-books" type="button" aria-pressed="false" hidden>Books</button>
+          </div>
           <section class="recommendation-section" id="mangabaka-recommendations" aria-labelledby="mangabaka-recommendations-title">
             <div class="section-heading">
               <div>

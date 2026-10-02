@@ -1,5 +1,6 @@
 import os
 import pathlib
+import sqlite3
 from datetime import datetime, timedelta, timezone
 import tempfile
 import unittest
@@ -107,11 +108,28 @@ class BooksConfigurationTests(unittest.TestCase):
                     "SELECT name FROM sqlite_master WHERE type = 'table'"
                 )}
                 version = connection.execute("PRAGMA user_version").fetchone()[0]
-            self.assertEqual(version, 1)
+            self.assertEqual(version, 2)
             self.assertTrue({
                 "books", "book_progress", "book_reader_preferences",
                 "shelfmark_downloads", "book_meta",
             }.issubset(tables))
+
+    def test_version_one_store_migrates_book_library_groups(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = pathlib.Path(temporary) / "books.sqlite3"
+            connection = sqlite3.connect(path)
+            connection.executescript("""
+                CREATE TABLE books (id INTEGER PRIMARY KEY, title TEXT NOT NULL);
+                CREATE TABLE book_progress (book_id INTEGER, progression REAL);
+                PRAGMA user_version = 1;
+            """)
+            connection.close()
+            store = BookStore(str(path))
+            with store.connection() as migrated:
+                version = migrated.execute("PRAGMA user_version").fetchone()[0]
+                columns = {row[1] for row in migrated.execute("PRAGMA table_info(books)")}
+            self.assertEqual(version, 2)
+            self.assertIn("library_status", columns)
 
     def test_opds_sync_is_idempotent_and_matches_a_changed_stable_id_by_unique_isbn(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -140,11 +158,17 @@ class BooksConfigurationTests(unittest.TestCase):
                 "isbn": "", "acquisitionHref": "http://cwa/alice.epub", "coverHref": "",
             }])
             book_id = store.list_books()["books"][0]["id"]
+            self.assertEqual(store.get_book(book_id)["libraryStatus"], "plan_to_read")
+            self.assertEqual(store.set_library_status(book_id, "paused")["libraryStatus"], "paused")
+            with self.assertRaisesRegex(BookRequestError, "Invalid book library group"):
+                store.set_library_status(book_id, "on_fire")
+            store.set_library_status(book_id, "plan_to_read")
             first = store.save_progress("reader", book_id, {
                 "locatorType": "cfi", "locator": "epubcfi(/6/2!/4/2/1:0)",
                 "resourceHref": "chapter-1.xhtml", "progression": 0.125, "revision": 0,
             })
             self.assertEqual(first["revision"], 1)
+            self.assertEqual(store.get_book(book_id)["libraryStatus"], "reading")
             self.assertEqual(store.get_progress("reader", book_id)["locator"], "epubcfi(/6/2!/4/2/1:0)")
             with self.assertRaises(BookRequestError) as raised:
                 store.save_progress("reader", book_id, {

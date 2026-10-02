@@ -1,4 +1,15 @@
 import "./books.css";
+import { BOOK_LIBRARY_GROUPS, libraryStatus } from "./books-integration.js";
+
+const BOOK_LIBRARY_GROUP_LABELS = {
+  reading: "Reading",
+  plan_to_read: "Plan to read",
+  paused: "Paused",
+  completed: "Completed",
+  dropped: "Dropped",
+  rereading: "Rereading",
+  considering: "Considering",
+};
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -208,7 +219,38 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
       read.type = "button";
       read.disabled = !book.hasEpub;
       read.addEventListener("click", () => navigate("book-read", { id: book.id }));
-      copy.append(read);
+      const group = element("label", "book-library-group");
+      group.append(element("span", "", "Library group"));
+      const groupSelect = element("select", "library-status-select");
+      groupSelect.setAttribute("aria-label", "Library group");
+      BOOK_LIBRARY_GROUPS.forEach((status) => {
+        const option = element("option", "", BOOK_LIBRARY_GROUP_LABELS[status]);
+        option.value = status;
+        groupSelect.append(option);
+      });
+      groupSelect.value = libraryStatus(book);
+      groupSelect.addEventListener("change", async () => {
+        const previous = libraryStatus(book);
+        groupSelect.disabled = true;
+        groupSelect.setCustomValidity("");
+        try {
+          const payload = await request(`/api/books/${encodeURIComponent(book.id)}/library-status`, {
+            method: "POST",
+            body: JSON.stringify({ status: groupSelect.value }),
+          });
+          Object.assign(book, payload.book);
+          groupSelect.value = libraryStatus(book);
+          await Promise.resolve(onLibraryChange());
+        } catch (error) {
+          groupSelect.value = previous;
+          groupSelect.setCustomValidity(error.message);
+          groupSelect.reportValidity();
+        } finally {
+          groupSelect.disabled = false;
+        }
+      });
+      group.append(groupSelect);
+      copy.append(group, read);
       detail.append(copy);
       content.replaceChildren(back, detail);
     } catch (error) {
@@ -316,6 +358,17 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
     const back = element("button", "text-button books-back", "‹ Browse");
     back.type = "button";
     back.dataset.booksAction = "back-browse";
+    const mediaSwitch = element("div", "browse-media-switch");
+    mediaSwitch.setAttribute("role", "group");
+    mediaSwitch.setAttribute("aria-label", "What do you want to find?");
+    const mangaMode = element("button", "", "Manga & comics");
+    mangaMode.type = "button";
+    mangaMode.setAttribute("aria-pressed", "false");
+    mangaMode.dataset.booksAction = "back-browse";
+    const bookMode = element("button", "", "Books");
+    bookMode.type = "button";
+    bookMode.setAttribute("aria-pressed", "true");
+    mediaSwitch.append(mangaMode, bookMode);
     const panel = element("section", "panel books-search-panel");
     panel.append(element("h2", "", "Find a book"), element("p", "books-search-help", "Search Shelfmark metadata, then choose an EPUB release for CWA to import."));
     const form = element("form", "books-search-form");
@@ -364,7 +417,7 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
     panel.append(form, results);
     const downloadHost = element("div");
     downloadHost.id = "books-downloads-container";
-    content.replaceChildren(back, panel, downloadHost);
+    content.replaceChildren(back, mediaSwitch, panel, downloadHost);
     void renderDownloads(downloadHost);
     input.focus({ preventScroll: true });
   }

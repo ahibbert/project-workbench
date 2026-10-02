@@ -2729,6 +2729,10 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/books/preferences":
                 self.handle_books_preferences_post()
                 return
+            book_library_status = re.fullmatch(r"/api/books/(\d+)/library-status", parsed.path)
+            if book_library_status:
+                self.handle_book_library_status_post(int(book_library_status.group(1)))
+                return
             book_progress = re.fullmatch(r"/api/books/(\d+)/progress", parsed.path)
             if book_progress:
                 self.handle_book_progress_post(int(book_progress.group(1)))
@@ -3193,6 +3197,13 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             return
         payload = self.read_json_request(16384)
         self.send_json({"progress": self.books_service().save_progress(self.book_user_id(), book_id, payload)})
+
+    def handle_book_library_status_post(self, book_id):
+        if not self.books_config().enabled:
+            self.send_json({"error": "Books are disabled", "code": "feature_disabled"}, status=404)
+            return
+        payload = self.read_json_request(4096)
+        self.send_json({"book": self.books_service().set_library_status(book_id, payload.get("status"))})
 
     def handle_books_preferences_get(self):
         if not self.books_config().enabled:

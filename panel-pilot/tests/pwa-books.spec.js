@@ -17,11 +17,13 @@ const book = {
   coverUrl: "",
   epubUrl: "/api/books/1/epub",
   hasEpub: true,
+  libraryStatus: "plan_to_read",
   dateAdded: "2026-10-02T00:00:00Z",
   lastSyncedAt: "2026-10-02T00:00:00Z",
 };
 
 async function stubApp(page, { booksEnabled, queued = [], progressState = { current: null }, progressWrites = [] }) {
+  let currentBook = { ...book, libraryStatus: progressState.current ? "reading" : book.libraryStatus };
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     if (url.pathname === "/api/books/status") {
@@ -41,7 +43,12 @@ async function stubApp(page, { booksEnabled, queued = [], progressState = { curr
       return;
     }
     if (url.pathname === "/api/books") {
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ books: [{ ...book, progress: progressState.current }], total: 1, limit: 200, offset: 0 }) });
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ books: [{ ...currentBook, progress: progressState.current }], total: 1, limit: 200, offset: 0 }) });
+      return;
+    }
+    if (url.pathname === "/api/books/1/library-status" && route.request().method() === "POST") {
+      currentBook = { ...currentBook, libraryStatus: route.request().postDataJSON().status };
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ book: currentBook }) });
       return;
     }
     if (url.pathname === "/api/books/1/progress" && route.request().method() === "POST") {
@@ -64,7 +71,7 @@ async function stubApp(page, { booksEnabled, queued = [], progressState = { curr
       return;
     }
     if (url.pathname === "/api/books/1") {
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ book, progress: progressState.current }) });
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ book: currentBook, progress: progressState.current }) });
       return;
     }
     if (url.pathname === "/api/books/search") {
@@ -127,6 +134,8 @@ test("enabled books join the main library and open an isolated detail view", asy
   await expect(page).toHaveURL(/#book-detail\?id=1$/);
   await expect(page.locator(".book-detail h2")).toHaveText("Alice's Adventures in Wonderland");
   await expect(page.locator(".book-detail .primary-button")).toBeEnabled();
+  await page.getByLabel("Library group", { exact: true }).selectOption("paused");
+  await expect(page.getByLabel("Library group", { exact: true })).toHaveValue("paused");
   await page.locator("#nav-settings").click();
   await expect(page.locator("#book-services-panel")).toBeVisible();
   await expect(page.locator("#book-services-note")).toContainText("Shelfmark ready");
@@ -171,8 +180,9 @@ test("Shelfmark acquisition offers only normalized EPUB choices and queues an op
   await stubApp(page, { booksEnabled: true, queued });
   await page.goto("/", { waitUntil: "networkidle" });
   await page.locator("#nav-browse").click();
-  await page.getByRole("button", { name: "Find books" }).click();
+  await page.locator(".browse-media-switch").getByRole("button", { name: "Books" }).click();
   await expect(page).toHaveURL(/#books-search$/);
+  await expect(page.locator(".books-content .browse-media-switch").getByRole("button", { name: "Books" })).toHaveAttribute("aria-pressed", "true");
   await page.getByRole("searchbox", { name: "Book title or author" }).fill("The Mercy of Gods");
   await page.locator(".books-search-form").getByRole("button", { name: "Search" }).click();
   await page.getByRole("button", { name: /The Mercy of Gods/ }).click();
@@ -204,6 +214,18 @@ test("EPUB reader opens a public-domain fixture and persists an exact CFI", asyn
   await page.getByRole("button", { name: "Contents" }).click();
   await expect(page.locator(".epub-toc")).toBeVisible();
   await page.getByRole("button", { name: "Close" }).click();
+  const epubBody = page.frameLocator(".epub-viewport iframe").locator("body");
+  await epubBody.evaluate(() => {
+    CSSStyleSheet.prototype.insertRule = () => { throw new Error("Safari stylesheet is not attached"); };
+  });
+  await page.locator(".epub-settings summary").click();
+  await page.getByLabel("Theme").selectOption("sepia");
+  await expect(page.locator(".epub-reader")).toHaveAttribute("data-theme", "sepia");
+  await expect.poll(() => epubBody.evaluate((body) => body.style.background)).not.toBe("");
+  await page.getByLabel("Text size").selectOption("130");
+  await expect.poll(() => epubBody.evaluate((body) => body.style.fontSize)).toBe("130%");
+  await expect(page.locator(".epub-reader-state")).toBeHidden();
+  await page.locator(".epub-settings summary").click();
   await expect.poll(() => progressWrites.length, { timeout: 10_000 }).toBeGreaterThan(0);
   expect(progressWrites.at(-1).locatorType).toBe("cfi");
   expect(progressWrites.at(-1).locator).toMatch(/^epubcfi\(/);
@@ -223,6 +245,11 @@ test("books library and EPUB controls remain usable at phone width", async ({ pa
   await page.setViewportSize({ width: 390, height: 844 });
   await stubApp(page, { booksEnabled: true });
   await page.goto("/", { waitUntil: "networkidle" });
+  const navLayout = await page.locator(".app-nav").evaluate((nav) => ({
+    columns: getComputedStyle(nav).gridTemplateColumns.split(" ").length,
+    visibleButtons: [...nav.querySelectorAll(".app-nav-button")].filter((button) => !button.hidden).length,
+  }));
+  expect(navLayout).toEqual({ columns: 5, visibleButtons: 5 });
   await page.getByRole("button", { name: /^Books$/ }).first().click();
   await page.getByRole("button", { name: /^Plan/ }).click();
   await expect(page.locator(".book-library-card")).toBeVisible();
@@ -231,6 +258,11 @@ test("books library and EPUB controls remain usable at phone width", async ({ pa
   await page.getByRole("button", { name: "Read book" }).click();
   await expect(page.locator(".epub-toolbar")).toBeVisible();
   await expect(page.getByRole("button", { name: "Next page" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Next page" })).toHaveText("");
+  await expect.poll(() => page.getByRole("button", { name: "Next page" }).evaluate((button) => ({
+    opacity: getComputedStyle(button).opacity,
+    height: button.getBoundingClientRect().height,
+  }))).toMatchObject({ opacity: "0", height: expect.any(Number) });
   await page.locator(".epub-settings summary").click();
   await expect(page.getByLabel("Page width")).toBeVisible();
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
