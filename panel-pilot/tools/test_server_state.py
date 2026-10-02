@@ -8,7 +8,7 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from server import PanelPilotHandler, detect_panel_image  # noqa: E402
+from server import PanelPilotHandler, SourceProfileStore, detect_panel_image  # noqa: E402
 
 
 class DetectorProxyTests(unittest.TestCase):
@@ -103,6 +103,32 @@ class LibraryMergeTests(unittest.TestCase):
         self.assertEqual(cleaned[0]["mangabakaAccountKey"], "user-123")
         self.assertEqual(cleaned[0]["completedChapter"], 486.5)
         self.assertEqual(cleaned[0]["serverUrl"], "http://suwayomi-a:4567")
+
+
+class SourceProfileTests(unittest.TestCase):
+    def test_profiles_accumulate_private_operational_evidence_and_rank_failures_lower(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = SourceProfileStore(pathlib.Path(directory) / "source-profiles.json")
+            summary = store.ingest([
+                {"sourceId": "fast", "sourceLabel": "Fast Manga", "operation": "search", "outcome": "success", "latencyMs": 250, "mediaFormat": "manga"},
+                {"sourceId": "slow", "sourceLabel": "Slow Manga", "operation": "search", "outcome": "success", "latencyMs": 12000, "mediaFormat": "manga"},
+                {"sourceId": "broken", "sourceLabel": "Broken Comics", "operation": "pages", "outcome": "failure", "latencyMs": 800, "mediaFormat": "comic"},
+            ])
+
+            profiles = {profile["sourceId"]: profile for profile in summary["profiles"]}
+            self.assertGreater(profiles["fast"]["score"], profiles["slow"]["score"])
+            self.assertGreater(profiles["slow"]["score"], profiles["broken"]["score"])
+            self.assertEqual(profiles["broken"]["consecutiveFailures"], 1)
+            self.assertEqual(profiles["fast"]["formats"], {"manga": 1})
+            self.assertNotIn("title", (pathlib.Path(directory) / "source-profiles.json").read_text(encoding="utf-8").lower())
+
+    def test_profiles_reject_unbounded_or_identifying_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = SourceProfileStore(pathlib.Path(directory) / "source-profiles.json")
+            with self.assertRaisesRegex(ValueError, "invalid sourceId"):
+                store.ingest([{"sourceId": "../escape", "operation": "search", "outcome": "success"}])
+            with self.assertRaisesRegex(ValueError, "invalid operation"):
+                store.ingest([{"sourceId": "source", "operation": "chapter-title", "outcome": "success"}])
 
 
 class MangaBakaSyncTests(unittest.TestCase):

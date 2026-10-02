@@ -128,9 +128,20 @@ the **More** menu on each title lets you correct it permanently. The saved
 format chooses the initial reader mode without preventing temporary mode
 changes while reading.
 
-Manga and webtoons remain eligible for MangaBaka matching and progress sync.
-Titles marked as comics are excluded; changing a matched title to Comic also
-removes its local MangaBaka link and any queued update for that series.
+Only titles marked as manga are eligible for MangaBaka matching and progress
+sync. Changing a matched title to Comic or Webtoon also removes its local
+MangaBaka link and any queued update for that series.
+
+When a Suwayomi chapter source fails, the reader offers **Change source** next
+to retry and exit. Matching results use the same source picker as ordinary
+Browse searches. Panels preserves the library status, format, MangaBaka link,
+and nearest equivalent chapter/page when the replacement is confirmed.
+
+The picker ranks matching sources using private reliability profiles built
+from real search and chapter-page outcomes. It shows whether a score is an
+early signal or established history. Profiles contain source identity,
+success/failure counts, and timings, but never the searched title, chapter,
+cover, or page URL.
 
 ### Apple platform support
 

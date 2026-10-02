@@ -121,6 +121,7 @@ Server state is under `data/panels`:
 
 - `library.json` — the Panels library and resumable reading state
 - `download-buffer.json` — Suwayomi server-download queue
+- `source-profiles.json` — aggregate source reliability and latency history
 - `panel-reports/` and `detector-cache/` — detector output and cache
 - `mangabaka-config.json` — optional MangaBaka credential
 

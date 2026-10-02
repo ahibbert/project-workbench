@@ -426,6 +426,8 @@ const state = {
   baseUrl: defaultSuwayomiUrl,
   sources: [],
   visibleSources: [],
+  sourceProfiles: new Map(),
+  sourceProfilesPromise: null,
   sourceIndex: { entries: [], updatedAt: "", sourceIds: [] },
   sourceIndexing: false,
   mangas: [],
@@ -1520,6 +1522,7 @@ async function reconnectPanelPilot() {
   networkReconnectPromise = (async () => {
     const appRecovery = Promise.allSettled([
       loadLibraryItems(),
+      loadSourceProfiles(),
       state.librarySavePending ? flushLibraryItems() : Promise.resolve(),
       refreshMangaBakaStatus(),
       loadMangaBakaRecommendations(),
@@ -1645,6 +1648,41 @@ async function postLocalJson(path, body) {
     throw new Error(payload.error);
   }
   return payload;
+}
+
+function applySourceProfiles(payload) {
+  const profiles = Array.isArray(payload?.profiles) ? payload.profiles : [];
+  state.sourceProfiles = new Map(profiles.map((profile) => [String(profile.sourceId), profile]));
+  return state.sourceProfiles;
+}
+
+async function loadSourceProfiles() {
+  try {
+    return applySourceProfiles(await localJson("/api/source-profiles"));
+  } catch {
+    return state.sourceProfiles;
+  }
+}
+
+function makeSourceObservation(source, operation, outcome, startedAt, mediaFormat = "") {
+  return {
+    sourceId: String(source?.id ?? source?.sourceId ?? ""),
+    sourceLabel: sourceLabel(source || {}),
+    operation,
+    outcome,
+    latencyMs: Math.max(0, Math.round(performance.now() - startedAt)),
+    mediaFormat: mediaFormats.includes(mediaFormat) ? mediaFormat : "",
+  };
+}
+
+async function recordSourceObservations(observations) {
+  const valid = observations.filter((observation) => observation.sourceId);
+  if (!valid.length || !navigator.onLine) return;
+  try {
+    applySourceProfiles(await postLocalJson("/api/source-profiles", { observations: valid }));
+  } catch {
+    // Source history is advisory and must never interrupt browsing or reading.
+  }
 }
 
 async function deleteLocalJson(path) {
@@ -2714,6 +2752,7 @@ async function searchSource() {
     showToast("Enter a manga title first.", "bad");
     return;
   }
+  if (state.sourceProfilesPromise) await state.sourceProfilesPromise.catch(() => null);
 
   const searchController = new AbortController();
   state.searchAbortController = searchController;
@@ -2751,8 +2790,10 @@ async function searchSource() {
 
     const results = [];
     const failures = [];
+    const observations = [];
     let searched = 0;
     await mapWithConcurrency(sources, 3, async (source) => {
+      const startedAt = performance.now();
       try {
         const data = await graphQL(queries.searchSource, {
           input: { source: source.id, query, page: 1, type: "SEARCH" },
@@ -2760,9 +2801,11 @@ async function searchSource() {
         (data.fetchSourceManga?.mangas || []).forEach((manga) => {
           results.push({ ...manga, sourceId: manga.sourceId || source.id });
         });
+        observations.push(makeSourceObservation(source, "search", "success", startedAt));
       } catch (error) {
         if (!isCurrentSearch() || error?.name === "ReaderLoadCancelled") return;
         failures.push(sourceLabel(source));
+        observations.push(makeSourceObservation(source, "search", "failure", startedAt));
       } finally {
         searched += 1;
         if (isCurrentSearch()) {
@@ -2770,6 +2813,8 @@ async function searchSource() {
         }
       }
     });
+    if (!isCurrentSearch()) return;
+    await recordSourceObservations(observations);
     if (!isCurrentSearch()) return;
     addMangasToSourceIndex(results);
     const liveResults = uniqueMangaResults(results);
@@ -2930,14 +2975,42 @@ function uniqueMangaResults(results) {
 
 function sortMangaResults(results, query) {
   const normalizedQuery = normalizeTitle(query);
+  const desiredFormat = state.sourceMigration
+    ? inferredMediaFormat(state.sourceMigration.fromLibraryItem || state.sourceMigration.fromManga)
+    : state.pendingMangaBakaRecommendation ? "manga" : "";
   return results.sort((a, b) => {
     const aTitle = normalizeTitle(a.title);
     const bTitle = normalizeTitle(b.title);
     const aExact = aTitle === normalizedQuery ? 0 : 1;
     const bExact = bTitle === normalizedQuery ? 0 : 1;
     if (aExact !== bExact) return aExact - bExact;
-    return sourceRank(a.sourceId) - sourceRank(b.sourceId) || aTitle.localeCompare(bTitle);
+    if (desiredFormat) {
+      const aFormat = resultSourceMediaFormat(a) === desiredFormat ? 0 : 1;
+      const bFormat = resultSourceMediaFormat(b) === desiredFormat ? 0 : 1;
+      if (aFormat !== bFormat) return aFormat - bFormat;
+    }
+    return sourceReliabilityScore(b.sourceId) - sourceReliabilityScore(a.sourceId)
+      || sourceRank(a.sourceId) - sourceRank(b.sourceId)
+      || aTitle.localeCompare(bTitle);
   });
+}
+
+function resultSourceMediaFormat(manga) {
+  const source = state.sources.find((item) => String(item.id) === String(manga.sourceId));
+  return automaticMediaFormat({ ...manga, sourceLabel: source ? sourceLabel(source) : "" });
+}
+
+function sourceReliabilityScore(sourceId) {
+  return Number(state.sourceProfiles.get(String(sourceId))?.score) || 75;
+}
+
+function sourceProfileResultMeta(manga, resultIndex, fallback) {
+  const profile = state.sourceProfiles.get(String(manga.sourceId));
+  if (!profile?.attempts) return fallback;
+  const signal = profile.confidence === "early" ? "early signal" : profile.confidence;
+  if (resultIndex === 0) return `Recommended · ${profile.score}/100 · ${signal}`;
+  if (profile.consecutiveFailures) return `Recent failures · ${profile.score}/100`;
+  return `${profile.score}/100 reliability · ${signal}`;
 }
 
 function sourceRank(sourceId) {
@@ -3001,7 +3074,7 @@ function renderMangaResults() {
     return;
   }
 
-  state.mangas.forEach((manga) => {
+  state.mangas.forEach((manga, resultIndex) => {
     const card = document.createElement("article");
     card.className = "manga-card browse-card";
     const source = state.sources.find((item) => String(item.id) === String(manga.sourceId));
@@ -3011,12 +3084,12 @@ function renderMangaResults() {
       title: manga.title,
       eyebrow: sourceText || "Source",
       meta: state.sourceMigration
-        ? "Use this source"
+        ? sourceProfileResultMeta(manga, resultIndex, "Use this source")
         : exactRecommendationMatch
         ? "Exact title match"
         : state.pendingMangaBakaRecommendation
           ? "Alternative source result"
-          : "View chapters",
+          : sourceProfileResultMeta(manga, resultIndex, "View chapters"),
     });
     button.addEventListener("click", async (event) => {
       const mangabaka = mangaBakaMatchForManga(manga);
@@ -6733,6 +6806,10 @@ async function loadChapterPages(options = {}) {
   setReaderChromeVisible(true);
   setBusy(el.loadChapterPages, true, "Loading");
   setReaderLoading(true, "Fetching chapter pages...", 12);
+  const observationSource = state.sources.find((source) => String(source.id) === String(state.currentManga?.sourceId))
+    || { id: state.currentManga?.sourceId, displayName: state.currentManga?.sourceLabel };
+  const observationStartedAt = performance.now();
+  const observationFormat = inferredMediaFormat(state.currentManga);
   try {
     if (!options.skipLibraryEnsure) {
       await ensureCurrentMangaInSuwayomiLibrary().catch(() => false);
@@ -6771,8 +6848,10 @@ async function loadChapterPages(options = {}) {
     rememberReadingProgress();
     if (serverUrl === currentDeviceServerUrl()) void ensureDownloadAhead(chapterId);
     setConnection(true, `Loaded ${pages.length} pages. Panel detection is running locally.`, "good");
+    void recordSourceObservations([makeSourceObservation(observationSource, "pages", "success", observationStartedAt, observationFormat)]);
   } catch (error) {
     if (error?.name === "ReaderLoadCancelled" || !loadIsCurrent()) return;
+    void recordSourceObservations([makeSourceObservation(observationSource, "pages", "failure", observationStartedAt, observationFormat)]);
     const message = friendlySourceErrorMessage(error);
     setConnection(state.connected, `Could not load chapter pages: ${message}`, "bad");
     showReaderError("Could not open this chapter", message, () => loadChapterPages(options));
@@ -12053,6 +12132,7 @@ if (el.stage) {
   loadSuwayomiProgressOutbox();
   loadMangaBakaOutbox();
   loadLibraryItems();
+  state.sourceProfilesPromise = loadSourceProfiles();
   wireEvents();
   startBackgroundHealthChecks();
   setActiveView(state.activeView, { history: false });

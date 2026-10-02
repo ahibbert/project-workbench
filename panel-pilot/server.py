@@ -38,6 +38,7 @@ READING_STATS_PATH = os.environ.get(
     os.path.join(DATA_ROOT, "reading-stats.sqlite3"),
 )
 MOMENTS_PATH = os.environ.get("PANEL_PILOT_MOMENTS_PATH", os.path.join(DATA_ROOT, "moments"))
+SOURCE_PROFILES_PATH = os.environ.get("PANEL_PILOT_SOURCE_PROFILES_PATH", os.path.join(DATA_ROOT, "source-profiles.json"))
 MANGABAKA_API_BASE = "https://api.mangabaka.org"
 LIBRARY_LIMIT = 5000
 LIBRARY_LOCK = threading.Lock()
@@ -47,7 +48,145 @@ MANGABAKA_LOCK = threading.Lock()
 DOWNLOAD_BUFFER_MANAGER = None
 READING_STATS_LOCK = threading.RLock()
 MOMENTS_LOCK = threading.Lock()
+SOURCE_PROFILES_LOCK = threading.Lock()
 MOMENT_ID_PATTERN = re.compile(r"^[0-9]{13}-[0-9a-f]{16}$")
+SOURCE_ID_PATTERN = re.compile(r"^[a-zA-Z0-9._:-]{1,100}$")
+
+
+class SourceProfileStore:
+    OPERATIONS = ("search", "pages", "download")
+    FORMATS = ("manga", "comic", "webtoon")
+
+    def __init__(self, path=None):
+        self.path = Path(path or SOURCE_PROFILES_PATH).expanduser().resolve()
+
+    def _read_locked(self):
+        try:
+            with open(self.path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            return {"version": 1, "sources": {}}
+        if not isinstance(payload, dict) or not isinstance(payload.get("sources"), dict):
+            return {"version": 1, "sources": {}}
+        return payload
+
+    def _write_locked(self, payload):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=self.path.parent, prefix=".source-profiles-", delete=False) as temporary:
+            json.dump(payload, temporary, ensure_ascii=True, indent=2)
+            temporary.write("\n")
+            temporary_path = Path(temporary.name)
+        try:
+            os.replace(temporary_path, self.path)
+        finally:
+            if temporary_path.exists():
+                temporary_path.unlink()
+
+    def clean_observation(self, observation):
+        if not isinstance(observation, dict):
+            raise ValueError("Source observation must be an object")
+        source_id = str(observation.get("sourceId") or "").strip()
+        if not SOURCE_ID_PATTERN.fullmatch(source_id):
+            raise ValueError("Source observation has an invalid sourceId")
+        operation = str(observation.get("operation") or "")
+        if operation not in self.OPERATIONS:
+            raise ValueError("Source observation has an invalid operation")
+        outcome = str(observation.get("outcome") or "")
+        if outcome not in ("success", "failure"):
+            raise ValueError("Source observation has an invalid outcome")
+        try:
+            latency_ms = max(0, min(120000, int(observation.get("latencyMs") or 0)))
+        except (TypeError, ValueError) as error:
+            raise ValueError("Source observation has an invalid latency") from error
+        source_label = str(observation.get("sourceLabel") or "").replace("\x00", "").strip()[:200]
+        media_format = str(observation.get("mediaFormat") or "")
+        return {
+            "sourceId": source_id,
+            "sourceLabel": source_label,
+            "operation": operation,
+            "outcome": outcome,
+            "latencyMs": latency_ms,
+            "mediaFormat": media_format if media_format in self.FORMATS else "",
+        }
+
+    def ingest(self, observations):
+        if not isinstance(observations, list) or not 1 <= len(observations) <= 100:
+            raise ValueError("Source observations must contain between 1 and 100 entries")
+        cleaned = [self.clean_observation(observation) for observation in observations]
+        now = datetime.now(timezone.utc).isoformat()
+        with SOURCE_PROFILES_LOCK:
+            payload = self._read_locked()
+            sources = payload["sources"]
+            for observation in cleaned:
+                source_id = observation["sourceId"]
+                profile = sources.setdefault(source_id, {
+                    "sourceId": source_id,
+                    "sourceLabel": observation["sourceLabel"],
+                    "attempts": 0,
+                    "successes": 0,
+                    "failures": 0,
+                    "successLatencyMs": 0,
+                    "health": 0.8,
+                    "consecutiveFailures": 0,
+                    "operations": {},
+                    "formats": {},
+                })
+                success = observation["outcome"] == "success"
+                profile["sourceLabel"] = observation["sourceLabel"] or profile.get("sourceLabel", "")
+                profile["attempts"] = min(1000000, int(profile.get("attempts", 0)) + 1)
+                result_key = "successes" if success else "failures"
+                profile[result_key] = min(1000000, int(profile.get(result_key, 0)) + 1)
+                if success:
+                    profile["successLatencyMs"] = min(120000000000, int(profile.get("successLatencyMs", 0)) + observation["latencyMs"])
+                    profile["consecutiveFailures"] = 0
+                    profile["lastSuccessAt"] = now
+                else:
+                    profile["consecutiveFailures"] = min(1000, int(profile.get("consecutiveFailures", 0)) + 1)
+                    profile["lastFailureAt"] = now
+                previous_health = max(0.0, min(1.0, float(profile.get("health", 0.8))))
+                profile["health"] = round(previous_health * 0.8 + (0.2 if success else 0.0), 6)
+                operation = profile["operations"].setdefault(observation["operation"], {"attempts": 0, "successes": 0, "failures": 0})
+                operation["attempts"] += 1
+                operation[result_key] += 1
+                if observation["mediaFormat"]:
+                    formats = profile["formats"]
+                    formats[observation["mediaFormat"]] = int(formats.get(observation["mediaFormat"], 0)) + 1
+                profile["updatedAt"] = now
+            self._write_locked(payload)
+        return self.summary()
+
+    def public_profile(self, profile):
+        attempts = max(0, int(profile.get("attempts", 0)))
+        successes = max(0, int(profile.get("successes", 0)))
+        failures = max(0, int(profile.get("failures", 0)))
+        average_latency = round(int(profile.get("successLatencyMs", 0)) / successes) if successes else 0
+        health = max(0.0, min(1.0, float(profile.get("health", 0.8))))
+        latency_score = max(0.0, 1.0 - (average_latency / 15000)) if successes else 0.5
+        score = round(100 * ((0.85 * health) + (0.15 * latency_score)))
+        confidence = "established" if attempts >= 10 else "developing" if attempts >= 3 else "early"
+        return {
+            "sourceId": str(profile.get("sourceId") or ""),
+            "sourceLabel": str(profile.get("sourceLabel") or "")[:200],
+            "score": max(0, min(100, score)),
+            "confidence": confidence,
+            "attempts": attempts,
+            "successes": successes,
+            "failures": failures,
+            "successRate": round(successes / attempts, 3) if attempts else None,
+            "averageLatencyMs": average_latency,
+            "consecutiveFailures": max(0, int(profile.get("consecutiveFailures", 0))),
+            "operations": profile.get("operations", {}),
+            "formats": profile.get("formats", {}),
+            "lastSuccessAt": profile.get("lastSuccessAt"),
+            "lastFailureAt": profile.get("lastFailureAt"),
+            "updatedAt": profile.get("updatedAt"),
+        }
+
+    def summary(self):
+        with SOURCE_PROFILES_LOCK:
+            profiles = [self.public_profile(profile) for profile in self._read_locked()["sources"].values()]
+        profiles.sort(key=lambda profile: (-profile["score"], -profile["attempts"], profile["sourceLabel"]))
+        return {"schemaVersion": 1, "profiles": profiles}
 
 
 IMAGE_CDN_DOMAINS = (
@@ -1739,6 +1878,12 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/reading-stats/reset":
                 self.handle_reading_stats_reset()
                 return
+            if parsed.path == "/api/source-profiles":
+                try:
+                    self.handle_source_profiles_post()
+                except (ValueError, json.JSONDecodeError) as error:
+                    self.send_json({"error": str(error)}, status=400)
+                return
         except ReadingStatsRequestError as error:
             self.send_json({"error": str(error)}, status=error.status)
             return
@@ -1884,6 +2029,9 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/reading-stats":
                 self.handle_reading_stats_get(parsed)
                 return
+            if parsed.path == "/api/source-profiles":
+                self.send_json(SourceProfileStore().summary())
+                return
             if parsed.path == "/api/reading-stats/export":
                 self.send_json_attachment(
                     ReadingStatsStore().export_data(),
@@ -1957,6 +2105,12 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         params = parse_qs(parsed.query)
         range_name = params.get("range", ["30d"])[0]
         self.send_json(ReadingStatsStore().summary(range_name))
+
+    def handle_source_profiles_post(self):
+        payload = self.read_json_request(65536)
+        if not isinstance(payload, dict):
+            raise ValueError("Source profile payload must be an object")
+        self.send_json(SourceProfileStore().ingest(payload.get("observations")))
 
     def handle_mangabaka_config_post(self):
         payload = self.read_json_request(16384)

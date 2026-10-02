@@ -2,8 +2,10 @@ import { expect, test } from "@playwright/test";
 
 const oldSource = { id: 77, name: "oldmanga", displayName: "Old Manga", lang: "en", isNsfw: false };
 const newSource = { id: 88, name: "newmanga", displayName: "Reliable Manga", lang: "en", isNsfw: false };
+const weakSource = { id: 99, name: "weakmanga", displayName: "Unreliable Manga", lang: "en", isNsfw: false };
 const oldManga = { id: 801, title: "Golden Kamuy", sourceId: oldSource.id, thumbnailUrl: "" };
 const newManga = { id: 901, title: "Golden Kamuy", sourceId: newSource.id, thumbnailUrl: "" };
+const weakManga = { id: 902, title: "Golden Kamuy", sourceId: weakSource.id, thumbnailUrl: "" };
 
 function chapter(mangaId, id) {
   return {
@@ -88,7 +90,7 @@ test("a failed chapter can migrate to another source without losing reading stat
       if (query.includes("HEALTH")) {
         data = { __schema: { queryType: { name: "Query" }, mutationType: { name: "Mutation" } } };
       } else if (query.includes("GET_SOURCES_LIST")) {
-        data = { sources: { nodes: [oldSource, newSource] } };
+        data = { sources: { nodes: [oldSource, weakSource, newSource] } };
       } else if (query.includes("GET_LIBRARY_MANGAS")) {
         const nodes = [oldManga, newManga]
           .filter((manga) => mangaLibraryState.get(manga.id))
@@ -114,7 +116,9 @@ test("a failed chapter can migrate to another source without losing reading stat
         data = {
           fetchSourceManga: {
             hasNextPage: false,
-            mangas: variables.input?.type === "SEARCH" && sourceId === newSource.id ? [newManga] : [],
+            mangas: variables.input?.type === "SEARCH"
+              ? sourceId === newSource.id ? [newManga] : sourceId === weakSource.id ? [weakManga] : []
+              : [],
           },
         };
       } else if (query.includes("UPDATE_MANGA_LIBRARY")) {
@@ -150,6 +154,20 @@ test("a failed chapter can migrate to another source without losing reading stat
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: sharedLibrary }) });
       return;
     }
+    if (url.pathname === "/api/source-profiles") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          schemaVersion: 1,
+          profiles: [
+            { sourceId: String(newSource.id), sourceLabel: newSource.displayName, score: 92, confidence: "established", attempts: 20, consecutiveFailures: 0 },
+            { sourceId: String(weakSource.id), sourceLabel: weakSource.displayName, score: 41, confidence: "established", attempts: 20, consecutiveFailures: 3 },
+          ],
+        }),
+      });
+      return;
+    }
     if (url.pathname === "/api/download-buffer/status") {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ downloaded: 0, queued: 0, failed: 0, windowSize: 0, chapters: [] }) });
       return;
@@ -176,8 +194,12 @@ test("a failed chapter can migrate to another source without losing reading stat
   await page.locator("#reader-error-source").click();
 
   await expect(page.locator("#recommendation-context-title")).toHaveText("Move Golden Kamuy to another source");
-  const replacement = page.locator("#manga-results .manga-card").filter({ hasText: "Reliable Manga" });
+  const replacement = page.locator("#manga-results .manga-card").filter({
+    has: page.locator(".manga-cover-eyebrow", { hasText: /^Reliable Manga \(en\)$/ }),
+  });
   await expect(replacement).toBeVisible();
+  await expect(page.locator("#manga-results .manga-card").first()).toContainText("Reliable Manga");
+  await expect(replacement).toContainText("Recommended · 92/100 · established");
   await replacement.locator(".manga-cover-button").click();
   await expect(page.locator("#detail-library")).toHaveText("Switch to this source");
   await page.locator("#detail-library").click();
@@ -188,6 +210,7 @@ test("a failed chapter can migrate to another source without losing reading stat
   await expect.poll(() => libraryUpdates).toContainEqual({ id: newManga.id, inLibrary: true });
   await expect.poll(() => libraryUpdates).toContainEqual({ id: oldManga.id, inLibrary: false });
   expect(sourceSearches).toContain(newSource.id);
+  expect(sourceSearches).toContain(weakSource.id);
   expect(sourceSearches).not.toContain(oldSource.id);
 
   await expect.poll(async () => page.evaluate(() => {

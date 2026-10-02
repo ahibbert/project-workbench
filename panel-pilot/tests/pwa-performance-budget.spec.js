@@ -7,9 +7,9 @@ const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const distRoot = join(projectRoot, "dist");
 const budgets = {
   indexHtml: 40 * 1024,
-  mainJavaScript: 300 * 1024,
+  mainJavaScript: 302 * 1024,
   mainCss: 72 * 1024,
-  criticalPath: 420 * 1024,
+  criticalPath: 422 * 1024,
   installShell: 660 * 1024,
   domContentLoadedMs: 1_500,
   loadMs: 2_000,

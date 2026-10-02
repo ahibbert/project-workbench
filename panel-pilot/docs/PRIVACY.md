@@ -13,6 +13,14 @@ downloaded chapter pages. Browser storage and server data are not encrypted by
 Panels; filesystem, device, browser-profile, and backup protections therefore
 matter. Signing out ends server access but does not erase all browser storage.
 
+Panels also keeps a private source-reliability profile so matching sources can
+be ranked without probing every candidate repeatedly. It records a source ID
+and label, operation type, success or failure, response time, inferred media
+format, and aggregate timestamps. It does not record which title was searched,
+chapter names or IDs, cover URLs, page URLs, or image contents in this profile.
+The profile remains on the self-hosted Panels server and is not sent to an
+analytics provider.
+
 ## Suwayomi
 
 Suwayomi is the core content service. The browser sends same-origin requests to
