@@ -3309,6 +3309,15 @@ function hideReaderControls() {
   setReaderChromeVisible(false);
 }
 
+function bindOptionsSwipe() {
+  const sheet = el.readerOptions.querySelector(".reader-options-sheet");
+  let startY;
+  sheet.addEventListener("touchstart", (event) => { startY = event.touches[0].clientY; });
+  sheet.addEventListener("touchend", (event) => {
+    if (startY - sheet.offsetTop < 64 && event.changedTouches[0].clientY - startY > 63) el.readerOptions.open = false;
+  });
+}
+
 async function loadComickChapters({ append = false, page = 1 } = {}) {
   const comicUrl = el.comickUrl.value.trim();
   if (!comicUrl) {
@@ -14425,6 +14434,7 @@ function wireEvents() {
       el.readerOptions.querySelector(".reader-options-sheet input, .reader-options-sheet button")?.focus();
     });
   });
+  bindOptionsSwipe();
 
   document.addEventListener("focusin", (event) => {
     const modal = activeReaderOverlay();

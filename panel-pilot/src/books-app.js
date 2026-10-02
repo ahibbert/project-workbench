@@ -63,26 +63,12 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
     sync.dataset.booksAction = "sync";
     actions.append(search, sync);
     header.append(heading, actions);
-    const connection = element("div", "books-connection");
-    connection.id = "books-connection";
-    const connectionCopy = element("span", "", "Checking book services…");
-    connectionCopy.id = "books-connection-copy";
-    const connectionActions = element("span", "books-connection-actions");
-    for (const [target, label] of [["cwa", "Test CWA"], ["shelfmark", "Test Shelfmark"]]) {
-      const button = element("button", "mini-button", label);
-      button.type = "button";
-      button.dataset.booksAction = `test-${target}`;
-      connectionActions.append(button);
-    }
-    connection.append(connectionCopy, connectionActions);
     const content = element("main", "books-content");
     content.id = "books-content";
-    root.append(header, connection, content);
+    root.append(header, content);
     root.addEventListener("click", (event) => {
       const action = event.target.closest("[data-books-action]")?.dataset.booksAction;
       if (action === "sync") void syncLibrary(event.target.closest("button"));
-      if (action === "test-cwa") void testConnection("cwa", event.target.closest("button"));
-      if (action === "test-shelfmark") void testConnection("shelfmark", event.target.closest("button"));
       if (action === "select-book") void loadReleases(Number(event.target.closest("button").dataset.resultIndex));
       if (action === "queue-release") void queueRelease(Number(event.target.closest("button").dataset.releaseIndex), event.target.closest("button"));
       if (action === "search") navigate("books-search");
@@ -94,39 +80,8 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
     initialized = true;
   }
 
-  function connectionText() {
-    const parts = [
-      status?.cwaConfigured ? "CWA connected" : "CWA needs configuration",
-      status?.shelfmarkConfigured ? "Shelfmark ready" : "Shelfmark needs configuration",
-    ];
-    if (status?.syncError) parts.push(`Last sync failed: ${status.syncError}`);
-    return parts.join(" · ");
-  }
-
   async function loadStatus() {
     status = await request("/api/books/status");
-    const node = root.querySelector("#books-connection");
-    root.querySelector("#books-connection-copy").textContent = connectionText();
-    node.dataset.state = status.syncError ? "bad" : status.cwaConfigured ? "good" : "pending";
-  }
-
-  async function testConnection(target, button) {
-    button.disabled = true;
-    const copy = root.querySelector("#books-connection-copy");
-    copy.textContent = `Testing ${target === "cwa" ? "CWA" : "Shelfmark"}…`;
-    try {
-      await request("/api/books/connections/test", {
-        method: "POST",
-        body: JSON.stringify({ target }),
-      });
-      copy.textContent = `${target === "cwa" ? "CWA" : "Shelfmark"} connection is healthy.`;
-      root.querySelector("#books-connection").dataset.state = "good";
-    } catch (error) {
-      copy.textContent = error.message;
-      root.querySelector("#books-connection").dataset.state = "bad";
-    } finally {
-      button.disabled = false;
-    }
   }
 
   function renderEmpty(content) {
@@ -339,18 +294,38 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
     }[download.status] || download.status;
   }
 
+  function isRecentReady(download, now = Date.now()) {
+    if (download.status !== "ready") return false;
+    const updated = Date.parse(download.updatedAt || "");
+    return Number.isFinite(updated) && now - updated >= 0 && now - updated <= 60 * 60 * 1000;
+  }
+
+  function acquisitionDetail(download) {
+    if (download.error) return download.error;
+    if (download.status === "ready") return "Added recently";
+    if (download.status === "downloading" && Number.isFinite(Number(download.progress))) {
+      const percent = Math.round(Math.max(0, Math.min(1, Number(download.progress))) * 100);
+      return `${downloadLabel(download)} · ${percent}%`;
+    }
+    return downloadLabel(download);
+  }
+
   async function renderDownloads(container) {
     try {
       const { downloads } = await request("/api/books/downloads");
       container.replaceChildren();
-      if (!downloads?.length) return;
+      const visibleDownloads = (downloads || []).filter((download) => (
+        ["queued", "downloading", "importing", "failed"].includes(download.status)
+        || isRecentReady(download)
+      )).slice(0, 8);
+      if (!visibleDownloads.length) return;
       const section = element("section", "books-downloads");
-      section.append(element("h2", "", "Acquisition status"));
-      for (const download of downloads) {
+      section.append(element("h2", "", "Acquisition activity"));
+      for (const download of visibleDownloads) {
         const row = element("div", "books-download-row");
         row.dataset.state = download.status;
         const copy = element("span");
-        copy.append(element("strong", "", download.title), element("small", "", download.error || downloadLabel(download)));
+        copy.append(element("strong", "", download.title), element("small", "", acquisitionDetail(download)));
         row.append(copy);
         if (download.status === "ready" && download.bookId) {
           const read = element("button", "mini-button", "Open");
@@ -562,9 +537,7 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
       await renderLibrary();
       void onLibraryChange();
     } catch (error) {
-      const node = root.querySelector("#books-connection");
-      root.querySelector("#books-connection-copy").textContent = error.message;
-      node.dataset.state = "bad";
+      root.querySelector("#books-content")?.prepend(element("p", "books-error", error.message));
     } finally {
       if (button) button.disabled = false;
     }
@@ -585,9 +558,7 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
         : detail ? "Your text library" : "Your EPUB library from Calibre-Web Automated";
       actions.hidden = searching || detail || route.bookRoute === "book-read";
       if (route.bookRoute !== "book-read") leaveReader();
-      await loadStatus().catch((error) => {
-        root.querySelector("#books-connection-copy").textContent = error.message;
-      });
+      await loadStatus().catch(() => { status = null; });
       const id = new URLSearchParams(route.bookQuery || "").get("id");
       if (route.bookRoute === "book-detail" && id) return renderDetail(id);
       if (route.bookRoute === "books-search") {

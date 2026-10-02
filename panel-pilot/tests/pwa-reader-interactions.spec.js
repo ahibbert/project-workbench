@@ -61,6 +61,27 @@ test("whole-page reveal is persisted, mirrored in reader controls, and behaves a
   await expect(page.locator("#cinematic-motion")).not.toBeChecked();
 });
 
+test("reader options can be dismissed by dragging down their handle", async ({ page }) => {
+  await openDemo(page);
+  await page.locator(".reader-options > summary").click();
+  const options = page.locator(".reader-options");
+  await expect(options).toHaveAttribute("open", "");
+  await page.locator(".reader-options-sheet").evaluate((sheet) => {
+    const top = sheet.getBoundingClientRect().top;
+    const dispatch = (type, y) => {
+      const event = new Event(type, { bubbles: true, cancelable: true });
+      const touches = type === "touchend" ? [] : [{ clientX: 190, clientY: y }];
+      Object.defineProperty(event, "touches", { value: touches });
+      Object.defineProperty(event, "changedTouches", { value: [{ clientX: 190, clientY: y }] });
+      sheet.dispatchEvent(event);
+    };
+    dispatch("touchstart", top + 20);
+    dispatch("touchmove", top + 100);
+    dispatch("touchend", top + 100);
+  });
+  await expect(options).not.toHaveAttribute("open", "");
+});
+
 test("after-panel reveal appears after the final panel and before the next page", async ({ page }) => {
   await openDemo(page, { pageReveal: "after" });
   await expect(page.locator("#panel-stat")).toContainText("Panel 1");

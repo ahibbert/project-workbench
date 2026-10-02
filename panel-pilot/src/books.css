@@ -33,33 +33,6 @@
   gap: 0.5rem;
 }
 
-.books-connection {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  margin: 0 1rem 1rem;
-  padding: 0.7rem 0.85rem;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  color: var(--muted);
-  background: #f7f8f5;
-  font-size: 0.84rem;
-}
-
-.books-connection-actions {
-  display: flex;
-  flex: 0 0 auto;
-  gap: 0.4rem;
-}
-
-.books-connection[data-state="good"] {
-  border-color: rgba(42, 137, 94, 0.3);
-  background: #eff8f2;
-  color: #28714f;
-}
-
-.books-connection[data-state="bad"],
 .books-error {
   color: #922f2f;
 }
@@ -308,8 +281,7 @@ body.book-reader-active {
 body.book-reader-active .app-nav,
 body.book-reader-active .reading-miniplayer,
 body.book-reader-active .download-status-button,
-body.book-reader-active .books-header,
-body.book-reader-active .books-connection {
+body.book-reader-active .books-header {
   display: none !important;
 }
 
@@ -356,14 +328,15 @@ body.book-reader-active .books-content {
 }
 
 .book-recommendation-rail {
+  grid-auto-columns: 10.8rem;
   padding-inline: var(--page-pad, 1rem);
 }
 
 .book-recommendation-card {
   display: grid;
   grid-template-rows: 12.5rem minmax(6.2rem, auto) auto;
-  min-width: 10.8rem;
-  max-width: 10.8rem;
+  width: 100%;
+  min-width: 0;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 18px;
@@ -436,6 +409,7 @@ body.book-reader-active .books-content {
 }
 
 .epub-toolbar {
+  z-index: 7;
   grid-template-columns: auto minmax(0, 1fr) auto auto auto;
   gap: 0.45rem;
 }
@@ -558,7 +532,7 @@ body.book-reader-active .books-content {
 }
 
 .epub-viewport {
-  width: min(100%, var(--book-content-width));
+  width: min(calc(100% - var(--book-inline-inset, 2rem)), var(--book-content-width));
   height: 100%;
   margin: 0 auto;
 }
@@ -722,11 +696,6 @@ body.book-reader-active .books-content {
   .book-detail {
     grid-template-columns: 7.5rem minmax(0, 1fr);
     gap: 1rem;
-  }
-
-  .books-connection {
-    align-items: stretch;
-    flex-direction: column;
   }
 
   .books-search-form {

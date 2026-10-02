@@ -167,6 +167,10 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
     return palettes[theme] || palettes.light;
   }
 
+  function pageWidthInset(width) {
+    return width < 600 ? "3rem" : width < 800 ? "2rem" : width < 1e3 ? "1rem" : "0px";
+  }
+
   function setImportant(style, property, value) {
     if (value) style.setProperty(property, value, "important");
     else style.removeProperty(property);
@@ -206,6 +210,7 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
     reader.dataset.theme = preferences.theme;
     reader.dataset.flow = preferences.readingFlow;
     stage.style.setProperty("--book-content-width", `${preferences.contentWidth}px`);
+    stage.style.setProperty("--book-inline-inset", pageWidthInset(preferences.contentWidth));
     rendition?.getContents?.().forEach((contents) => applyDocumentPreferences(contents.document));
   }
 
@@ -351,17 +356,33 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
     sanitizeRenderedDocument(document);
     applyDocumentPreferences(document);
     let contentGesture = null;
-    let lastHandledPointerTap = 0;
+    let contentTouch = null;
+    let lastHandledGesture = 0;
+    const finishGesture = (start, clientX, clientY, target) => {
+      if (!start || target?.closest?.("a") || Date.now() - lastHandledGesture < 350) return;
+      const deltaX = clientX - start.x;
+      const deltaY = clientY - start.y;
+      const moved = Math.hypot(deltaX, deltaY) > 12;
+      if (!navigateFromGesture(deltaX, deltaY)) {
+        handleReaderTap(clientX / Math.max(1, contents.window.innerWidth), moved);
+      }
+      lastHandledGesture = Date.now();
+    };
     document.addEventListener("pointerdown", (event) => { contentGesture = { x: event.clientX, y: event.clientY }; }, { passive: true });
     document.addEventListener("pointerup", (event) => {
-      if (!contentGesture || event.target.closest?.("a")) return;
-      const deltaX = event.clientX - contentGesture.x;
-      const deltaY = event.clientY - contentGesture.y;
-      const moved = Math.hypot(deltaX, deltaY) > 12;
-      if (!navigateFromGesture(deltaX, deltaY)) handleReaderTap(event.clientX / Math.max(1, contents.window.innerWidth), moved);
-      lastHandledPointerTap = Date.now();
+      finishGesture(contentGesture, event.clientX, event.clientY, event.target);
       contentGesture = null;
     }, { passive: true });
+    document.addEventListener("touchstart", (event) => {
+      const touch = event.touches?.length === 1 ? event.touches[0] : null;
+      contentTouch = touch ? { x: touch.clientX, y: touch.clientY } : null;
+    }, { passive: true });
+    document.addEventListener("touchend", (event) => {
+      const touch = event.changedTouches?.[0];
+      if (touch) finishGesture(contentTouch, touch.clientX, touch.clientY, event.target);
+      contentTouch = null;
+    }, { passive: true });
+    document.addEventListener("touchcancel", () => { contentTouch = null; }, { passive: true });
     document.addEventListener("click", (event) => {
       const link = event.target.closest?.("a[href]");
       if (link) {
@@ -379,8 +400,9 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
       // Some iOS WebKit builds do not deliver pointerup reliably inside the
       // EPUB iframe. The click path keeps the centre control toggle available
       // without double-handling browsers that delivered both events.
-      if (Date.now() - lastHandledPointerTap < 450) return;
+      if (Date.now() - lastHandledGesture < 450) return;
       handleReaderTap(event.clientX / Math.max(1, contents.window.innerWidth));
+      lastHandledGesture = Date.now();
     });
   }
 
@@ -454,6 +476,18 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
       next.hidden = true;
     }
   }
+
+  function bindSettingsSwipe() {
+    let startY;
+    settingsPanel.addEventListener("touchstart", (event) => { startY = event.touches[0]?.clientY; });
+    settingsPanel.addEventListener("touchend", (event) => {
+      const endY = event.changedTouches[0]?.clientY;
+      if (startY < settingsPanel.getBoundingClientRect().top + 64 && endY - startY >= 64) settings.open = false;
+      startY = undefined;
+    });
+  }
+
+  bindSettingsSwipe();
 
   settingsPanel.addEventListener("change", (event) => {
     const control = event.target.closest("[data-preference]");

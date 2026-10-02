@@ -22,7 +22,15 @@ const book = {
   lastSyncedAt: "2026-10-02T00:00:00Z",
 };
 
-async function stubApp(page, { booksEnabled, queued = [], removed = [], progressState = { current: null }, progressWrites = [] }) {
+async function stubApp(page, {
+  booksEnabled,
+  queued = [],
+  removed = [],
+  progressState = { current: null },
+  progressWrites = [],
+  downloads = [],
+  recommendations = null,
+}) {
   let currentBook = { ...book, libraryStatus: progressState.current ? "reading" : book.libraryStatus };
   let currentPreferences = {
     theme: "light", fontFamily: "publisher", fontSize: 100, lineHeight: 1.5,
@@ -89,7 +97,7 @@ async function stubApp(page, { booksEnabled, queued = [], removed = [], progress
     }
     if (url.pathname === "/api/book-recommendations") {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
-        configured: true, status: "ready", mode: "personalized", results: [{
+        configured: true, status: "ready", mode: "personalized", results: recommendations ?? [{
           id: "librarything:mercy", title: "The Mercy of Gods", authors: ["James S. A. Corey"],
           coverUrl: "", reason: { type: "because_you_read", seedTitles: ["Leviathan Wakes"] },
         }],
@@ -111,7 +119,7 @@ async function stubApp(page, { booksEnabled, queued = [], removed = [], progress
       return;
     }
     if (url.pathname === "/api/books/downloads") {
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ downloads: [] }) });
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ downloads }) });
       return;
     }
     if (url.pathname === "/api/library") {
@@ -222,6 +230,43 @@ test("Books for you enters the normal Shelfmark edition and release flow", async
   await expect(page.getByRole("button", { name: /The Mercy of Gods/ })).toBeVisible();
 });
 
+test("book Browse keeps recommendations separate and shows only useful acquisition activity", async ({ page }) => {
+  const now = Date.now();
+  const recommendations = ["The Faith of Beasts", "Leviathan Wakes", "Shroud"].map((title, index) => ({
+    id: `recommendation-${index}`,
+    title,
+    authors: [index === 2 ? "Adrian Tchaikovsky" : "James S. A. Corey"],
+    coverUrl: "",
+    reason: { type: "because_you_read", seedTitles: ["The Mercy of Gods"] },
+  }));
+  const downloads = [
+    { taskId: "active", title: "Active Book", status: "downloading", progress: 0.42, updatedAt: new Date(now).toISOString() },
+    { taskId: "recent", title: "Recent Book", status: "ready", bookId: 1, progress: 1, updatedAt: new Date(now - 5 * 60_000).toISOString() },
+    { taskId: "failed", title: "Failed Book", status: "failed", error: "Source failed", updatedAt: new Date(now - 2 * 60_000).toISOString() },
+    { taskId: "old", title: "Old Ready Book", status: "ready", bookId: 1, progress: 1, updatedAt: new Date(now - 2 * 60 * 60_000).toISOString() },
+    { taskId: "cancelled", title: "Cancelled Book", status: "cancelled", updatedAt: new Date(now).toISOString() },
+  ];
+  await stubApp(page, { booksEnabled: true, recommendations, downloads });
+  await page.goto("/", { waitUntil: "networkidle" });
+  await page.locator("#nav-browse").click();
+  await page.locator(".browse-media-switch").getByRole("button", { name: "Books" }).click();
+
+  await expect(page.locator("#books-connection")).toHaveCount(0);
+  const cards = page.locator(".book-recommendation-card");
+  await expect(cards).toHaveCount(3);
+  const bounds = await cards.evaluateAll((items) => items.map((item) => item.getBoundingClientRect()).map((rect) => ({ left: rect.left, right: rect.right })));
+  expect(bounds[0].right).toBeLessThanOrEqual(bounds[1].left + 0.5);
+  expect(bounds[1].right).toBeLessThanOrEqual(bounds[2].left + 0.5);
+
+  await expect(page.locator(".books-downloads h2")).toHaveText("Acquisition activity");
+  await expect(page.locator(".books-downloads")).toContainText("Active Book");
+  await expect(page.locator(".books-downloads")).toContainText("Downloading · 42%");
+  await expect(page.locator(".books-downloads")).toContainText("Recent Book");
+  await expect(page.locator(".books-downloads")).toContainText("Failed Book");
+  await expect(page.locator(".books-downloads")).not.toContainText("Old Ready Book");
+  await expect(page.locator(".books-downloads")).not.toContainText("Cancelled Book");
+});
+
 test("a book can be removed from Panel Pilot without deleting CWA", async ({ page }) => {
   const removed = [];
   await stubApp(page, { booksEnabled: true, removed });
@@ -304,10 +349,35 @@ test("books library and EPUB controls remain usable at phone width", async ({ pa
   }))).toMatchObject({ opacity: "0", height: expect.any(Number) });
   await page.locator(".epub-settings summary").click();
   await expect(page.getByLabel("Page width")).toBeVisible();
+  await page.getByLabel("Page width").selectOption("1200");
+  const fullWidth = await page.locator(".epub-viewport").evaluate((viewport) => viewport.getBoundingClientRect().width);
+  await page.getByLabel("Page width").selectOption("560");
+  await expect.poll(() => page.locator(".epub-viewport").evaluate((viewport) => viewport.getBoundingClientRect().width)).toBeLessThan(fullWidth - 40);
   await expect.poll(() => page.locator(".epub-settings-panel").evaluate((panel) => ({
     background: getComputedStyle(panel).backgroundColor,
     position: getComputedStyle(panel).position,
   }))).toEqual({ background: "rgb(255, 255, 255)", position: "fixed" });
+  await expect.poll(() => page.locator(".epub-reader").evaluate((reader) => {
+    const panel = reader.querySelector(".epub-settings-panel");
+    const footer = reader.querySelector(".epub-footer");
+    const bounds = footer.getBoundingClientRect();
+    const hit = document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
+    return panel.contains(hit);
+  })).toBe(true);
+  await page.locator(".epub-settings-panel").evaluate((panel) => {
+    const top = panel.getBoundingClientRect().top;
+    const dispatch = (type, y) => {
+      const event = new Event(type, { bubbles: true, cancelable: true });
+      const touches = type === "touchend" ? [] : [{ clientX: 190, clientY: y }];
+      Object.defineProperty(event, "touches", { value: touches });
+      Object.defineProperty(event, "changedTouches", { value: [{ clientX: 190, clientY: y }] });
+      panel.dispatchEvent(event);
+    };
+    dispatch("touchstart", top + 20);
+    dispatch("touchmove", top + 100);
+    dispatch("touchend", top + 100);
+  });
+  await expect(page.locator(".epub-settings")).not.toHaveAttribute("open", "");
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
@@ -391,6 +461,35 @@ test("centre taps toggle reader controls and visible chrome never covers the EPU
       clientX: view.innerWidth / 2,
       clientY: view.innerHeight / 2,
     }));
+  });
+  await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "false");
+
+  await page.waitForTimeout(500);
+  await body.evaluate((element) => {
+    const view = element.ownerDocument.defaultView;
+    const dispatch = (type, touches, changedTouches = touches) => {
+      const event = new Event(type, { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "touches", { value: touches });
+      Object.defineProperty(event, "changedTouches", { value: changedTouches });
+      element.dispatchEvent(event);
+    };
+    const touch = { clientX: view.innerWidth / 2, clientY: view.innerHeight / 2 };
+    dispatch("touchstart", [touch]);
+    dispatch("touchend", [], [touch]);
+  });
+  await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "true");
+  await page.waitForTimeout(500);
+  await body.evaluate((element) => {
+    const view = element.ownerDocument.defaultView;
+    const dispatch = (type, touches, changedTouches = touches) => {
+      const event = new Event(type, { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "touches", { value: touches });
+      Object.defineProperty(event, "changedTouches", { value: changedTouches });
+      element.dispatchEvent(event);
+    };
+    const touch = { clientX: view.innerWidth / 2, clientY: view.innerHeight / 2 };
+    dispatch("touchstart", [touch]);
+    dispatch("touchend", [], [touch]);
   });
   await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "false");
 });
