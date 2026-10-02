@@ -25,6 +25,21 @@ optional display percentage. Revisions prevent silent cross-device overwrites.
 Theme, typography, line spacing, alignment, content width, and page/scroll flow
 preferences are stored in the book database rather than browser storage.
 
+Books use the shared Panels shell without sharing manga data models: EPUBs
+appear in the main Library and Continue Reading card, acquisition starts from
+**Browse → Find books**, service checks and manual sync live in Settings, and
+the Stats view shows a separate EPUB shelf summary. Book details and reader
+routes remain isolated internally so a CWA or Shelfmark outage cannot disturb
+Suwayomi startup, browsing, or reading.
+
+The reader generates stable EPUB locations in the browser for its scrubber and
+approximate time remaining, while the server continues to store an exact CFI as
+the canonical position. Side taps, horizontal swipes, arrow/Page keys, and the
+visible previous/next controls navigate; a centre tap hides or restores reader
+chrome. Rotation preserves the current CFI, internal links and footnotes stay
+inside the sanitized publication, and an available browser wake lock keeps the
+screen on while the reader is open.
+
 Shelfmark is only an acquisition provider. Panels does not install or configure
 Shelfmark download sources and does not handle DRM-protected files.
 
@@ -98,8 +113,8 @@ index without altering manga data.
 For a legal end-to-end reader test, download an EPUB from Project Gutenberg and
 place the completed file in CWA's ingest volume. Good small examples are
 *Alice's Adventures in Wonderland* (ebook 11) and *Pride and Prejudice* (ebook
-1342). Wait for CWA to remove the ingest copy, then use **Sync library** in
-Panels. Direct sample import tests only the CWA → Panels path; Shelfmark's
+1342). Wait for CWA to remove the ingest copy, then use **Settings → Books →
+Sync library** in Panels. Direct sample import tests only the CWA → Panels path; Shelfmark's
 acquisition path still requires a source configured by the operator.
 
 ## Manual verification checklist
@@ -108,13 +123,14 @@ acquisition path still requires a source configured by the operator.
    starts normally, Books is absent, and manga browse/reader/progress still work.
 2. Start the `books` Compose profile, complete CWA setup through an SSH tunnel,
    and configure its authenticated OPDS user.
-3. Enable Books and use the connection panel to test Shelfmark and CWA.
+3. Enable Books and use **Settings → Books** to test Shelfmark and CWA.
 4. Import a public-domain EPUB into CWA, sync Books, and confirm its metadata,
-   cover, and details appear.
-5. Open the EPUB, use Contents and next/previous, change theme, text size, line
-   spacing, page width, and flow, then close it. Reopen it and confirm the exact
-   location and preferences return.
-6. Search Shelfmark, inspect EPUB-only releases, queue one, and confirm the state
+   cover, and details appear in the main Library under the Books filter.
+5. Open the EPUB, use Contents, side taps, swipe, next/previous, and the progress
+   scrubber; change theme, text size, line spacing, page width, and flow; rotate
+   the device; then close it. Reopen it and confirm the exact location and
+   preferences return.
+6. Use **Browse → Find books**, inspect EPUB-only releases, queue one, and confirm the state
    advances through queued/downloading/importing/ready after CWA imports it.
 7. Stop Shelfmark and CWA. Confirm book connection errors are contained and
    existing manga browsing and reading remain available.

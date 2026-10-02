@@ -22,7 +22,7 @@ function bookByline(book) {
   return book.authors?.length ? book.authors.join(", ") : "Unknown author";
 }
 
-export function createBooksApp({ root, navigate }) {
+export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
   let initialized = false;
   let status = null;
   let searchResults = [];
@@ -37,8 +37,13 @@ export function createBooksApp({ root, navigate }) {
     root.replaceChildren();
     const header = element("header", "view-header books-header");
     const heading = element("div");
-    heading.append(element("h1", "", "Books"), element("p", "view-subtitle", "Your EPUB library from Calibre-Web Automated"));
+    const headingTitle = element("h1", "", "Books");
+    headingTitle.id = "books-heading-title";
+    const headingSubtitle = element("p", "view-subtitle", "Your EPUB library from Calibre-Web Automated");
+    headingSubtitle.id = "books-heading-subtitle";
+    heading.append(headingTitle, headingSubtitle);
     const actions = element("div", "books-header-actions");
+    actions.id = "books-header-actions";
     const search = element("button", "header-action", "Search");
     search.type = "button";
     search.dataset.booksAction = "search";
@@ -72,7 +77,8 @@ export function createBooksApp({ root, navigate }) {
       if (action === "search") navigate("books-search");
       const card = event.target.closest("[data-book-id]");
       if (card) navigate("book-detail", { id: card.dataset.bookId });
-      if (action === "back") navigate("books");
+      if (action === "back") navigate("library");
+      if (action === "back-browse") navigate("browse");
     });
     initialized = true;
   }
@@ -183,7 +189,7 @@ export function createBooksApp({ root, navigate }) {
     content.replaceChildren(element("p", "books-loading", "Loading book…"));
     try {
       const { book, progress } = await request(`/api/books/${encodeURIComponent(id)}`);
-      const back = element("button", "text-button books-back", "‹ Books");
+      const back = element("button", "text-button books-back", "‹ Library");
       back.type = "button";
       back.dataset.booksAction = "back";
       const detail = element("article", "book-detail");
@@ -245,10 +251,12 @@ export function createBooksApp({ root, navigate }) {
   }
 
   function leaveReader() {
+    const hadReader = Boolean(readerController);
     readerGeneration += 1;
     readerController?.destroy?.();
     readerController = null;
     document.body.classList.remove("book-reader-active");
+    if (hadReader) void onLibraryChange();
   }
 
   function humanSize(bytes) {
@@ -305,9 +313,9 @@ export function createBooksApp({ root, navigate }) {
 
   function renderSearch() {
     const content = root.querySelector("#books-content");
-    const back = element("button", "text-button books-back", "‹ Books");
+    const back = element("button", "text-button books-back", "‹ Browse");
     back.type = "button";
-    back.dataset.booksAction = "back";
+    back.dataset.booksAction = "back-browse";
     const panel = element("section", "panel books-search-panel");
     panel.append(element("h2", "", "Find a book"), element("p", "books-search-help", "Search Shelfmark metadata, then choose an EPUB release for CWA to import."));
     const form = element("form", "books-search-form");
@@ -430,6 +438,7 @@ export function createBooksApp({ root, navigate }) {
       await request("/api/books/sync", { method: "POST", body: "{}" });
       await loadStatus();
       await renderLibrary();
+      void onLibraryChange();
     } catch (error) {
       const node = root.querySelector("#books-connection");
       root.querySelector("#books-connection-copy").textContent = error.message;
@@ -443,6 +452,16 @@ export function createBooksApp({ root, navigate }) {
     async show(route) {
       window.clearTimeout(downloadPoll);
       shell();
+      const heading = root.querySelector("#books-heading-title");
+      const subtitle = root.querySelector("#books-heading-subtitle");
+      const actions = root.querySelector("#books-header-actions");
+      const searching = route.bookRoute === "books-search";
+      const detail = route.bookRoute === "book-detail";
+      heading.textContent = searching ? "Browse books" : detail ? "Book details" : "Books";
+      subtitle.textContent = searching
+        ? "Search Shelfmark and add an EPUB to your library"
+        : detail ? "Your text library" : "Your EPUB library from Calibre-Web Automated";
+      actions.hidden = searching || detail || route.bookRoute === "book-read";
       if (route.bookRoute !== "book-read") leaveReader();
       await loadStatus().catch((error) => {
         root.querySelector("#books-connection-copy").textContent = error.message;

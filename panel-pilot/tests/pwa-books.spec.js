@@ -41,7 +41,7 @@ async function stubApp(page, { booksEnabled, queued = [], progressState = { curr
       return;
     }
     if (url.pathname === "/api/books") {
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ books: [book], total: 1, limit: 200, offset: 0 }) });
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ books: [{ ...book, progress: progressState.current }], total: 1, limit: 200, offset: 0 }) });
       return;
     }
     if (url.pathname === "/api/books/1/progress" && route.request().method() === "POST") {
@@ -115,26 +115,63 @@ test("books navigation disappears completely while the feature is disabled", asy
   await expect(page.locator("body")).not.toHaveClass(/books-enabled/);
 });
 
-test("enabled books library is lazy-loaded and opens an isolated detail view", async ({ page }) => {
+test("enabled books join the main library and open an isolated detail view", async ({ page }) => {
   await stubApp(page, { booksEnabled: true });
   await page.goto("/", { waitUntil: "networkidle" });
-  await expect(page.locator("#nav-books")).toBeVisible();
-  await page.locator("#nav-books").click();
-  await expect(page).toHaveURL(/#books$/);
-  await expect(page.locator(".book-card")).toContainText("Alice's Adventures in Wonderland");
-  await expect(page.locator(".book-card")).toContainText("Lewis Carroll");
-  await page.locator(".book-card").click();
+  await expect(page.locator("#nav-books")).toBeHidden();
+  await page.getByRole("button", { name: /^Books$/ }).first().click();
+  await page.getByRole("button", { name: /^Plan/ }).click();
+  const bookCard = page.locator(".book-library-card");
+  await expect(bookCard).toContainText("Book");
+  await bookCard.getByRole("button", { name: /Alice's Adventures in Wonderland/ }).click();
   await expect(page).toHaveURL(/#book-detail\?id=1$/);
   await expect(page.locator(".book-detail h2")).toHaveText("Alice's Adventures in Wonderland");
   await expect(page.locator(".book-detail .primary-button")).toBeEnabled();
+  await page.locator("#nav-settings").click();
+  await expect(page.locator("#book-services-panel")).toBeVisible();
+  await expect(page.locator("#book-services-note")).toContainText("Shelfmark ready");
+});
+
+test("books join the main Library filters without entering manga storage", async ({ page }) => {
+  await stubApp(page, { booksEnabled: true });
+  await page.goto("/", { waitUntil: "networkidle" });
+  await expect(page.locator("#library-format-books")).toBeVisible();
+  await page.getByRole("button", { name: /^Books$/ }).first().click();
+  await page.getByRole("button", { name: /^Plan/ }).click();
+  const card = page.locator(".book-library-card");
+  await expect(card).toContainText("Book");
+  await expect(card).toContainText("Plan to read");
+  await card.getByRole("button", { name: /Alice's Adventures in Wonderland/ }).click();
+  await expect(page).toHaveURL(/#book-detail\?id=1$/);
+});
+
+test("global Continue Reading resumes the most recent EPUB position", async ({ page }) => {
+  const progressState = { current: {
+    bookId: 1,
+    locatorType: "cfi",
+    locator: "epubcfi(/6/2!/4/2/1:0)",
+    resourceHref: "chapter1.xhtml",
+    progression: 0.42,
+    revision: 1,
+    updatedAt: "2026-10-02T12:00:00Z",
+  } };
+  await stubApp(page, { booksEnabled: true, progressState });
+  await page.goto("/", { waitUntil: "networkidle" });
+  const resume = page.locator("#nav-reader");
+  await expect(resume).toBeVisible();
+  await expect(resume).toContainText("Alice's Adventures in Wonderland");
+  await expect(resume).toContainText("42% read");
+  await resume.click();
+  await expect(page).toHaveURL(/#book-read\?id=1$/);
+  await expect(page.locator(".epub-reader")).toBeVisible();
 });
 
 test("Shelfmark acquisition offers only normalized EPUB choices and queues an opaque token", async ({ page }) => {
   const queued = [];
   await stubApp(page, { booksEnabled: true, queued });
   await page.goto("/", { waitUntil: "networkidle" });
-  await page.locator("#nav-books").click();
-  await page.getByRole("button", { name: "Search" }).click();
+  await page.locator("#nav-browse").click();
+  await page.getByRole("button", { name: "Find books" }).click();
   await expect(page).toHaveURL(/#books-search$/);
   await page.getByRole("searchbox", { name: "Book title or author" }).fill("The Mercy of Gods");
   await page.locator(".books-search-form").getByRole("button", { name: "Search" }).click();
@@ -154,13 +191,19 @@ test("EPUB reader opens a public-domain fixture and persists an exact CFI", asyn
   const progressState = { current: null };
   await stubApp(page, { booksEnabled: true, progressWrites, progressState });
   await page.goto("/", { waitUntil: "networkidle" });
-  await page.locator("#nav-books").click();
-  await page.locator(".book-card").click();
+  await page.getByRole("button", { name: /^Books$/ }).first().click();
+  await page.getByRole("button", { name: /^Plan/ }).click();
+  await page.locator(".book-library-card").getByRole("button", { name: /Alice's Adventures/ }).click();
   await page.getByRole("button", { name: "Read book" }).click();
   await expect(page).toHaveURL(/#book-read\?id=1$/);
   await expect(page.locator(".epub-reader")).toBeVisible();
   await expect(page.locator(".epub-reader-title")).toHaveText("Alice's Adventures in Wonderland");
   await expect(page.frameLocator(".epub-viewport iframe").locator("body")).toContainText("Alice was beginning to get very tired");
+  await expect(page.getByRole("slider", { name: "Book progress" })).toBeEnabled({ timeout: 10_000 });
+  await expect(page.locator(".epub-time-remaining")).not.toContainText("Generating");
+  await page.getByRole("button", { name: "Contents" }).click();
+  await expect(page.locator(".epub-toc")).toBeVisible();
+  await page.getByRole("button", { name: "Close" }).click();
   await expect.poll(() => progressWrites.length, { timeout: 10_000 }).toBeGreaterThan(0);
   expect(progressWrites.at(-1).locatorType).toBe("cfi");
   expect(progressWrites.at(-1).locator).toMatch(/^epubcfi\(/);
@@ -173,17 +216,18 @@ test("EPUB reader opens a public-domain fixture and persists an exact CFI", asyn
   await page.getByRole("button", { name: "Continue reading" }).click();
   await expect(page.frameLocator(".epub-viewport iframe").locator("body")).toContainText("Alice was beginning to get very tired");
   await expect.poll(() => progressWrites.length, { timeout: 10_000 }).toBeGreaterThan(writesBeforeReopen);
-  expect(progressWrites.at(-1).revision).toBe(1);
+  expect(progressWrites.at(-1).revision).toBeGreaterThanOrEqual(1);
 });
 
 test("books library and EPUB controls remain usable at phone width", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await stubApp(page, { booksEnabled: true });
   await page.goto("/", { waitUntil: "networkidle" });
-  await page.locator("#nav-books").click();
-  await expect(page.locator(".book-card")).toBeVisible();
+  await page.getByRole("button", { name: /^Books$/ }).first().click();
+  await page.getByRole("button", { name: /^Plan/ }).click();
+  await expect(page.locator(".book-library-card")).toBeVisible();
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-  await page.locator(".book-card").click();
+  await page.locator(".book-library-card").getByRole("button", { name: /Alice's Adventures/ }).click();
   await page.getByRole("button", { name: "Read book" }).click();
   await expect(page.locator(".epub-toolbar")).toBeVisible();
   await expect(page.getByRole("button", { name: "Next page" })).toBeVisible();

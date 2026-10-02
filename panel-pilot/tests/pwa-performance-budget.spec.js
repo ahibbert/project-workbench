@@ -6,14 +6,15 @@ import { fileURLToPath } from "node:url";
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const distRoot = join(projectRoot, "dist");
 const budgets = {
-  // Includes the dormant, feature-flagged Books navigation entry and view host.
-  indexHtml: 52 * 1024,
+  // Includes the feature-flagged Books filters, Browse action, settings host, and view host.
+  indexHtml: 53 * 1024,
   // Includes offline milestones, source intelligence, the Detection Lab,
   // per-series calibration, spread handling, enhanced-reader controls, and
-  // the small feature-flag/books lazy-loader bootstrap.
-  mainJavaScript: 390 * 1024,
+  // the small feature-flag/books lazy-loader bootstrap and shared navigation hooks.
+  mainJavaScript: 400 * 1024,
   mainCss: 72 * 1024,
-  criticalPath: 525 * 1024,
+  // Includes the integrated Books format control and cross-format resume bootstrap.
+  criticalPath: 531 * 1024,
   installShell: 770 * 1024,
   domContentLoadedMs: 1_500,
   loadMs: 2_000,

@@ -12,6 +12,14 @@ function safeProgression(value) {
   return Number.isFinite(number) ? Math.max(0, Math.min(1, number)) : null;
 }
 
+function humanReadingTime(minutes) {
+  if (!Number.isFinite(minutes) || minutes < 1) return "Less than a minute left";
+  if (minutes < 60) return `About ${Math.max(1, Math.round(minutes))} min left`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = Math.round(minutes % 60);
+  return `About ${hours} hr${hours === 1 ? "" : "s"}${remainder ? ` ${remainder} min` : ""} left`;
+}
+
 function sanitizeRenderedDocument(document) {
   document.querySelectorAll("script, iframe, object, embed, form, base").forEach((item) => item.remove());
   document.querySelectorAll("*").forEach((item) => {
@@ -46,27 +54,39 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
   let rendition = null;
   let publication = null;
   let currentProgress = progress;
+  let pendingPosition = null;
   let saveTimer = 0;
+  let resizeTimer = 0;
+  let controlsTimer = 0;
   let destroyed = false;
+  let locationsReady = false;
+  let wakeLock = null;
+  let gestureStart = null;
 
   root.replaceChildren();
   const reader = node("section", "epub-reader");
   reader.dataset.theme = preferences.theme;
+  reader.dataset.flow = preferences.readingFlow;
   const toolbar = node("header", "epub-toolbar");
-  const back = node("button", "epub-tool", "‹ Books");
+  const back = node("button", "epub-tool epub-back", "‹ Books library");
   back.type = "button";
+  const titleGroup = node("div", "epub-title-group");
   const title = node("strong", "epub-reader-title", book.title);
+  const chapterTitle = node("span", "epub-chapter-title", "Opening book…");
+  titleGroup.append(title, chapterTitle);
   const tocButton = node("button", "epub-tool", "Contents");
   tocButton.type = "button";
   const settings = node("details", "epub-settings");
   const settingsSummary = node("summary", "epub-tool", "Aa");
+  settingsSummary.setAttribute("aria-label", "Reading appearance");
   const settingsPanel = node("div", "epub-settings-panel");
   settings.append(settingsSummary, settingsPanel);
-  toolbar.append(back, title, tocButton, settings);
+  toolbar.append(back, titleGroup, tocButton, settings);
 
   const stage = node("div", "epub-stage");
   stage.style.setProperty("--book-content-width", `${preferences.contentWidth}px`);
   const loading = node("div", "epub-reader-state", "Opening EPUB…");
+  loading.setAttribute("role", "status");
   const viewport = node("div", "epub-viewport");
   const previous = node("button", "epub-page-control epub-previous", "‹");
   previous.type = "button";
@@ -77,8 +97,20 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
   stage.append(viewport, loading, previous, next);
 
   const footer = node("footer", "epub-footer");
-  const location = node("span", "", progress?.progression != null ? `${Math.round(progress.progression * 100)}%` : "Saving exact position");
-  footer.append(location);
+  const progressCopy = node("div", "epub-progress-copy");
+  const location = node("strong", "epub-progress-location", progress?.progression != null ? `${Math.round(progress.progression * 100)}%` : "Locating…");
+  const timeRemaining = node("span", "epub-time-remaining", "Generating book locations…");
+  progressCopy.append(location, timeRemaining);
+  const scrubber = document.createElement("input");
+  scrubber.className = "epub-progress-slider";
+  scrubber.type = "range";
+  scrubber.min = "0";
+  scrubber.max = "1000";
+  scrubber.step = "1";
+  scrubber.value = String(Math.round((progress?.progression || 0) * 1000));
+  scrubber.disabled = true;
+  scrubber.setAttribute("aria-label", "Book progress");
+  footer.append(progressCopy, scrubber);
 
   const toc = node("dialog", "epub-toc");
   const tocHeader = node("header");
@@ -96,6 +128,7 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
     wrapper.append(node("span", "", label));
     const control = node("select");
     control.dataset.preference = key;
+    control.setAttribute("aria-label", label);
     for (const [value, text] of values) {
       const option = node("option", "", text);
       option.value = value;
@@ -106,12 +139,13 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
     settingsPanel.append(wrapper);
   }
   select("Theme", "theme", [["light", "Light"], ["sepia", "Sepia"], ["dark", "Dark"]]);
-  select("Typeface", "fontFamily", [["publisher", "Publisher"], ["serif", "Serif"], ["sans", "Sans serif"]]);
+  select("Typeface", "fontFamily", [["publisher", "Publisher"], ["serif", "Literary serif"], ["sans", "Clean sans serif"]]);
   select("Text size", "fontSize", [["85", "Small"], ["100", "Default"], ["115", "Large"], ["130", "Larger"], ["150", "Largest"]]);
   select("Line spacing", "lineHeight", [["1.3", "Compact"], ["1.5", "Default"], ["1.8", "Relaxed"], ["2", "Open"]]);
   select("Page width", "contentWidth", [["560", "Narrow"], ["720", "Default"], ["900", "Wide"], ["1200", "Full"]]);
-  select("Reading flow", "readingFlow", [["paginated", "Pages"], ["scrolled", "Scroll"]]);
+  select("Reading flow", "readingFlow", [["paginated", "Pages"], ["scrolled", "Continuous scroll"]]);
   select("Alignment", "textAlignment", [["start", "Publisher"], ["left", "Left"], ["justify", "Justified"]]);
+  settingsPanel.append(node("p", "epub-settings-note", "Panels keeps the screen awake while this reader is open when your browser permits it."));
 
   function themeRules(theme) {
     const palettes = {
@@ -121,13 +155,15 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
     };
     const palette = palettes[theme] || palettes.light;
     return {
+      "html, body": { "background": `${palette.background} !important`, "color": `${palette.color} !important` },
       body: {
-        "background": `${palette.background} !important`,
-        "color": `${palette.color} !important`,
-        "font-family": preferences.fontFamily === "publisher" ? "inherit" : preferences.fontFamily === "serif" ? "Georgia, serif !important" : "system-ui, sans-serif !important",
+        "font-family": preferences.fontFamily === "publisher" ? "inherit" : preferences.fontFamily === "serif" ? "Georgia, 'Times New Roman', serif !important" : "system-ui, sans-serif !important",
         "line-height": `${preferences.lineHeight} !important`,
         "text-align": `${preferences.textAlignment} !important`,
+        "text-rendering": "optimizeLegibility",
+        "-webkit-font-smoothing": "antialiased",
       },
+      "p, li, blockquote": { "orphans": "2", "widows": "2" },
       "a": { "color": `${palette.link} !important` },
       "img, svg": { "max-width": "100% !important", "height": "auto !important" },
     };
@@ -136,28 +172,70 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
   function applyPreferences() {
     if (!rendition) return;
     reader.dataset.theme = preferences.theme;
+    reader.dataset.flow = preferences.readingFlow;
     rendition.themes.register("panels-book", themeRules(preferences.theme));
     rendition.themes.select("panels-book");
     rendition.themes.fontSize(`${preferences.fontSize}%`);
     stage.style.setProperty("--book-content-width", `${preferences.contentWidth}px`);
   }
 
-  async function persistPreferences(changedKey) {
-    const payload = await jsonRequest("/api/books/preferences", {
-      method: "POST",
-      body: JSON.stringify(preferences),
+  function setControlsVisible(visible, linger = true) {
+    window.clearTimeout(controlsTimer);
+    reader.classList.toggle("epub-chrome-hidden", !visible);
+    if (visible && linger && !settings.open && !toc.open) {
+      controlsTimer = window.setTimeout(() => reader.classList.add("epub-chrome-hidden"), 5000);
+    }
+  }
+
+  async function requestWakeLock() {
+    if (destroyed || document.visibilityState !== "visible" || !navigator.wakeLock?.request) return;
+    try {
+      wakeLock = await navigator.wakeLock.request("screen");
+      wakeLock.addEventListener("release", () => { wakeLock = null; }, { once: true });
+    } catch {
+      wakeLock = null;
+    }
+  }
+
+  function updateProgressDisplay(cfi, fallbackProgression = null) {
+    let progression = safeProgression(fallbackProgression);
+    if (locationsReady && cfi) {
+      try {
+        progression = safeProgression(publication.locations.percentageFromCfi(cfi));
+      } catch {
+        // Keep the EPUB.js fallback when a malformed navigation document cannot map a CFI.
+      }
+    }
+    const percentage = progression == null ? null : Math.round(progression * 100);
+    location.textContent = percentage == null ? "Exact position saved" : `${percentage}%`;
+    if (progression != null) scrubber.value = String(Math.round(progression * 1000));
+    if (locationsReady && progression != null) {
+      const remainingLocations = Math.max(0, publication.locations.length() * (1 - progression));
+      timeRemaining.textContent = humanReadingTime((remainingLocations * 265) / 240);
+    } else {
+      timeRemaining.textContent = "Generating book locations…";
+    }
+    return progression;
+  }
+
+  function makeRendition() {
+    return publication.renderTo(viewport, {
+      width: "100%",
+      height: "100%",
+      flow: preferences.readingFlow === "scrolled" ? "scrolled-doc" : "paginated",
+      manager: preferences.readingFlow === "scrolled" ? "continuous" : "default",
+      allowScriptedContent: false,
     });
+  }
+
+  async function persistPreferences(changedKey) {
+    const payload = await jsonRequest("/api/books/preferences", { method: "POST", body: JSON.stringify(preferences) });
     Object.assign(preferences, payload.preferences);
     if (changedKey === "readingFlow") {
-      const locator = currentProgress?.locator;
+      const locator = pendingPosition?.cfi || currentProgress?.locator;
       rendition?.destroy();
-      rendition = publication.renderTo(viewport, {
-        width: "100%",
-        height: "100%",
-        flow: preferences.readingFlow === "scrolled" ? "scrolled-doc" : "paginated",
-        manager: preferences.readingFlow === "scrolled" ? "continuous" : "default",
-        allowScriptedContent: false,
-      });
+      viewport.replaceChildren();
+      rendition = makeRendition();
       bindRendition();
       applyPreferences();
       await rendition.display(locator || undefined);
@@ -171,13 +249,7 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
     try {
       const payload = await jsonRequest(`/api/books/${book.id}/progress`, {
         method: "POST",
-        body: JSON.stringify({
-          locatorType: "cfi",
-          locator: cfi,
-          resourceHref: href || "",
-          progression,
-          revision: currentProgress?.revision || 0,
-        }),
+        body: JSON.stringify({ locatorType: "cfi", locator: cfi, resourceHref: href || "", progression, revision: currentProgress?.revision || 0 }),
       });
       currentProgress = payload.progress;
     } catch (error) {
@@ -185,22 +257,128 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
         currentProgress = error.payload.current;
         await savePosition(cfi, href, progression, false);
       } else {
-        location.textContent = "Position not saved";
+        timeRemaining.textContent = "Position not saved — retrying as you read";
       }
     }
   }
 
+  function navigateFromGesture(deltaX, deltaY) {
+    if (Math.abs(deltaX) < 52 || Math.abs(deltaX) < Math.abs(deltaY) * 1.35) return false;
+    void (deltaX < 0 ? rendition?.next() : rendition?.prev());
+    setControlsVisible(false);
+    return true;
+  }
+
+  function handleReaderTap(xRatio, moved = false) {
+    if (moved) return;
+    if (xRatio < 0.24) {
+      void rendition?.prev();
+      setControlsVisible(false);
+    } else if (xRatio > 0.76) {
+      void rendition?.next();
+      setControlsVisible(false);
+    } else {
+      setControlsVisible(reader.classList.contains("epub-chrome-hidden"));
+    }
+  }
+
+  function bindContentInteractions(contents) {
+    const document = contents.document;
+    sanitizeRenderedDocument(document);
+    let contentGesture = null;
+    document.addEventListener("pointerdown", (event) => { contentGesture = { x: event.clientX, y: event.clientY }; }, { passive: true });
+    document.addEventListener("pointerup", (event) => {
+      if (!contentGesture || event.target.closest?.("a")) return;
+      const deltaX = event.clientX - contentGesture.x;
+      const deltaY = event.clientY - contentGesture.y;
+      const moved = Math.hypot(deltaX, deltaY) > 12;
+      if (!navigateFromGesture(deltaX, deltaY)) handleReaderTap(event.clientX / Math.max(1, contents.window.innerWidth), moved);
+      contentGesture = null;
+    }, { passive: true });
+    document.addEventListener("click", (event) => {
+      const link = event.target.closest?.("a[href]");
+      if (!link) return;
+      const href = link.getAttribute("href") || "";
+      if (/^(?:https?:)?\/\//i.test(href) || /^mailto:/i.test(href)) {
+        event.preventDefault();
+        return;
+      }
+      if (href && !href.toLowerCase().startsWith("javascript:")) {
+        event.preventDefault();
+        void rendition?.display(href);
+      }
+    });
+  }
+
   function bindRendition() {
-    rendition.hooks.content.register((contents) => sanitizeRenderedDocument(contents.document));
+    rendition.hooks.content.register(bindContentInteractions);
     rendition.on("relocated", (relocation) => {
       const start = relocation?.start || {};
-      const progression = safeProgression(start.percentage ?? relocation?.percentage);
-      location.textContent = progression == null ? "Exact position saved" : `${Math.round(progression * 100)}%`;
+      const progression = updateProgressDisplay(start.cfi, start.percentage ?? relocation?.percentage);
+      pendingPosition = { cfi: start.cfi, href: start.href, progression };
+      const navigationItem = publication?.navigation?.get?.(start.href);
+      chapterTitle.textContent = navigationItem?.label?.trim() || (start.displayed?.page && start.displayed?.total
+        ? `Page ${start.displayed.page} of ${start.displayed.total}`
+        : "Reading");
       window.clearTimeout(saveTimer);
-      saveTimer = window.setTimeout(() => {
-        void savePosition(start.cfi, start.href, progression);
-      }, 650);
+      saveTimer = window.setTimeout(() => { void savePosition(start.cfi, start.href, progression); }, 650);
     });
+  }
+
+  async function generateLocations() {
+    try {
+      await publication.ready;
+      await publication.locations.generate(1600);
+      if (destroyed) return;
+      locationsReady = publication.locations.length() > 0;
+      scrubber.disabled = !locationsReady;
+      updateProgressDisplay(pendingPosition?.cfi, pendingPosition?.progression ?? currentProgress?.progression);
+    } catch {
+      timeRemaining.textContent = "Exact position saved";
+    }
+  }
+
+  async function openPublication() {
+    loading.hidden = false;
+    loading.replaceChildren(node("span", "", "Opening EPUB…"));
+    previous.hidden = false;
+    next.hidden = false;
+    try {
+      const response = await fetch(book.epubUrl, { headers: { Accept: "application/epub+zip" }, cache: "default" });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || `EPUB could not be loaded (${response.status})`);
+      }
+      const buffer = await response.arrayBuffer();
+      if (destroyed) return;
+      publication?.destroy();
+      viewport.replaceChildren();
+      publication = ePub(buffer);
+      rendition = makeRendition();
+      bindRendition();
+      applyPreferences();
+      const navigation = await publication.loaded.navigation;
+      tocList.replaceChildren();
+      for (const entry of navigation.toc || []) {
+        const link = node("button", "epub-toc-link", entry.label?.trim() || "Untitled section");
+        link.type = "button";
+        link.addEventListener("click", () => { toc.close(); void rendition.display(entry.href); });
+        tocList.append(link);
+      }
+      if (!tocList.children.length) tocList.append(node("p", "epub-toc-empty", "This EPUB does not include a table of contents."));
+      await rendition.display(currentProgress?.locator || undefined);
+      loading.hidden = true;
+      setControlsVisible(true, false);
+      void generateLocations();
+    } catch (error) {
+      loading.hidden = false;
+      const retry = node("button", "primary-button", "Try again");
+      retry.type = "button";
+      retry.addEventListener("click", () => { void openPublication(); });
+      loading.replaceChildren(node("strong", "", "Could not open this EPUB"), node("span", "", error.message), retry);
+      previous.hidden = true;
+      next.hidden = true;
+    }
   }
 
   settingsPanel.addEventListener("change", (event) => {
@@ -208,20 +386,36 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
     if (!control) return;
     const key = control.dataset.preference;
     preferences[key] = ["fontSize", "lineHeight", "contentWidth"].includes(key) ? Number(control.value) : control.value;
-    void persistPreferences(key).catch((error) => {
-      loading.hidden = false;
-      loading.textContent = error.message;
-    });
+    void persistPreferences(key).catch((error) => { loading.hidden = false; loading.textContent = error.message; });
   });
-
+  settings.addEventListener("toggle", () => setControlsVisible(true, !settings.open));
   back.addEventListener("click", onExit);
   previous.addEventListener("click", () => rendition?.prev());
   next.addEventListener("click", () => rendition?.next());
-  tocButton.addEventListener("click", () => toc.showModal());
+  tocButton.addEventListener("click", () => { toc.showModal(); setControlsVisible(true, false); });
   tocClose.addEventListener("click", () => toc.close());
-  toc.addEventListener("click", (event) => {
-    if (event.target === toc) toc.close();
+  toc.addEventListener("click", (event) => { if (event.target === toc) toc.close(); });
+  toc.addEventListener("close", () => setControlsVisible(true));
+  scrubber.addEventListener("input", () => { location.textContent = `${Math.round(Number(scrubber.value) / 10)}%`; });
+  scrubber.addEventListener("change", () => {
+    if (!locationsReady) return;
+    try {
+      const cfi = publication.locations.cfiFromPercentage(Number(scrubber.value) / 1000);
+      if (cfi) void rendition?.display(cfi);
+    } catch {
+      // Leave the reader at its current exact location when the EPUB index is malformed.
+    }
   });
+  stage.addEventListener("pointerdown", (event) => { gestureStart = { x: event.clientX, y: event.clientY }; }, { passive: true });
+  stage.addEventListener("pointerup", (event) => {
+    if (!gestureStart || event.target.closest("button")) return;
+    const deltaX = event.clientX - gestureStart.x;
+    const deltaY = event.clientY - gestureStart.y;
+    const moved = Math.hypot(deltaX, deltaY) > 12;
+    if (!navigateFromGesture(deltaX, deltaY)) handleReaderTap(event.clientX / Math.max(1, stage.clientWidth), moved);
+    gestureStart = null;
+  }, { passive: true });
+
   const keyHandler = (event) => {
     if (event.target.closest("input, select, button, summary") || toc.open) return;
     if (event.key === "ArrowRight" || event.key === "PageDown" || event.key === " ") {
@@ -231,56 +425,44 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
       event.preventDefault();
       void rendition?.prev();
     } else if (event.key === "Escape") {
-      onExit();
+      if (settings.open) settings.open = false;
+      else onExit();
     }
   };
+  const visibilityHandler = () => {
+    if (document.visibilityState === "visible") void requestWakeLock();
+    else if (pendingPosition) void savePosition(pendingPosition.cfi, pendingPosition.href, pendingPosition.progression);
+  };
+  const resizeHandler = () => {
+    window.clearTimeout(resizeTimer);
+    resizeTimer = window.setTimeout(async () => {
+      if (destroyed || !rendition) return;
+      const locator = pendingPosition?.cfi || currentProgress?.locator;
+      rendition.resize();
+      if (locator) await rendition.display(locator).catch(() => {});
+    }, 180);
+  };
   window.addEventListener("keydown", keyHandler);
+  window.addEventListener("resize", resizeHandler);
+  document.addEventListener("visibilitychange", visibilityHandler);
 
-  try {
-    const response = await fetch(book.epubUrl, { headers: { Accept: "application/epub+zip" }, cache: "default" });
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({}));
-      throw new Error(payload.error || `EPUB could not be loaded (${response.status})`);
-    }
-    const buffer = await response.arrayBuffer();
-    if (destroyed) return { destroy() {} };
-    publication = ePub(buffer);
-    rendition = publication.renderTo(viewport, {
-      width: "100%",
-      height: "100%",
-      flow: preferences.readingFlow === "scrolled" ? "scrolled-doc" : "paginated",
-      manager: preferences.readingFlow === "scrolled" ? "continuous" : "default",
-      allowScriptedContent: false,
-    });
-    bindRendition();
-    applyPreferences();
-    const navigation = await publication.loaded.navigation;
-    for (const entry of navigation.toc || []) {
-      const link = node("button", "epub-toc-link", entry.label?.trim() || "Untitled section");
-      link.type = "button";
-      link.addEventListener("click", () => {
-        toc.close();
-        void rendition.display(entry.href);
-      });
-      tocList.append(link);
-    }
-    await rendition.display(progress?.locator || undefined);
-    loading.hidden = true;
-  } catch (error) {
-    loading.hidden = false;
-    loading.replaceChildren(node("strong", "", "Could not open this EPUB"), node("span", "", error.message));
-    previous.hidden = true;
-    next.hidden = true;
-  }
+  void requestWakeLock();
+  await openPublication();
 
   return {
     destroy() {
-      destroyed = true;
       window.clearTimeout(saveTimer);
+      window.clearTimeout(resizeTimer);
+      window.clearTimeout(controlsTimer);
       window.removeEventListener("keydown", keyHandler);
+      window.removeEventListener("resize", resizeHandler);
+      document.removeEventListener("visibilitychange", visibilityHandler);
+      if (pendingPosition) void savePosition(pendingPosition.cfi, pendingPosition.href, pendingPosition.progression);
+      wakeLock?.release?.().catch(() => {});
       rendition?.destroy();
       publication?.destroy();
       if (toc.open) toc.close();
+      destroyed = true;
     },
   };
 }

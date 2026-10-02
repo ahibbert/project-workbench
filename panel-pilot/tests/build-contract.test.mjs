@@ -9,8 +9,8 @@ const distRoot = join(projectRoot, "dist");
 const iconSetBudgetBytes = 300_000;
 // Includes offline achievement artwork, reading sessions, source selection,
 // repair controls, the Detection Lab, calibration models, enhanced-reader UI,
-// and the feature-flagged Books entry point (its implementation stays lazy).
-const installShellBudgetBytes = 785_000;
+// and the feature-flagged Books filters/settings bootstrap (reader stays lazy).
+const installShellBudgetBytes = 790_000;
 
 function readSource(path) {
   return readFileSync(join(projectRoot, path), "utf8");

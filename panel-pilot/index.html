@@ -186,6 +186,7 @@
             <button class="library-format-filter" type="button" aria-pressed="false" data-library-format-filter="manga">Manga</button>
             <button class="library-format-filter" type="button" aria-pressed="false" data-library-format-filter="comic">Comics</button>
             <button class="library-format-filter" type="button" aria-pressed="false" data-library-format-filter="webtoon">Webtoons</button>
+            <button class="library-format-filter" id="library-format-books" type="button" aria-pressed="false" data-library-format-filter="book" hidden>Books</button>
           </div>
           <p class="library-filter-help">Reading includes rereading · Other includes considering and dropped</p>
           <div class="library-filters" id="library-filters" role="group" aria-label="Filter library by reading status">
@@ -212,6 +213,7 @@
             <h1>Browse</h1>
             <p class="view-subtitle" id="source-count">0 sources available</p>
           </div>
+          <button class="header-action" id="browse-books" type="button" hidden>Find books</button>
         </header>
 
         <section class="browse-discovery" id="browse-body">
@@ -373,6 +375,17 @@
             <article class="stats-metric"><span>Pages explored</span><strong id="stats-pages">0</strong><small>Pages opened while reading</small></article>
             <article class="stats-metric"><span>Reading days</span><strong id="stats-days">0</strong><small id="stats-titles">0 titles explored</small></article>
             <article class="stats-metric"><span>Titles completed</span><strong id="stats-completed-titles">0</strong><small>Marked complete in your library</small></article>
+          </section>
+
+          <section class="panel book-stats-panel" id="book-stats-panel" aria-labelledby="book-stats-title" hidden>
+            <div class="panel-heading">
+              <div>
+                <p class="kicker">Text books</p>
+                <h2 id="book-stats-title">Your EPUB shelf</h2>
+              </div>
+              <span class="small-count" id="book-stats-count">0 books</span>
+            </div>
+            <div class="book-stats-summary" id="book-stats-summary"></div>
           </section>
 
           <section class="panel stats-rhythm" id="stats-rhythm" aria-labelledby="stats-rhythm-title">
@@ -548,6 +561,21 @@
           <p class="note" id="connection-note">
             Connecting to Suwayomi through the Panels proxy.
           </p>
+        </section>
+
+        <section class="panel book-services-panel" id="book-services-panel" aria-labelledby="book-services-title" hidden>
+          <div class="panel-heading">
+            <h2 id="book-services-title">Books</h2>
+            <span class="small-count" id="book-services-state">Checking…</span>
+          </div>
+          <p class="note" id="book-services-note">Checking Shelfmark and Calibre-Web Automated…</p>
+          <div class="button-row">
+            <button id="test-shelfmark" type="button">Test Shelfmark</button>
+            <button id="test-cwa" type="button">Test CWA</button>
+            <button id="sync-books" type="button">Sync library</button>
+          </div>
+          <button class="wide-button" id="settings-find-books" type="button">Find books</button>
+          <p class="note">Credentials stay on the Panels server and are never sent to this browser.</p>
         </section>
 
         <section class="panel panels-panel">

@@ -73,8 +73,8 @@ const suwayomiCredentialsError = "Suwayomi URL must not include a username or pa
 const libraryStatuses = ["reading", "plan_to_read", "paused", "completed", "dropped", "rereading", "considering"];
 const libraryFilterValues = ["reading", "plan_to_read", "paused", "completed", "other", "all"];
 const mediaFormats = ["manga", "comic", "webtoon"];
-const libraryFormatFilterValues = ["all", ...mediaFormats];
-const mediaFormatLabels = { manga: "Manga", comic: "Comic", webtoon: "Webtoon" };
+const libraryFormatFilterValues = ["all", ...mediaFormats, "book"];
+const mediaFormatLabels = { manga: "Manga", comic: "Comic", webtoon: "Webtoon", book: "Book" };
 const libraryStatusLabels = {
   reading: "Reading",
   plan_to_read: "Plan to read",
@@ -230,6 +230,18 @@ const el = {
   navLibrary: document.querySelector("#nav-library"),
   navBooks: document.querySelector("#nav-books"),
   booksRoot: document.querySelector("#books-root"),
+  libraryFormatBooks: document.querySelector("#library-format-books"),
+  browseBooks: document.querySelector("#browse-books"),
+  bookServicesPanel: document.querySelector("#book-services-panel"),
+  bookServicesState: document.querySelector("#book-services-state"),
+  bookServicesNote: document.querySelector("#book-services-note"),
+  testShelfmark: document.querySelector("#test-shelfmark"),
+  testCwa: document.querySelector("#test-cwa"),
+  syncBooks: document.querySelector("#sync-books"),
+  settingsFindBooks: document.querySelector("#settings-find-books"),
+  bookStatsPanel: document.querySelector("#book-stats-panel"),
+  bookStatsCount: document.querySelector("#book-stats-count"),
+  bookStatsSummary: document.querySelector("#book-stats-summary"),
   navStats: document.querySelector("#nav-stats"),
   navReader: document.querySelector("#nav-reader"),
   navReaderCover: document.querySelector("#nav-reader-cover"),
@@ -614,6 +626,10 @@ const state = {
   booksEnabled: false,
   booksController: null,
   booksControllerPromise: null,
+  booksIntegration: null,
+  bookServicesController: null,
+  bookLibraryItems: [],
+  booksLibraryLoading: false,
   previousView: "library",
   suwayomiSetupOpen: false,
   showNsfwSources: false,
@@ -1152,6 +1168,13 @@ function renderReadingStats() {
   if (el.statsCompletedTitles) el.statsCompletedTitles.textContent = String(summary.completedTitles);
   if (el.statsCurrentRhythm) el.statsCurrentRhythm.textContent = `Current: ${summary.currentRhythm} day${summary.currentRhythm === 1 ? "" : "s"}`;
   if (el.statsLongestRhythm) el.statsLongestRhythm.textContent = `Longest rhythm: ${summary.longestRhythm} day${summary.longestRhythm === 1 ? "" : "s"}`;
+  if (state.booksEnabled && state.booksIntegration) {
+    state.booksIntegration.renderBookStats({
+      panel: el.bookStatsPanel,
+      count: el.bookStatsCount,
+      summary: el.bookStatsSummary,
+    }, state.bookLibraryItems);
+  }
 
   if (el.statsCalendar) {
     el.statsCalendar.replaceChildren();
@@ -1408,17 +1431,53 @@ async function ensureBooksApp() {
     state.booksControllerPromise = import("./books-app.js").then(({ createBooksApp }) => {
       state.booksController = createBooksApp({
         root: el.booksRoot,
-        navigate(route, parameters = {}) {
-          const query = new URLSearchParams(parameters).toString();
-          const hash = `#${route}${query ? `?${query}` : ""}`;
-          window.history.pushState({ panelPilot: true, view: "books", bookRoute: route }, "", hash);
-          setActiveView("books", { history: false });
-        },
+        navigate: navigateBookRoute,
+        onLibraryChange: refreshIntegratedBookLibrary,
       });
       return state.booksController;
     });
   }
   return state.booksControllerPromise;
+}
+
+function navigateBookRoute(route, parameters = {}) {
+  if (!state.booksEnabled) return;
+  if (route === "library") {
+    setActiveView("library");
+    return;
+  }
+  if (route === "browse") {
+    setActiveView("browse");
+    return;
+  }
+  const query = new URLSearchParams(parameters).toString();
+  const hash = `#${route}${query ? `?${query}` : ""}`;
+  window.history.pushState({ panelPilot: true, view: "books", bookRoute: route }, "", hash);
+  setActiveView("books", { history: false });
+}
+
+async function refreshIntegratedBookLibrary({ render = true } = {}) {
+  if (!state.booksEnabled || state.booksLibraryLoading) return state.bookLibraryItems;
+  state.booksLibraryLoading = true;
+  try {
+    const response = await fetch("/api/books?limit=200", {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+    if (!response.ok) throw new Error(`Book library request failed (${response.status})`);
+    const payload = await response.json();
+    state.bookLibraryItems = Array.isArray(payload.books) ? payload.books : [];
+    if (render) renderLibrary({ preserveInteractions: false });
+    else updateReaderNav();
+    if (state.activeView === "stats") renderReadingStats();
+    return state.bookLibraryItems;
+  } catch {
+    // CWA/Shelfmark outages must not disturb the existing manga library. Retain the
+    // last successful book snapshot and allow the dedicated Books view to explain errors.
+    return state.bookLibraryItems;
+  } finally {
+    state.booksLibraryLoading = false;
+  }
 }
 
 async function showBooksRoute() {
@@ -1433,16 +1492,41 @@ async function initializeBooksFeature() {
     if (!response.ok) return;
     const status = await response.json();
     state.booksEnabled = status.enabled === true;
-    el.navBooks?.toggleAttribute("hidden", !state.booksEnabled);
+    el.navBooks?.setAttribute("hidden", "");
+    el.libraryFormatBooks?.toggleAttribute("hidden", !state.booksEnabled);
+    el.browseBooks?.toggleAttribute("hidden", !state.booksEnabled);
+    el.bookServicesPanel?.toggleAttribute("hidden", !state.booksEnabled);
     document.body.classList.toggle("books-enabled", state.booksEnabled);
+    if (!state.booksEnabled && state.libraryFormatFilter === "book") state.libraryFormatFilter = "all";
     if (!state.booksEnabled && state.activeView === "books") {
       setActiveView("library", { history: false });
       recordNavigationState("replace", false);
       return;
     }
-    if (state.booksEnabled && state.activeView === "books") void showBooksRoute();
+    if (state.booksEnabled) {
+      state.booksIntegration ||= await import("./books-integration.js");
+      state.bookServicesController ||= state.booksIntegration.createBookServicesController({
+        elements: {
+          panel: el.bookServicesPanel,
+          state: el.bookServicesState,
+          note: el.bookServicesNote,
+          testShelfmark: el.testShelfmark,
+          testCwa: el.testCwa,
+          sync: el.syncBooks,
+          findBooks: el.settingsFindBooks,
+        },
+        navigate: navigateBookRoute,
+        onLibraryChange: refreshIntegratedBookLibrary,
+      });
+      await refreshIntegratedBookLibrary({ render: true });
+      if (state.activeView === "books") void showBooksRoute();
+    }
   } catch {
     state.booksEnabled = false;
+    el.libraryFormatBooks?.setAttribute("hidden", "");
+    el.browseBooks?.setAttribute("hidden", "");
+    el.bookServicesPanel?.setAttribute("hidden", "");
+    if (state.libraryFormatFilter === "book") state.libraryFormatFilter = "all";
   }
 }
 
@@ -1505,7 +1589,9 @@ function setActiveView(view, options = {}) {
     item.toggleAttribute("hidden", !isActive);
   });
   el.appNavButtons.forEach((button) => {
-    const isActive = button.dataset.targetView === view;
+    const bookRoute = view === "books" ? routeFromLocation().bookRoute : "";
+    const navigationView = view === "books" ? (bookRoute === "books-search" ? "browse" : "library") : view;
+    const isActive = button.dataset.targetView === navigationView;
     button.classList.toggle("active", isActive);
     button.setAttribute("aria-current", isActive ? "page" : "false");
   });
@@ -1522,6 +1608,7 @@ function setActiveView(view, options = {}) {
   if (view === "stats") void refreshReadingStats();
   if (view === "moments") void loadMoments();
   if (view === "books") void showBooksRoute();
+  if (view === "library" && state.booksEnabled) void refreshIntegratedBookLibrary();
 
   if (view === "reader") {
     setReaderFocus(isReaderFocusAvailable());
@@ -4566,7 +4653,9 @@ function createCoverButton(item, content) {
   fallback.append(initials);
   button.append(fallback);
 
-  const coverUrl = normalizeMangaCoverUrl(item.thumbnailUrl);
+  const coverUrl = content.directCover
+    ? String(item.thumbnailUrl || "").trim()
+    : normalizeMangaCoverUrl(item.thumbnailUrl);
   if (coverUrl) {
     const image = document.createElement("img");
     image.className = "manga-cover-image";
@@ -4899,6 +4988,43 @@ function refreshLibraryOfflineBadges() {
   });
 }
 
+function normalizedBookLibraryStatus(book) {
+  return state.booksIntegration?.libraryStatus(book) || (book?.progress?.locator ? "reading" : "plan_to_read");
+}
+
+function bookProgressLabel(book) {
+  return state.booksIntegration?.progressLabel(book) || "Ready to read";
+}
+
+function visibleBookLibraryItems() {
+  if (!state.booksEnabled || !["all", "book"].includes(state.libraryFormatFilter)) return [];
+  return state.bookLibraryItems
+    .filter((book) => {
+      const status = normalizedBookLibraryStatus(book);
+      if (state.libraryFilter === "all") return true;
+      if (state.libraryFilter === "reading") return status === "reading";
+      if (state.libraryFilter === "other") return false;
+      return status === state.libraryFilter;
+    })
+    .slice()
+    .sort((left, right) => {
+      const activity = Date.parse(right.progress?.updatedAt || right.dateAdded || 0) - Date.parse(left.progress?.updatedAt || left.dateAdded || 0);
+      return activity || String(left.title || "").localeCompare(String(right.title || ""));
+    });
+}
+
+function bookLibraryCardSignature(book) {
+  return state.booksIntegration?.cardSignature(book) || `book:${book.id}`;
+}
+
+function createBookLibraryCard(book) {
+  return state.booksIntegration.createLibraryCard(book, {
+    createCoverButton,
+    navigate: navigateBookRoute,
+    statusLabels: libraryStatusLabels,
+  });
+}
+
 function renderLibrary({ preserveInteractions = true } = {}) {
   if (!el.libraryList || !el.libraryCount) return;
   const renderSignature = libraryRenderSignature();
@@ -4913,6 +5039,7 @@ function renderLibrary({ preserveInteractions = true } = {}) {
   );
   const allowedItems = libraryItemsAllowedByNsfw();
   const visibleItems = visibleLibraryItems();
+  const visibleBooks = visibleBookLibraryItems();
   const hiddenCount = allowedItems.filter((item) => item.hidden).length;
   const statusCounts = Object.fromEntries(libraryStatuses.map((status) => [status, 0]));
   const unhiddenItems = allowedItems.filter((item) => !item.hidden);
@@ -4922,6 +5049,12 @@ function renderLibrary({ preserveInteractions = true } = {}) {
     const status = normalizedLibraryStatus(item);
     statusCounts[status] = (statusCounts[status] || 0) + 1;
   });
+  if (["all", "book"].includes(state.libraryFormatFilter)) {
+    state.bookLibraryItems.forEach((book) => {
+      const status = normalizedBookLibraryStatus(book);
+      statusCounts[status] = (statusCounts[status] || 0) + 1;
+    });
+  }
   el.libraryFormatFilters.forEach((button) => {
     const active = button.dataset.libraryFormatFilter === state.libraryFormatFilter;
     button.classList.toggle("active", active);
@@ -4936,6 +5069,7 @@ function renderLibrary({ preserveInteractions = true } = {}) {
     const filter = count.dataset.libraryCount;
     const value = filter === "all"
       ? unhiddenItems.filter((item) => state.libraryFormatFilter === "all" || inferredMediaFormat(item) === state.libraryFormatFilter).length
+        + (["all", "book"].includes(state.libraryFormatFilter) ? state.bookLibraryItems.length : 0)
       : filter === "reading"
         ? (statusCounts.reading || 0) + (statusCounts.rereading || 0)
         : filter === "other"
@@ -4944,9 +5078,10 @@ function renderLibrary({ preserveInteractions = true } = {}) {
     count.textContent = String(value);
   });
   if (el.toggleHiddenLibrary) el.toggleHiddenLibrary.hidden = hiddenCount === 0 && !state.showHiddenLibrary;
-  el.libraryCount.textContent = `${visibleItems.length} title${visibleItems.length === 1 ? "" : "s"}${hiddenCount ? ` · ${hiddenCount} hidden` : ""}`;
+  const visibleCount = visibleItems.length + visibleBooks.length;
+  el.libraryCount.textContent = `${visibleCount} title${visibleCount === 1 ? "" : "s"}${hiddenCount ? ` · ${hiddenCount} hidden` : ""}`;
   updateReaderNav();
-  if (!visibleItems.length) {
+  if (!visibleCount) {
     const showHiddenAction = !state.showHiddenLibrary && hiddenCount > 0 && state.libraryFilter === "all";
     const message = showHiddenAction
       ? "Your current titles are hidden. Show hidden titles to bring them back."
@@ -4963,8 +5098,12 @@ function renderLibrary({ preserveInteractions = true } = {}) {
     copy.textContent = message;
     const action = document.createElement("button");
     action.type = "button";
-    action.textContent = showHiddenAction ? "Show hidden titles" : "Browse manga";
-    action.addEventListener("click", () => showHiddenAction ? setShowHiddenLibrary(true) : setActiveView("browse"));
+    action.textContent = showHiddenAction ? "Show hidden titles" : state.libraryFormatFilter === "book" ? "Find books" : "Browse titles";
+    action.addEventListener("click", () => {
+      if (showHiddenAction) setShowHiddenLibrary(true);
+      else if (state.libraryFormatFilter === "book") navigateBookRoute("books-search");
+      else setActiveView("browse");
+    });
     empty.append(art, heading, copy, action);
     el.libraryList.replaceChildren(empty);
     el.libraryList.dataset.renderSignature = renderSignature;
@@ -5085,6 +5224,16 @@ function renderLibrary({ preserveInteractions = true } = {}) {
     card.append(cover, badges, actions);
     renderedCards.push(card);
   });
+  visibleBooks.forEach((book) => {
+    const key = `book:${book.id}`;
+    const signature = bookLibraryCardSignature(book);
+    const existingCard = existingCards.get(key);
+    if (existingCard && existingCard.dataset.libraryCardSignature === signature) {
+      renderedCards.push(existingCard);
+    } else {
+      renderedCards.push(createBookLibraryCard(book));
+    }
+  });
   renderedCards.forEach((card, index) => {
     const current = el.libraryList.children[index];
     if (current !== card) el.libraryList.insertBefore(card, current || null);
@@ -5126,16 +5275,31 @@ function libraryCardSignature(item) {
 }
 
 function readerResumeItem() {
-  const available = libraryItemsAllowedByNsfw()
+  const availableManga = libraryItemsAllowedByNsfw()
     .filter((item) => !item.hidden)
     .filter((item) => ["reading", "rereading"].includes(normalizedLibraryStatus(item)))
     .filter((item) => Number.isInteger(Number(item.chapterId)) && Number(item.chapterId) > 0)
-    .sort((a, b) => Date.parse(b.updatedAt || 0) - Date.parse(a.updatedAt || 0));
+    .map((item) => ({ ...item, resumeKind: "manga" }));
   if (state.activeChapter?.type === "suwayomi" && state.currentManga?.id) {
     const currentKey = libraryItemKey({ mangaId: state.currentManga.id, sourceId: state.currentManga.sourceId });
-    return available.find((item) => libraryItemKey(item) === currentKey) || available[0] || null;
+    const active = availableManga.find((item) => libraryItemKey(item) === currentKey);
+    if (active) return active;
   }
-  return available[0] || null;
+  const availableBooks = state.booksEnabled
+    ? state.bookLibraryItems
+      .filter((book) => book.progress?.locator && normalizedBookLibraryStatus(book) === "reading")
+      .map((book) => ({
+        resumeKind: "book",
+        bookId: Number(book.id),
+        mangaTitle: book.title || "Untitled book",
+        chapterTitle: Array.isArray(book.authors) && book.authors.length ? book.authors.join(", ") : "EPUB",
+        progressLabel: bookProgressLabel(book),
+        thumbnailUrl: book.coverUrl || "",
+        updatedAt: book.progress?.updatedAt || book.dateAdded || "",
+      }))
+    : [];
+  return [...availableManga, ...availableBooks]
+    .sort((left, right) => Date.parse(right.updatedAt || 0) - Date.parse(left.updatedAt || 0))[0] || null;
 }
 
 function updateReaderNav() {
@@ -5153,7 +5317,9 @@ function updateReaderNav() {
   el.navReader.setAttribute("aria-label", `Resume ${title}${item.progressLabel ? `, ${item.progressLabel}` : ""}`);
   el.navReader.title = `${title}${item.progressLabel ? ` — ${item.progressLabel}` : ""}`;
 
-  const coverUrl = normalizeMangaCoverUrl(item?.thumbnailUrl);
+  const coverUrl = item.resumeKind === "book"
+    ? String(item.thumbnailUrl || "").trim()
+    : normalizeMangaCoverUrl(item?.thumbnailUrl);
   el.navReaderCover.classList.remove("cover-loaded");
   el.navReaderImage.hidden = true;
   el.navReaderImage.removeAttribute("src");
@@ -5174,6 +5340,10 @@ async function openReaderFromNav(returnFocusTarget = null) {
   const item = readerResumeItem();
   if (!item) {
     if (state.activeChapter && state.pages.length) setActiveView("reader");
+    return;
+  }
+  if (item.resumeKind === "book") {
+    navigateBookRoute("book-read", { id: item.bookId });
     return;
   }
   const activeServerUrl = String(state.activeChapter?.serverUrl || currentDeviceServerUrl()).trim().replace(/\/+$/, "");
@@ -5266,6 +5436,14 @@ function libraryRenderSignature(items = state.libraryItems) {
       status: normalizedLibraryStatus(item),
       mediaFormat: inferredMediaFormat(item),
     })),
+    books: state.booksEnabled ? state.bookLibraryItems.map((book) => ({
+      id: Number(book.id),
+      title: book.title || "",
+      authors: Array.isArray(book.authors) ? book.authors : [],
+      coverUrl: book.coverUrl || "",
+      dateAdded: book.dateAdded || "",
+      progress: book.progress || null,
+    })) : [],
   });
 }
 
@@ -14088,6 +14266,7 @@ function wireEvents() {
   el.browseOpenSettings?.addEventListener("click", () => {
     openSuwayomiSetup();
   });
+  el.browseBooks?.addEventListener("click", () => navigateBookRoute("books-search"));
   el.serverUrl?.addEventListener("input", () => {
     updateSuwayomiLink();
     updateSuwayomiSetupState();
