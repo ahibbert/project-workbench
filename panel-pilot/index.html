@@ -237,12 +237,27 @@
               </div>
             </div>
           </div>
-          <label class="chapter-filter">
-            <span>Release group</span>
-            <select id="scanlator-select">
-              <option value="auto">Best available</option>
-            </select>
-          </label>
+          <div class="chapter-controls">
+            <label class="chapter-filter">
+              <span>Release group</span>
+              <select id="scanlator-select">
+                <option value="auto">Best available</option>
+              </select>
+            </label>
+            <label class="chapter-filter">
+              <span>Library group</span>
+              <select id="detail-library-status" disabled>
+                <option value="">Not in library</option>
+                <option value="reading">Reading</option>
+                <option value="plan_to_read">Plan to read</option>
+                <option value="paused">Paused</option>
+                <option value="completed">Completed</option>
+                <option value="dropped">Dropped</option>
+                <option value="rereading">Rereading</option>
+                <option value="considering">Considering</option>
+              </select>
+            </label>
+          </div>
           <div class="list compact" id="chapter-list"></div>
           <details class="technical-tools">
             <summary>Advanced chapter tools</summary>

@@ -137,7 +137,7 @@ function failedBufferStatus() {
   };
 }
 
-async function installPolishFixture(page, { holdStoredChapters = false } = {}) {
+async function installPolishFixture(page, { holdStoredChapters = false, detailChapters = null } = {}) {
   const storedStarted = deferred();
   const releaseStored = deferred();
   const firstSearchStarted = deferred();
@@ -145,6 +145,7 @@ async function installPolishFixture(page, { holdStoredChapters = false } = {}) {
   const items = structuredClone(seededLibrary);
   let storedQueries = 0;
   let searchRequests = 0;
+  const progressMutations = [];
 
   await page.addInitScript(({ baseUrl, library }) => {
     try { delete Navigator.prototype.serviceWorker; } catch { /* PWA lifecycle is outside this suite. */ }
@@ -195,12 +196,13 @@ async function installPolishFixture(page, { holdStoredChapters = false } = {}) {
           data = { fetchSourceManga: { hasNextPage: false, mangas: results } };
         }
       } else if (query.includes("GET_MANGA_CHAPTERS_FETCH")) {
-        data = { fetchChapters: { chapters: [chapterFor(Number(variables.input?.mangaId) || 9101)] } };
+        data = { fetchChapters: { chapters: detailChapters || [chapterFor(Number(variables.input?.mangaId) || 9101)] } };
       } else if (query.includes("GET_MANGA_CARD")) {
         const manga = fixtureMangas.find((entry) => Number(entry.id) === Number(variables.id));
         data = { manga: manga ? { id: manga.id, title: manga.title, thumbnailUrl: manga.thumbnailUrl } : null };
       } else if (query.includes("UPDATE_CHAPTER_PROGRESS")) {
-        data = { updateChapter: { chapter: { id: Number(variables.input?.id), isRead: false, lastPageRead: 0 } } };
+        progressMutations.push(structuredClone(variables.input));
+        data = { updateChapter: { chapter: { id: Number(variables.input?.id), ...variables.input?.patch } } };
       } else if (query.includes("UPDATE_MANGA_LIBRARY")) {
         data = { updateManga: { manga: { id: Number(variables.input?.id), inLibrary: true } } };
       }
@@ -256,6 +258,7 @@ async function installPolishFixture(page, { holdStoredChapters = false } = {}) {
     releaseFirstSearch: () => releaseFirstSearch.resolve(),
     releaseStoredChapters: () => releaseStored.resolve(),
     searchRequests: () => searchRequests,
+    progressMutations,
     storedQueries: () => storedQueries,
     storedStarted: () => storedStarted.promise,
   };
@@ -453,6 +456,53 @@ test("direct library actions repaint immediately instead of leaving an in-use ca
   await expect(card.getByText("Pinned", { exact: true })).toBeVisible();
   await card.locator(".manga-card-more summary").click();
   await expect(card.getByRole("button", { name: "Unpin", exact: true })).toBeVisible();
+});
+
+test("chapter details can change library group and mark every earlier chapter as read", async ({ page }) => {
+  const chapters = [5, 4, 3, 2, 1].map((number) => ({
+    ...chapterFor(801),
+    id: 81000 + number,
+    name: `Chapter ${number}`,
+    sourceOrder: number,
+    chapterNumber: number,
+    pageCount: 10 + number,
+    lastPageRead: 0,
+  }));
+  const fixture = await installPolishFixture(page, { detailChapters: chapters });
+  await page.goto("/");
+
+  const card = page.locator(".library-card").filter({ hasText: "Reading Fixture" });
+  await card.getByRole("button", { name: "Chapters", exact: true }).click();
+  await expect(page.locator("#manga-detail")).toBeVisible();
+  await expect(page.locator("#detail-library-status")).toHaveValue("reading");
+
+  await page.locator("#detail-library-status").selectOption("paused");
+  await expect(page.locator("#detail-library-status")).toHaveValue("paused");
+  await expect.poll(() => page.evaluate(() => {
+    const items = JSON.parse(localStorage.getItem("panel-pilot-library") || "[]");
+    return items.find((item) => item.mangaId === 801)?.libraryStatus;
+  })).toBe("paused");
+
+  const selected = page.locator('[data-chapter-id="81004"]');
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toContain("Mark 3 chapters before Chapter 4 as read?");
+    expect(dialog.message()).toContain("Chapter 4 itself will stay unchanged.");
+    await dialog.accept();
+  });
+  await selected.getByRole("button", { name: /Mark 3 chapters before Chapter 4 as read/ }).click();
+  await expect.poll(() => fixture.progressMutations.length).toBe(4);
+
+  expect(fixture.progressMutations
+    .map((input) => ({ id: input.id, patch: input.patch }))
+    .sort((left, right) => left.id - right.id)).toEqual([
+      { id: 80101, patch: { isRead: true, lastPageRead: 11 } },
+      { id: 81001, patch: { isRead: true, lastPageRead: 10 } },
+      { id: 81002, patch: { isRead: true, lastPageRead: 11 } },
+      { id: 81003, patch: { isRead: true, lastPageRead: 12 } },
+    ]);
+  await expect(selected.locator(".chapter-device-copy > span")).not.toContainText("Read");
+  await expect(page.locator('[data-chapter-id="81003"] .chapter-device-copy > span')).toContainText("Read");
+  await expect(selected.getByRole("button", { name: /Mark earlier/ })).toHaveCount(0);
 });
 
 test("the server-buffer sheet is modal, traps focus, closes, and restores focus to its pill", async ({ page }) => {

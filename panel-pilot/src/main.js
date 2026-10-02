@@ -325,6 +325,7 @@ const el = {
   detailTitle: document.querySelector("#detail-title"),
   detailPrimary: document.querySelector("#detail-primary"),
   detailLibrary: document.querySelector("#detail-library"),
+  detailLibraryStatus: document.querySelector("#detail-library-status"),
   mangaId: document.querySelector("#manga-id"),
   fetchChapters: document.querySelector("#fetch-chapters"),
   chapterList: document.querySelector("#chapter-list"),
@@ -3224,6 +3225,11 @@ function updateMangaDetailActions() {
     el.detailLibrary.textContent = migrationTarget ? "Switch to this source" : item ? "In library" : "Add to library";
     el.detailLibrary.disabled = migrationTarget ? false : Boolean(item);
   }
+  if (el.detailLibraryStatus) {
+    el.detailLibraryStatus.value = item ? normalizedLibraryStatus(item) : "";
+    el.detailLibraryStatus.disabled = !item || migrationTarget;
+    el.detailLibraryStatus.title = item ? "Move this title to another library group" : "Add this title to the library first";
+  }
 }
 
 async function startOrContinueCurrentManga(returnFocusTarget = null) {
@@ -3291,7 +3297,8 @@ async function addCurrentMangaToLibrary() {
 }
 
 function migrationChapterNumber(chapter) {
-  const direct = Number(chapter?.chapterNumber);
+  const rawNumber = chapter?.chapterNumber;
+  const direct = rawNumber === null || rawNumber === "" ? Number.NaN : Number(rawNumber);
   if (Number.isFinite(direct)) return direct;
   const nameMatch = String(chapter?.name || chapter?.chapterTitle || "").match(/(?:chapter|ch\.?)[^0-9]*([0-9]+(?:\.[0-9]+)?)/i);
   return nameMatch ? Number(nameMatch[1]) : Number.NaN;
@@ -6569,6 +6576,73 @@ function chapterGroupKey(chapter) {
   return `name:${normalizeTitle(chapter.name || chapter.sourceOrder || chapter.id)}`;
 }
 
+function chapterPosition(chapter) {
+  const chapterNumber = migrationChapterNumber(chapter);
+  if (Number.isFinite(chapterNumber)) return chapterNumber;
+  const sourceOrder = Number(chapter?.sourceOrder);
+  return Number.isFinite(sourceOrder) ? sourceOrder : Number.NaN;
+}
+
+function unreadChaptersBefore(chapter) {
+  const position = chapterPosition(chapter);
+  if (Number.isFinite(position)) {
+    return state.chapters.filter((candidate) => (
+      Number(candidate.id) !== Number(chapter.id)
+      && !candidate.isRead
+      && Number.isFinite(chapterPosition(candidate))
+      && chapterPosition(candidate) < position
+    ));
+  }
+  const sequence = state.chapters.slice().sort((a, b) => Number(b.sourceOrder || 0) - Number(a.sourceOrder || 0));
+  const selectedIndex = sequence.findIndex((candidate) => Number(candidate.id) === Number(chapter.id));
+  return selectedIndex < 0 ? [] : sequence.slice(selectedIndex + 1).filter((candidate) => !candidate.isRead);
+}
+
+function distinctChapterCount(chapters) {
+  return new Set(chapters.map(chapterGroupKey)).size;
+}
+
+async function markChaptersBeforeRead(chapter, button) {
+  const targets = unreadChaptersBefore(chapter);
+  if (!targets.length) {
+    showToast("All earlier chapters are already marked as read.", "good");
+    return;
+  }
+  const chapterTitle = chapter.name || `Chapter ${chapter.chapterNumber || chapter.sourceOrder || chapter.id}`;
+  const targetChapterCount = distinctChapterCount(targets);
+  const noun = targetChapterCount === 1 ? "chapter" : "chapters";
+  if (!window.confirm(`Mark ${targetChapterCount} ${noun} before ${chapterTitle} as read?\n\n${chapterTitle} itself will stay unchanged.`)) return;
+
+  setBusy(button, true, "Marking");
+  const succeeded = [];
+  const failed = [];
+  const serverUrl = chapter.serverUrl || currentDeviceServerUrl();
+  await mapWithConcurrency(targets, 4, async (target) => {
+    try {
+      const data = await graphQL(
+        queries.updateChapter,
+        { input: { id: Number(target.id), patch: { isRead: true, lastPageRead: Math.max(0, Number(target.pageCount || 1) - 1) } } },
+        { timeoutMs: 10000, baseUrl: target.serverUrl || serverUrl },
+      );
+      const updated = data.updateChapter?.chapter;
+      if (!updated?.isRead) throw new Error("Suwayomi did not confirm the chapter as read.");
+      Object.assign(target, updated);
+      succeeded.push(target);
+    } catch (error) {
+      failed.push({ target, error });
+    }
+  });
+
+  renderChapters();
+  if (!failed.length) {
+    showToast(`Marked ${targetChapterCount} earlier ${noun} as read.`, "good");
+  } else if (succeeded.length) {
+    showToast(`Marked ${succeeded.length}; ${failed.length} could not be updated. Try again to finish.`, "bad");
+  } else {
+    showToast(`Could not mark earlier chapters: ${friendlySourceErrorMessage(failed[0].error)}`, "bad");
+  }
+}
+
 function visibleChapters() {
   const filter = state.scanlatorFilter || "auto";
   if (filter === "all") return state.chapters.slice();
@@ -6726,6 +6800,23 @@ function renderChapters() {
       }
     });
     actions.append(button);
+
+    const earlierUnread = unreadChaptersBefore(chapter);
+    if (earlierUnread.length) {
+      const earlierChapterCount = distinctChapterCount(earlierUnread);
+      const markEarlier = document.createElement("button");
+      markEarlier.type = "button";
+      markEarlier.dataset.chapterAction = "mark-earlier-read";
+      markEarlier.className = "mark-earlier-read";
+      markEarlier.textContent = "Mark earlier read";
+      markEarlier.setAttribute(
+        "aria-label",
+        `Mark ${earlierChapterCount} ${earlierChapterCount === 1 ? "chapter" : "chapters"} before ${title.textContent} as read`,
+      );
+      markEarlier.disabled = !navigator.onLine;
+      markEarlier.addEventListener("click", () => void markChaptersBeforeRead(chapter, markEarlier));
+      actions.append(markEarlier);
+    }
 
     if (["none", "paused", "failed"].includes(deviceStatus.state)) {
       const download = document.createElement("button");
@@ -11847,6 +11938,16 @@ function wireEvents() {
   el.detailLibrary?.addEventListener("click", () => {
     if (state.sourceMigration) void migrateCurrentMangaSource();
     else void addCurrentMangaToLibrary();
+  });
+  el.detailLibraryStatus?.addEventListener("change", (event) => {
+    const item = currentMangaLibraryItem();
+    if (!item) {
+      updateMangaDetailActions();
+      showToast("Add this title to the library before choosing a group.", "bad");
+      return;
+    }
+    setLibraryItemStatus(item, event.target.value);
+    updateMangaDetailActions();
   });
   el.browseOpenSettings?.addEventListener("click", () => {
     openSuwayomiSetup();

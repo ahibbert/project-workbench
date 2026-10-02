@@ -2329,6 +2329,16 @@ body.has-network-status.reader-focus .reader-topbar {
   border-block: 1px solid var(--line);
 }
 
+.chapter-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
+  gap: 0 1rem;
+}
+
+.chapter-controls .chapter-filter + .chapter-filter {
+  margin-top: 0.7rem;
+}
+
 #chapter-list.compact {
   max-height: none;
   overflow: visible;
@@ -2449,6 +2459,11 @@ body.has-network-status.reader-focus .reader-topbar {
 #chapter-list .chapter-actions [data-device-action="open"] {
   border-color: transparent;
   background: #e5f1f0;
+}
+
+#chapter-list .chapter-actions .mark-earlier-read {
+  border: 1px solid rgba(35, 108, 110, 0.24);
+  background: transparent;
 }
 
 #chapter-list .chapter-actions [data-device-action="remove"] {
