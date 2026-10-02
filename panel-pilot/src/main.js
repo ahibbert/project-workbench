@@ -333,6 +333,12 @@ const el = {
   comicRecommendationResults: document.querySelector("#comic-recommendation-results"),
   comicRecommendationsNote: document.querySelector("#comic-recommendations-note"),
   refreshComicRecommendations: document.querySelector("#refresh-comic-recommendations"),
+  libraryThingApiKey: document.querySelector("#librarything-api-key"),
+  openLibraryContact: document.querySelector("#open-library-contact"),
+  saveComicRecommendationsConfig: document.querySelector("#save-comic-recommendations-config"),
+  disconnectComicRecommendations: document.querySelector("#disconnect-comic-recommendations"),
+  comicRecommendationsConfigState: document.querySelector("#comic-recommendations-config-state"),
+  comicRecommendationsConfigNote: document.querySelector("#comic-recommendations-config-note"),
   recommendationContext: document.querySelector("#recommendation-context"),
   recommendationContextTitle: document.querySelector("#recommendation-context-title"),
   recommendationContextNote: document.querySelector("#recommendation-context-note"),
@@ -594,6 +600,8 @@ const state = {
   mangabakaRecommendations: [],
   comicRecommendations: [],
   comicRecommendationsLoaded: false,
+  comicRecommendationsConfigured: false,
+  comicRecommendationsManagedByEnvironment: false,
   mangabakaConnected: false,
   mangabakaConfigured: false,
   mangabakaOutbox: [],
@@ -1147,7 +1155,12 @@ async function updateReadingStatsSettings(patch) {
 function readingStatsContext() {
   const chapterId = Number(state.activeChapter?.chapterId);
   const mangaId = Number(state.currentManga?.id || state.currentManga?.mangaId);
-  if (state.activeChapter?.type !== "suwayomi" || !Number.isInteger(chapterId) || !Number.isInteger(mangaId)) return null;
+  if (
+    state.activeChapter?.type !== "suwayomi" ||
+    !Number.isInteger(chapterId) ||
+    !Number.isInteger(mangaId) ||
+    isNsfwLibraryItem(state.currentManga)
+  ) return null;
   return {
     serverUrl: state.activeChapter.serverUrl || currentDeviceServerUrl(),
     mangaId,
@@ -1340,7 +1353,7 @@ function setActiveView(view, options = {}) {
     void refreshDeviceStorage();
     if (state.connected || state.sourceIntelligence) void refreshSourceIntelligence();
   }
-  if (view === "browse" && (!state.comicRecommendationsLoaded || (!state.comicRecommendations.length && state.libraryItems.some((item) => inferredMediaFormat(item) === "comic")))) {
+  if (view === "browse" && (!state.comicRecommendationsLoaded || (!state.comicRecommendations.length && state.libraryItems.some((item) => inferredMediaFormat(item) === "comic" && !isNsfwLibraryItem(item))))) {
     void loadComicRecommendations();
   }
   if (view === "stats") void refreshReadingStats();
@@ -1590,6 +1603,8 @@ function setShowNsfwSources(value) {
   state.visibleSources = filterSourceVariants(state.sources);
   renderSources();
   renderLibrary();
+  renderMoments();
+  syncReadingStatsTracker();
   saveSettings();
 }
 
@@ -2222,6 +2237,80 @@ function comicRecommendationSearchItem(recommendation) {
   };
 }
 
+function applyComicRecommendationsConfigStatus(payload = {}) {
+  state.comicRecommendationsConfigured = Boolean(payload.configured);
+  state.comicRecommendationsManagedByEnvironment = Boolean(payload.managedByEnvironment);
+  if (el.comicRecommendationsConfigState) {
+    el.comicRecommendationsConfigState.textContent = state.comicRecommendationsConfigured ? "Configured" : "Not configured";
+  }
+  if (el.disconnectComicRecommendations) {
+    el.disconnectComicRecommendations.hidden = !state.comicRecommendationsConfigured || state.comicRecommendationsManagedByEnvironment;
+  }
+  if (el.saveComicRecommendationsConfig) {
+    el.saveComicRecommendationsConfig.disabled = state.comicRecommendationsManagedByEnvironment;
+  }
+  if (el.libraryThingApiKey) {
+    el.libraryThingApiKey.disabled = state.comicRecommendationsManagedByEnvironment;
+    el.libraryThingApiKey.placeholder = state.comicRecommendationsConfigured ? "Key stored on server" : "Paste developer key";
+  }
+  if (el.openLibraryContact) el.openLibraryContact.disabled = state.comicRecommendationsManagedByEnvironment;
+  if (el.comicRecommendationsConfigNote) {
+    el.comicRecommendationsConfigNote.textContent = state.comicRecommendationsManagedByEnvironment
+      ? "Configured by the server environment. The key is not available to this browser."
+      : state.comicRecommendationsConfigured
+        ? "Configured. The key is stored on this server and is not returned to the browser."
+        : "The comic feed remains off until a key is configured.";
+  }
+}
+
+async function refreshComicRecommendationsConfig() {
+  try {
+    const payload = await localJson("/api/comic-recommendations/config");
+    applyComicRecommendationsConfigStatus(payload);
+    return payload;
+  } catch (error) {
+    if (el.comicRecommendationsConfigState) el.comicRecommendationsConfigState.textContent = "Unavailable";
+    if (el.comicRecommendationsConfigNote) el.comicRecommendationsConfigNote.textContent = friendlySourceErrorMessage(error);
+    return null;
+  }
+}
+
+async function saveComicRecommendationsConfig() {
+  const apiKey = el.libraryThingApiKey?.value.trim() || "";
+  const contact = el.openLibraryContact?.value.trim() || "";
+  if (!apiKey) return showToast("Paste your LibraryThing developer key first.", "bad");
+  setBusy(el.saveComicRecommendationsConfig, true, "Saving");
+  try {
+    const payload = await postLocalJson("/api/comic-recommendations/config", { apiKey, contact });
+    if (el.libraryThingApiKey) el.libraryThingApiKey.value = "";
+    if (el.openLibraryContact) el.openLibraryContact.value = "";
+    applyComicRecommendationsConfigStatus(payload);
+    state.comicRecommendationsLoaded = false;
+    await loadComicRecommendations({ force: true });
+    showToast("LibraryThing key saved on your Panels server.", "good");
+  } catch (error) {
+    showToast(`Could not save the LibraryThing key: ${friendlySourceErrorMessage(error)}`, "bad");
+  } finally {
+    setBusy(el.saveComicRecommendationsConfig, false);
+  }
+}
+
+async function disconnectComicRecommendations() {
+  setBusy(el.disconnectComicRecommendations, true, "Removing");
+  try {
+    const payload = await postLocalJson("/api/comic-recommendations/config", { clear: true });
+    applyComicRecommendationsConfigStatus(payload);
+    state.comicRecommendations = [];
+    state.comicRecommendationsLoaded = true;
+    renderComicRecommendations("unconfigured");
+    showToast("LibraryThing key removed.");
+  } catch (error) {
+    showToast(`Could not remove the LibraryThing key: ${friendlySourceErrorMessage(error)}`, "bad");
+  } finally {
+    setBusy(el.disconnectComicRecommendations, false);
+  }
+}
+
 function renderComicRecommendations(status = "") {
   if (!el.comicRecommendationResults) return;
   el.comicRecommendationResults.replaceChildren();
@@ -2260,7 +2349,7 @@ function renderComicRecommendations(status = "") {
 
 async function loadComicRecommendations({ announce = false, force = false } = {}) {
   if (!el.comicRecommendationResults) return;
-  const hasComicLibrary = state.libraryItems.some((item) => inferredMediaFormat(item) === "comic" && !["dropped", "considering"].includes(item.libraryStatus));
+  const hasComicLibrary = state.libraryItems.some((item) => !isNsfwLibraryItem(item) && inferredMediaFormat(item) === "comic" && !["dropped", "considering"].includes(item.libraryStatus));
   if (!force && !hasComicLibrary) {
     state.comicRecommendations = [];
     state.comicRecommendationsLoaded = true;
@@ -2272,6 +2361,7 @@ async function loadComicRecommendations({ announce = false, force = false } = {}
   setBusy(el.refreshComicRecommendations, true, "Loading");
   try {
     const payload = await localJson("/api/comic-recommendations?limit=12");
+    applyComicRecommendationsConfigStatus(payload);
     state.comicRecommendations = Array.isArray(payload.results) ? payload.results : [];
     state.comicRecommendationsLoaded = true;
     renderComicRecommendations(payload.status);
@@ -2447,7 +2537,7 @@ function persistMangaBakaOutbox() {
 }
 
 function mangaBakaEligibleLibraryItem(item) {
-  return inferredMediaFormat(item) === "manga";
+  return inferredMediaFormat(item) === "manga" && !isNsfwLibraryItem(item);
 }
 
 function enqueueMangaBakaLibraryItem(item, completedChapter = null) {
@@ -2478,8 +2568,20 @@ function enqueueMangaBakaLibraryItem(item, completedChapter = null) {
 async function flushMangaBakaOutbox({ manual = false } = {}) {
   if (!state.mangabakaConfigured || !state.mangabakaAccountKey || !state.mangabakaOutbox.length) return false;
   if (state.mangabakaSyncPromise) return state.mangabakaSyncPromise;
+  const privateSeriesIds = new Set(
+    state.libraryItems
+      .filter(isNsfwLibraryItem)
+      .map((item) => Number(item.mangabakaId))
+      .filter(Boolean)
+  );
+  const prunedOutbox = state.mangabakaOutbox.filter((entry) => !privateSeriesIds.has(Number(entry.series_id)));
+  if (prunedOutbox.length !== state.mangabakaOutbox.length) {
+    state.mangabakaOutbox = prunedOutbox;
+    persistMangaBakaOutbox();
+  }
   const entries = state.mangabakaOutbox
     .filter((entry) => entry.accountKey === state.mangabakaAccountKey)
+    .filter((entry) => !privateSeriesIds.has(Number(entry.series_id)))
     .slice(0, 100)
     .map((entry) => ({ ...entry }));
   if (!entries.length) return false;
@@ -3215,6 +3317,7 @@ function isBrowseableSource(source) {
 
 function isNsfwSource(source) {
   if (!source) return false;
+  if (source.isNsfw === true) return true;
   const label = sourceLabel(source).toLowerCase();
   return label.includes("manhwa18") || label.includes("manhwa18.cc");
 }
@@ -4644,7 +4747,7 @@ function libraryCardSignature(item) {
 }
 
 function readerResumeItem() {
-  const available = state.libraryItems
+  const available = libraryItemsAllowedByNsfw()
     .filter((item) => !item.hidden)
     .filter((item) => ["reading", "rereading"].includes(normalizedLibraryStatus(item)))
     .filter((item) => Number.isInteger(Number(item.chapterId)) && Number(item.chapterId) > 0)
@@ -4770,6 +4873,7 @@ function libraryRenderSignature(items = state.libraryItems) {
     filter: state.libraryFilter,
     formatFilter: state.libraryFormatFilter,
     showHidden: state.showHiddenLibrary,
+    showPrivate: state.showNsfwSources,
     items: sortLibraryItems(items).map((item) => ({
       key: libraryItemKey(item),
       mangaTitle: item.mangaTitle || "",
@@ -4787,9 +4891,9 @@ function libraryRenderSignature(items = state.libraryItems) {
 }
 
 function libraryItemsAllowedByNsfw() {
-  // A title explicitly present in the user's library should remain visible.
-  // The NSFW preference only limits discovery/search results.
-  return state.libraryItems;
+  return state.showNsfwSources
+    ? state.libraryItems
+    : state.libraryItems.filter((item) => !isNsfwLibraryItem(item));
 }
 
 function waitFor(delayMs) {
@@ -4859,7 +4963,7 @@ function setLibraryItemStatus(item, status, { sync = true } = {}) {
   saveLibraryItems();
   renderLibrary({ preserveInteractions: false });
   if (sync) enqueueMangaBakaLibraryItem(updated);
-  if (status === "completed" && updated && state.readingStatsSettings?.enabled) {
+  if (status === "completed" && updated && state.readingStatsSettings?.enabled && !isNsfwLibraryItem(updated)) {
     void readingStatsClient.recordTitleComplete({
       serverUrl: updated.serverUrl || currentDeviceServerUrl(),
       mangaId: updated.mangaId,
@@ -4877,6 +4981,7 @@ function setLibraryItemStatus(item, status, { sync = true } = {}) {
 }
 
 function isNsfwLibraryItem(item) {
+  if (item?.isNsfw === true || item?.privateSource === true || item?.source?.isNsfw === true) return true;
   const source = state.sources.find((entry) => String(entry.id) === String(item?.sourceId));
   if (source && isNsfwSource(source)) return true;
   const label = `${item?.sourceLabel || ""} ${item?.mangaTitle || item?.title || ""}`.toLowerCase();
@@ -4890,6 +4995,7 @@ async function selectLibraryManga(item, resume, returnFocusTarget = null) {
     title: item.mangaTitle,
     sourceId: item.sourceId,
     sourceLabel: item.sourceLabel,
+    isNsfw: Boolean(item.isNsfw),
     thumbnailUrl: item.thumbnailUrl,
     mediaFormat: item.mediaFormat,
     mediaFormatSource: item.mediaFormatSource,
@@ -4982,6 +5088,7 @@ async function syncSuwayomiLibrary({ announce = false, progressMangaIds = null }
       mangaTitle: manga.title,
       sourceId: manga.sourceId,
       sourceLabel: source ? sourceLabel(source) : (existing.sourceLabel || "Suwayomi"),
+      isNsfw: isNsfwSource(source) || isNsfwLibraryItem(existing),
       thumbnailUrl: manga.thumbnailUrl || existing.thumbnailUrl,
       suwayomiLibrary: true,
       updatedAt: existing.updatedAt || "1970-01-01T00:00:00.000Z",
@@ -11606,6 +11713,7 @@ async function saveCurrentMoment() {
       title: state.currentManga?.title || "Saved moment",
       chapterTitle: el.chapterTitle?.textContent || "",
       sourceLabel: state.currentManga?.sourceLabel || activeChapterSourceLabel(),
+      isNsfw: isNsfwLibraryItem(state.currentManga),
       mediaFormat: state.panelMode,
       pageIndex: currentSuwayomiPageIndex(),
       panelIndex: state.panelIndex,
@@ -11648,9 +11756,12 @@ function createMomentsEmptyState(title, copy) {
 
 function renderMoments() {
   if (!el.momentsGrid) return;
-  if (el.momentsCount) el.momentsCount.textContent = `${state.moments.length} saved`;
+  const visibleMoments = state.showNsfwSources
+    ? state.moments
+    : state.moments.filter((moment) => !isNsfwLibraryItem(moment));
+  if (el.momentsCount) el.momentsCount.textContent = `${visibleMoments.length} saved`;
   el.momentsGrid.replaceChildren();
-  if (!state.moments.length) {
+  if (!visibleMoments.length) {
     el.momentsGrid.append(createMomentsEmptyState(
       "No saved moments yet",
       "While reading, open the reader controls and choose “Save this moment.” Panels keeps a high-resolution crop here."
@@ -11658,7 +11769,7 @@ function renderMoments() {
     return;
   }
   const fragment = document.createDocumentFragment();
-  state.moments.forEach((moment) => {
+  visibleMoments.forEach((moment) => {
     const card = document.createElement("article");
     card.className = "moment-card";
     const imageLink = document.createElement("a");
@@ -12662,6 +12773,8 @@ function wireEvents() {
   el.syncProgress?.addEventListener("click", syncLibraryAndProgress);
   el.refreshMangabaka?.addEventListener("click", () => loadMangaBakaRecommendations({ announce: true }));
   el.refreshComicRecommendations?.addEventListener("click", () => loadComicRecommendations({ announce: true, force: true }));
+  el.saveComicRecommendationsConfig?.addEventListener("click", () => { void saveComicRecommendationsConfig(); });
+  el.disconnectComicRecommendations?.addEventListener("click", () => { void disconnectComicRecommendations(); });
   el.clearRecommendationContext?.addEventListener("click", clearRecommendationContext);
   el.saveMangabaka?.addEventListener("click", connectMangaBaka);
   el.disconnectMangabaka?.addEventListener("click", disconnectMangaBaka);
@@ -12930,6 +13043,7 @@ window.PanelPilot = {
   pauseReaderLifecycle,
   resumeReaderLifecycle,
   readingStats: readingStatsClient,
+  isPrivateSourceItem: isNsfwLibraryItem,
   trimReaderMemory,
   getPerformanceStats: () => ({
     ...state.performanceStats,
@@ -12996,6 +13110,7 @@ if (el.stage) {
   }
   if (navigator.onLine) {
     void refreshMangaBakaStatus();
+    void refreshComicRecommendationsConfig();
     void loadMangaBakaRecommendations();
     setTimeout(() => {
       initializeSuwayomi().then(async () => {

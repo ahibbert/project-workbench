@@ -8,7 +8,7 @@ const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const distRoot = join(projectRoot, "dist");
 const iconSetBudgetBytes = 300_000;
 // Includes offline achievement artwork, reading sessions, and repair controls.
-const installShellBudgetBytes = 725_000;
+const installShellBudgetBytes = 735_000;
 
 function readSource(path) {
   return readFileSync(join(projectRoot, path), "utf8");

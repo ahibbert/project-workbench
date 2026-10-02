@@ -186,7 +186,7 @@
           <section class="recommendation-section" id="mangabaka-recommendations" aria-labelledby="mangabaka-recommendations-title">
             <div class="section-heading">
               <div>
-                <h2 id="mangabaka-recommendations-title">Recommended for you</h2>
+                <h2 id="mangabaka-recommendations-title">Manga for you</h2>
                 <p class="recommendation-note" id="mangabaka-recommendations-note">Loading MangaBaka discovery…</p>
               </div>
               <button class="mini-button" id="refresh-mangabaka" type="button">Refresh</button>
@@ -493,8 +493,9 @@
               <summary>Advanced tools</summary>
               <label class="checkbox-field">
                 <input id="show-nsfw-sources" type="checkbox">
-                <span>Show NSFW sources</span>
+                <span>Show private / NSFW sources and titles</span>
               </label>
+              <p class="note">Private-source titles stay out of the normal Library, Continue Reading, Moments, recommendations, and Panels reading stats. Suwayomi still keeps their chapter progress so they can resume correctly.</p>
               <a class="tool-link" id="open-suwayomi" href="http://localhost:4567" target="_blank" rel="noopener">Open Suwayomi</a>
               <button class="wide-button" id="load-demo" type="button">Load reader demo</button>
               <button class="wide-button" id="clear-app-cache" type="button">Clear app cache</button>
@@ -590,6 +591,28 @@
           </div>
           <p class="note" id="mangabaka-note" aria-live="polite">Public recommendations remain available without an account.</p>
           <p class="note">Metadata and recommendations provided by <a href="https://mangabaka.org" target="_blank" rel="noopener">MangaBaka</a>.</p>
+        </section>
+
+        <section class="panel comic-recommendations-settings-panel">
+          <div class="panel-heading">
+            <h2>Comic recommendations</h2>
+            <span class="small-count" id="comic-recommendations-config-state">Not configured</span>
+          </div>
+          <p class="note">Optional: add a LibraryThing developer key for the Western-comics feed. The key is stored only on this Panels server and is never returned to the browser.</p>
+          <label class="field">
+            <span>LibraryThing developer key</span>
+            <input id="librarything-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="Paste developer key">
+          </label>
+          <label class="field">
+            <span>Open Library contact <small>(optional)</small></span>
+            <input id="open-library-contact" type="text" autocomplete="email" spellcheck="false" placeholder="Email or project URL">
+          </label>
+          <div class="button-row">
+            <button id="save-comic-recommendations-config" type="button">Save key</button>
+            <button id="disconnect-comic-recommendations" type="button" class="quiet-card-action" hidden>Remove key</button>
+            <a class="button-link" href="https://www.librarything.com/developer" target="_blank" rel="noopener">Get key</a>
+          </div>
+          <p class="note" id="comic-recommendations-config-note" aria-live="polite">The comic feed remains off until a key is configured.</p>
         </section>
 
         <section class="panel stats-controls" role="group" aria-labelledby="stats-controls-title">

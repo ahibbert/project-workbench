@@ -112,10 +112,13 @@ class ComicRecommendationHttpContractTests(unittest.TestCase):
             "PANEL_PILOT_AUTH_PASSWORD": "fixture-password-long",
             "PANEL_PILOT_SESSION_SECRET": "cd" * 32,
         })
+        os.environ.pop("PANEL_PILOT_LIBRARYTHING_API_KEY", None)
         cls.original_library_path = panel_server.LIBRARY_PATH
         cls.original_cache_path = panel_server.COMIC_RECOMMENDATIONS_CACHE_PATH
+        cls.original_config_path = panel_server.COMIC_RECOMMENDATIONS_CONFIG_PATH
         panel_server.LIBRARY_PATH = str(temporary_root / "library.json")
         panel_server.COMIC_RECOMMENDATIONS_CACHE_PATH = str(temporary_root / "comic-recommendations.json")
+        panel_server.COMIC_RECOMMENDATIONS_CONFIG_PATH = str(temporary_root / "comic-recommendations-config.json")
         pathlib.Path(panel_server.LIBRARY_PATH).write_text(json.dumps({"items": [{
             "sourceId": "fixture-comics",
             "sourceLabel": "Fixture Comics",
@@ -155,18 +158,27 @@ class ComicRecommendationHttpContractTests(unittest.TestCase):
         cls.thread.join(timeout=5)
         panel_server.LIBRARY_PATH = cls.original_library_path
         panel_server.COMIC_RECOMMENDATIONS_CACHE_PATH = cls.original_cache_path
+        panel_server.COMIC_RECOMMENDATIONS_CONFIG_PATH = cls.original_config_path
         os.environ.clear()
         os.environ.update(cls.original_environment)
         cls.temporary_directory.cleanup()
 
-    def request_json(self, path, authenticated=True):
+    def request_json(self, path, authenticated=True, payload=None):
         opener = self.opener if authenticated else build_opener()
-        with opener.open(Request(f"{self.base_url}{path}", headers={"Accept": "application/json"}), timeout=5) as response:
+        body = json.dumps(payload).encode("utf-8") if payload is not None else None
+        headers = {"Accept": "application/json"}
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        with opener.open(Request(f"{self.base_url}{path}", data=body, headers=headers), timeout=5) as response:
             return response.status, response.headers, json.loads(response.read().decode("utf-8"))
 
     def setUp(self):
         try:
             pathlib.Path(panel_server.COMIC_RECOMMENDATIONS_CACHE_PATH).unlink()
+        except FileNotFoundError:
+            pass
+        try:
+            pathlib.Path(panel_server.COMIC_RECOMMENDATIONS_CONFIG_PATH).unlink()
         except FileNotFoundError:
             pass
 
@@ -185,6 +197,36 @@ class ComicRecommendationHttpContractTests(unittest.TestCase):
         self.assertFalse(payload["configured"])
         self.assertEqual(payload["status"], "unconfigured")
         self.assertEqual(payload["results"], [])
+
+    def test_config_endpoint_stores_but_never_returns_the_librarything_key(self):
+        secret = "private-librarything-key-123"
+        status, headers, saved = self.request_json(
+            "/api/comic-recommendations/config",
+            payload={"apiKey": secret, "contact": "panels@example.test"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Cache-Control"], "no-store")
+        self.assertEqual(saved, {"configured": True, "managedByEnvironment": False, "hasContact": True})
+        self.assertNotIn(secret, json.dumps(saved))
+
+        _, _, status_payload = self.request_json("/api/comic-recommendations/config")
+        self.assertEqual(status_payload, saved)
+        self.assertNotIn(secret, json.dumps(status_payload))
+        stored = pathlib.Path(panel_server.COMIC_RECOMMENDATIONS_CONFIG_PATH)
+        self.assertIn(secret, stored.read_text(encoding="utf-8"))
+
+        _, _, cleared = self.request_json("/api/comic-recommendations/config", payload={"clear": True})
+        self.assertFalse(cleared["configured"])
+        self.assertFalse(stored.exists())
+
+    def test_config_endpoint_requires_authentication(self):
+        with self.assertRaises(HTTPError) as raised:
+            self.request_json(
+                "/api/comic-recommendations/config",
+                authenticated=False,
+                payload={"apiKey": "private-librarything-key-123"},
+            )
+        self.assertEqual(raised.exception.code, 401)
 
     def test_personalized_feed_is_persistently_cached_without_a_secret(self):
         service = FakeService()

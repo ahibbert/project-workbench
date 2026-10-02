@@ -56,6 +56,10 @@ COMIC_RECOMMENDATIONS_CACHE_PATH = os.environ.get(
     "PANEL_PILOT_COMIC_RECOMMENDATIONS_CACHE_PATH",
     os.path.join(DATA_ROOT, "comic-recommendations-cache.json"),
 )
+COMIC_RECOMMENDATIONS_CONFIG_PATH = os.environ.get(
+    "PANEL_PILOT_COMIC_RECOMMENDATIONS_CONFIG_PATH",
+    os.path.join(DATA_ROOT, "comic-recommendations-config.json"),
+)
 COMIC_RECOMMENDATIONS_CACHE_TTL = 7 * 24 * 60 * 60
 MANGABAKA_API_BASE = "https://api.mangabaka.org"
 LIBRARY_LIMIT = 5000
@@ -68,6 +72,7 @@ READING_STATS_LOCK = threading.RLock()
 MOMENTS_LOCK = threading.Lock()
 SOURCE_PROFILES_LOCK = threading.Lock()
 COMIC_RECOMMENDATIONS_CACHE_LOCK = threading.Lock()
+COMIC_RECOMMENDATIONS_CONFIG_LOCK = threading.Lock()
 MOMENT_ID_PATTERN = re.compile(r"^[0-9]{13}-[0-9a-f]{16}$")
 SOURCE_ID_PATTERN = re.compile(r"^[a-zA-Z0-9._:-]{1,100}$")
 
@@ -397,7 +402,7 @@ def comic_seeds_from_library(items, maximum=6):
     candidates = []
     seen = set()
     for item in items if isinstance(items, list) else ():
-        if not isinstance(item, dict) or item.get("mediaFormat") != "comic":
+        if not isinstance(item, dict) or item.get("mediaFormat") != "comic" or item.get("isNsfw") or item.get("privateSource"):
             continue
         status = str(item.get("libraryStatus") or "")
         if status in ignored_statuses:
@@ -420,10 +425,11 @@ def comic_seeds_from_library(items, maximum=6):
 
 
 def build_comic_recommendation_service():
-    api_key = os.environ.get("PANEL_PILOT_LIBRARYTHING_API_KEY", "").strip()
+    config = read_comic_recommendations_config()
+    api_key = config["apiKey"]
     if not api_key:
         return None
-    contact = os.environ.get("PANEL_PILOT_OPEN_LIBRARY_CONTACT", "").replace("\r", "").replace("\n", "").strip()[:200]
+    contact = config["contact"]
     user_agent = "Panels comic recommendations"
     if contact:
         user_agent += f" ({contact})"
@@ -1433,6 +1439,49 @@ def write_mangabaka_token(token):
                 os.unlink(temporary_path)
 
 
+def read_comic_recommendations_config():
+    environment_key = os.environ.get("PANEL_PILOT_LIBRARYTHING_API_KEY", "").strip()
+    environment_contact = os.environ.get("PANEL_PILOT_OPEN_LIBRARY_CONTACT", "").replace("\r", "").replace("\n", "").strip()[:200]
+    if environment_key:
+        return {"apiKey": environment_key, "contact": environment_contact, "managedByEnvironment": True}
+    try:
+        with COMIC_RECOMMENDATIONS_CONFIG_LOCK, open(COMIC_RECOMMENDATIONS_CONFIG_PATH, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        return {
+            "apiKey": str(payload.get("apiKey") or "").strip(),
+            "contact": str(payload.get("contact") or "").replace("\r", "").replace("\n", "").strip()[:200],
+            "managedByEnvironment": False,
+        }
+    except (FileNotFoundError, json.JSONDecodeError, OSError, AttributeError):
+        return {"apiKey": "", "contact": environment_contact, "managedByEnvironment": False}
+
+
+def write_comic_recommendations_config(api_key, contact=""):
+    directory = os.path.dirname(COMIC_RECOMMENDATIONS_CONFIG_PATH) or "."
+    os.makedirs(directory, exist_ok=True)
+    with COMIC_RECOMMENDATIONS_CONFIG_LOCK:
+        if not api_key:
+            try:
+                os.unlink(COMIC_RECOMMENDATIONS_CONFIG_PATH)
+            except FileNotFoundError:
+                pass
+            return
+        temporary_path = ""
+        try:
+            with tempfile.NamedTemporaryFile("w", dir=directory, delete=False, encoding="utf-8") as handle:
+                temporary_path = handle.name
+                json.dump({"apiKey": api_key, "contact": contact}, handle, ensure_ascii=True, separators=(",", ":"))
+                handle.write("\n")
+            try:
+                os.chmod(temporary_path, 0o600)
+            except OSError:
+                pass
+            os.replace(temporary_path, COMIC_RECOMMENDATIONS_CONFIG_PATH)
+        finally:
+            if temporary_path and os.path.exists(temporary_path):
+                os.unlink(temporary_path)
+
+
 def fetch_url(url, accept="*/*", referer="https://comick.live/"):
     request = Request(
         url,
@@ -2354,6 +2403,9 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/mangabaka/config":
                 self.handle_mangabaka_config_post()
                 return
+            if parsed.path == "/api/comic-recommendations/config":
+                self.handle_comic_recommendations_config_post()
+                return
             if parsed.path == "/api/mangabaka/library":
                 self.handle_mangabaka_library_post()
                 return
@@ -2527,6 +2579,9 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
                 return
             if parsed.path == "/api/comic-recommendations":
                 self.handle_comic_recommendations(parsed)
+                return
+            if parsed.path == "/api/comic-recommendations/config":
+                self.handle_comic_recommendations_config_get()
                 return
             if parsed.path == "/api/mangabaka/search":
                 self.handle_mangabaka_search(parsed)
@@ -2839,6 +2894,32 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             response_cache_status = "bypass"
         self.send_json({**feed, "configured": True, "status": "ready", "cacheStatus": response_cache_status})
 
+    def handle_comic_recommendations_config_get(self):
+        config = read_comic_recommendations_config()
+        self.send_json({
+            "configured": bool(config["apiKey"]),
+            "managedByEnvironment": bool(config["managedByEnvironment"]),
+            "hasContact": bool(config["contact"]),
+        })
+
+    def handle_comic_recommendations_config_post(self):
+        payload = self.read_json_request(16384)
+        existing = read_comic_recommendations_config()
+        if payload.get("clear") is True:
+            if existing["managedByEnvironment"]:
+                raise ValueError("The LibraryThing key is configured by the server environment and cannot be removed here")
+            write_comic_recommendations_config("")
+            self.send_json({"configured": False, "managedByEnvironment": False, "hasContact": False})
+            return
+        if existing["managedByEnvironment"]:
+            raise ValueError("The LibraryThing key is configured by the server environment and cannot be replaced here")
+        api_key = str(payload.get("apiKey") or "").strip()
+        contact = str(payload.get("contact") or "").replace("\r", "").replace("\n", "").strip()[:200]
+        if len(api_key) < 8 or len(api_key) > 500 or re.search(r"\s", api_key):
+            raise ValueError("Enter a valid LibraryThing developer key")
+        write_comic_recommendations_config(api_key, contact)
+        self.send_json({"configured": True, "managedByEnvironment": False, "hasContact": bool(contact)})
+
     def handle_mangabaka_search(self, parsed):
         params = parse_qs(parsed.query)
         query = str(params.get("q", [""])[0]).strip()
@@ -3018,6 +3099,7 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             "title": self.clean_moment_text(payload.get("title"), 300) or "Untitled",
             "chapterTitle": self.clean_moment_text(payload.get("chapterTitle"), 300),
             "sourceLabel": self.clean_moment_text(payload.get("sourceLabel"), 200),
+            "isNsfw": bool(payload.get("isNsfw")),
             "mediaFormat": media_format,
             "pageIndex": clean_integer("pageIndex"),
             "panelIndex": clean_integer("panelIndex"),
@@ -3229,7 +3311,7 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         seen = set()
         text_fields = ("mangaTitle", "sourceId", "sourceLabel", "chapterTitle", "panelMode", "mediaFormat", "readingDirection", "progressLabel", "updatedAt", "libraryStatus", "mangabakaTitle", "mangabakaMatchSource", "mangabakaAccountKey")
         number_fields = ("mangaId", "chapterId", "pageIndex", "panelIndex", "mangabakaId")
-        bool_fields = ("pinned", "hidden", "isNsfw", "statusExplicit", "suwayomiLibrary", "started")
+        bool_fields = ("pinned", "hidden", "isNsfw", "privateSource", "statusExplicit", "suwayomiLibrary", "started")
         for item in items:
             if not isinstance(item, dict):
                 continue
