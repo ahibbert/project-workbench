@@ -96,7 +96,23 @@ export function createLibraryCard(book, { createCoverButton, navigate, statusLab
       statusSelect.disabled = false;
     }
   });
-  menu.append(statusSelect, details);
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "danger-card-action";
+  remove.textContent = "Remove from library";
+  remove.addEventListener("click", async () => {
+    if (!window.confirm(`Remove “${book.title || "this book"}” from Panel Pilot?\n\nThe CWA copy will be kept, but reading progress and the local EPUB cache will be removed.`)) return;
+    remove.disabled = true;
+    try {
+      await request(`/api/books/${encodeURIComponent(book.id)}`, { method: "DELETE" });
+      await Promise.resolve(onUpdate?.(null));
+    } catch (error) {
+      remove.disabled = false;
+      remove.setCustomValidity(error.message);
+      remove.reportValidity();
+    }
+  });
+  menu.append(statusSelect, details, remove);
   more.append(moreLabel, menu);
   actions.append(read, more);
   card.append(cover, badges, actions);

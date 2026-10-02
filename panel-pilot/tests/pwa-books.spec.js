@@ -22,8 +22,12 @@ const book = {
   lastSyncedAt: "2026-10-02T00:00:00Z",
 };
 
-async function stubApp(page, { booksEnabled, queued = [], progressState = { current: null }, progressWrites = [] }) {
+async function stubApp(page, { booksEnabled, queued = [], removed = [], progressState = { current: null }, progressWrites = [] }) {
   let currentBook = { ...book, libraryStatus: progressState.current ? "reading" : book.libraryStatus };
+  let currentPreferences = {
+    theme: "light", fontFamily: "publisher", fontSize: 100, lineHeight: 1.5,
+    contentWidth: 720, readingFlow: "paginated", textAlignment: "start",
+  };
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     if (url.pathname === "/api/books/status") {
@@ -63,11 +67,13 @@ async function stubApp(page, { booksEnabled, queued = [], progressState = { curr
       return;
     }
     if (url.pathname === "/api/books/preferences") {
-      const preferences = route.request().method() === "POST" ? route.request().postDataJSON() : {
-        theme: "light", fontFamily: "publisher", fontSize: 100, lineHeight: 1.5,
-        contentWidth: 720, readingFlow: "paginated", textAlignment: "start",
-      };
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ preferences }) });
+      if (route.request().method() === "POST") currentPreferences = { ...currentPreferences, ...route.request().postDataJSON() };
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ preferences: currentPreferences }) });
+      return;
+    }
+    if (url.pathname === "/api/books/1" && route.request().method() === "DELETE") {
+      removed.push(1);
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ id: 1, removed: true }) });
       return;
     }
     if (url.pathname === "/api/books/1") {
@@ -79,6 +85,15 @@ async function stubApp(page, { booksEnabled, queued = [], progressState = { curr
         provider: "openlibrary", providerBookId: "OL123W", token: "opaque-book-token", title: "The Mercy of Gods",
         authors: ["James S. A. Corey"], isbn: "9780356517759", language: "en", publishedDate: "2024",
       }] }) });
+      return;
+    }
+    if (url.pathname === "/api/book-recommendations") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        configured: true, status: "ready", mode: "personalized", results: [{
+          id: "librarything:mercy", title: "The Mercy of Gods", authors: ["James S. A. Corey"],
+          coverUrl: "", reason: { type: "because_you_read", seedTitles: ["Leviathan Wakes"] },
+        }],
+      }) });
       return;
     }
     if (url.pathname === "/api/books/releases") {
@@ -196,6 +211,30 @@ test("Shelfmark acquisition offers only normalized EPUB choices and queues an op
   expect(queued[0].book).toBeUndefined();
 });
 
+test("Books for you enters the normal Shelfmark edition and release flow", async ({ page }) => {
+  await stubApp(page, { booksEnabled: true });
+  await page.goto("/", { waitUntil: "networkidle" });
+  await page.locator("#nav-browse").click();
+  await page.locator(".browse-media-switch").getByRole("button", { name: "Books" }).click();
+  await expect(page.locator(".book-recommendation-card")).toContainText("Because you read Leviathan Wakes");
+  await page.locator(".book-recommendation-card").getByRole("button", { name: "Read this" }).click();
+  await expect(page.getByRole("searchbox", { name: "Book title or author" })).toHaveValue("The Mercy of Gods");
+  await expect(page.getByRole("button", { name: /The Mercy of Gods/ })).toBeVisible();
+});
+
+test("a book can be removed from Panel Pilot without deleting CWA", async ({ page }) => {
+  const removed = [];
+  await stubApp(page, { booksEnabled: true, removed });
+  await page.goto("/", { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: /^Books$/ }).first().click();
+  await page.getByRole("button", { name: /^Plan/ }).click();
+  await page.locator(".book-library-card").getByRole("button", { name: /Alice's Adventures/ }).click();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Remove from library" }).click();
+  await expect.poll(() => removed).toEqual([1]);
+  await expect(page).toHaveURL(/#library$/);
+});
+
 test("EPUB reader opens a public-domain fixture and persists an exact CFI", async ({ page }) => {
   const progressWrites = [];
   const progressState = { current: null };
@@ -266,4 +305,67 @@ test("books library and EPUB controls remain usable at phone width", async ({ pa
   await page.locator(".epub-settings summary").click();
   await expect(page.getByLabel("Page width")).toBeVisible();
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test("every EPUB preference value applies and combinations survive reflow", async ({ page }) => {
+  await stubApp(page, { booksEnabled: true });
+  await page.goto("/", { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: /^Books$/ }).first().click();
+  await page.getByRole("button", { name: /^Plan/ }).click();
+  await page.locator(".book-library-card").getByRole("button", { name: /Alice's Adventures/ }).click();
+  await page.getByRole("button", { name: "Read book" }).click();
+  await expect(page.frameLocator(".epub-viewport iframe").locator("body")).toContainText("Alice was beginning");
+  await page.locator(".epub-settings summary").click();
+  const cases = [
+    ["Theme", ["light", "sepia", "dark"]],
+    ["Typeface", ["publisher", "serif", "sans"]],
+    ["Text size", ["85", "100", "115", "130", "150"]],
+    ["Line spacing", ["1.3", "1.5", "1.8", "2"]],
+    ["Page width", ["560", "720", "900", "1200"]],
+    ["Alignment", ["start", "left", "justify"]],
+  ];
+  for (const [label, values] of cases) {
+    for (const value of values) {
+      await page.getByLabel(label).selectOption(value);
+      await expect(page.getByLabel(label)).toHaveValue(value);
+      await expect(page.locator(".epub-reader-state")).toBeHidden();
+    }
+  }
+  for (const flow of ["scrolled", "paginated"]) {
+    await page.getByLabel("Reading flow").selectOption(flow);
+    await expect(page.locator(".epub-reader")).toHaveAttribute("data-flow", flow);
+    await expect(page.frameLocator(".epub-viewport iframe").locator("body")).toContainText("Alice was beginning");
+  }
+  const body = page.frameLocator(".epub-viewport iframe").locator("body");
+  await expect.poll(() => body.evaluate((element) => ({
+    font: element.style.fontFamily,
+    size: element.style.fontSize,
+    lineHeight: element.style.lineHeight,
+    alignment: element.style.textAlign,
+  }))).toEqual({ font: "system-ui, sans-serif", size: "150%", lineHeight: "2", alignment: "justify" });
+});
+
+test("centre taps restore reader controls and the EPUB stage owns the full height", async ({ page }) => {
+  await stubApp(page, { booksEnabled: true });
+  await page.goto("/", { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: /^Books$/ }).first().click();
+  await page.getByRole("button", { name: /^Plan/ }).click();
+  await page.locator(".book-library-card").getByRole("button", { name: /Alice's Adventures/ }).click();
+  await page.getByRole("button", { name: "Read book" }).click();
+  const body = page.frameLocator(".epub-viewport iframe").locator("body");
+  await expect(body).toContainText("Alice was beginning");
+  const centralTap = () => body.evaluate((element) => {
+    const view = element.ownerDocument.defaultView;
+    const options = { bubbles: true, clientX: view.innerWidth / 2, clientY: view.innerHeight / 2, pointerId: 1 };
+    element.dispatchEvent(new PointerEvent("pointerdown", options));
+    element.dispatchEvent(new PointerEvent("pointerup", options));
+  });
+  await centralTap();
+  await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "false");
+  await centralTap();
+  await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "true");
+  await expect.poll(() => page.locator(".epub-reader").evaluate((reader) => {
+    const stage = reader.querySelector(".epub-stage");
+    return Math.abs(stage.getBoundingClientRect().height - reader.getBoundingClientRect().height);
+  })).toBeLessThan(2);
 });

@@ -9,7 +9,7 @@
     >
     <meta name="theme-color" content="#ffffff">
     <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>Panels</title>
     <link rel="apple-touch-icon" sizes="180x180" href="/assets/apple-touch-icon.png">
     <link rel="stylesheet" href="/src/styles.css">
@@ -694,10 +694,10 @@
 
         <section class="panel comic-recommendations-settings-panel">
           <div class="panel-heading">
-            <h2>Comic recommendations</h2>
+            <h2>Comic & book recommendations</h2>
             <span class="small-count" id="comic-recommendations-config-state">Not configured</span>
           </div>
-          <p class="note">Optional: add a LibraryThing developer key for the Western-comics feed. The key is stored only on this Panels server and is never returned to the browser.</p>
+          <p class="note">Optional: add a LibraryThing developer key for the Western-comics and text-book feeds. The key is stored only on this Panels server and is never returned to the browser.</p>
           <label class="field">
             <span>LibraryThing developer key</span>
             <input id="librarything-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="Paste developer key">
@@ -711,7 +711,7 @@
             <button id="disconnect-comic-recommendations" type="button" class="quiet-card-action" hidden>Remove key</button>
             <a class="button-link" href="https://www.librarything.com/developer" target="_blank" rel="noopener">Get key</a>
           </div>
-          <p class="note" id="comic-recommendations-config-note" aria-live="polite">The comic feed remains off until a key is configured.</p>
+          <p class="note" id="comic-recommendations-config-note" aria-live="polite">The comic and book feeds remain off until a key is configured.</p>
         </section>
 
         <section class="panel stats-controls" role="group" aria-labelledby="stats-controls-title">

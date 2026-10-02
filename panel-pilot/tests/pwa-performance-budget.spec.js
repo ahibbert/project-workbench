@@ -13,9 +13,10 @@ const budgets = {
   // the small feature-flag/books lazy-loader bootstrap and shared navigation hooks.
   mainJavaScript: 400 * 1024,
   mainCss: 72 * 1024,
-  // Includes the integrated Books format control and cross-format resume bootstrap.
-  criticalPath: 531 * 1024,
-  installShell: 770 * 1024,
+  // Includes the integrated Books format control, cross-format resume bootstrap,
+  // and the lazy global library-removal action (one additional 1 KiB envelope).
+  criticalPath: 532 * 1024,
+  installShell: 771 * 1024,
   domContentLoadedMs: 1_500,
   loadMs: 2_000,
   applicationReadyMs: 2_500,

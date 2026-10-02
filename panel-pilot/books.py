@@ -23,7 +23,7 @@ from opds_client import OpdsClient, OpdsConfig, OpdsError
 from shelfmark_client import ShelfmarkClient, ShelfmarkConfig, ShelfmarkError
 
 
-BOOKS_SCHEMA_VERSION = 2
+BOOKS_SCHEMA_VERSION = 3
 BOOK_IMPORT_TIMEOUT_SECONDS = 60 * 60
 BOOK_LIBRARY_STATUSES = {
     "reading", "plan_to_read", "paused", "completed", "dropped", "rereading", "considering",
@@ -303,10 +303,18 @@ class BookStore:
                     WHERE id IN (SELECT book_id FROM book_progress WHERE progression >= 0.995)
                 """)
                 connection.execute("PRAGMA user_version = 2")
+                version = 2
+            if version < 3:
+                columns = {row[1] for row in connection.execute("PRAGMA table_info(books)")}
+                if "removed_at" not in columns:
+                    connection.execute(
+                        "ALTER TABLE books ADD COLUMN removed_at TEXT NOT NULL DEFAULT ''"
+                    )
+                connection.execute("PRAGMA user_version = 3")
 
     def counts(self) -> dict[str, int]:
         with self.lock, self.connection() as connection:
-            books = int(connection.execute("SELECT COUNT(*) FROM books").fetchone()[0])
+            books = int(connection.execute("SELECT COUNT(*) FROM books WHERE removed_at = ''").fetchone()[0])
             active = int(connection.execute(
                 "SELECT COUNT(*) FROM shelfmark_downloads WHERE status NOT IN ('ready', 'failed', 'cancelled')"
             ).fetchone()[0])
@@ -434,10 +442,10 @@ class BookStore:
         limit = max(1, min(200, int(limit)))
         offset = max(0, int(offset))
         query = str(query or "").strip()[:300]
-        where = ""
+        where = "WHERE removed_at = ''"
         parameters: list[Any] = []
         if query:
-            where = "WHERE title LIKE ? ESCAPE '\\' OR authors_json LIKE ? ESCAPE '\\'"
+            where += " AND (title LIKE ? ESCAPE '\\' OR authors_json LIKE ? ESCAPE '\\')"
             escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             parameters.extend([f"%{escaped}%", f"%{escaped}%"])
         with self.lock, self.connection() as connection:
@@ -501,7 +509,7 @@ class BookStore:
             raise BookRequestError("Progress revision is invalid") from None
         now = utc_now()
         with self.lock, self.connection() as connection:
-            if not connection.execute("SELECT 1 FROM books WHERE id = ?", (int(book_id),)).fetchone():
+            if not connection.execute("SELECT 1 FROM books WHERE id = ? AND removed_at = ''", (int(book_id),)).fetchone():
                 raise BookRequestError("Book not found", status=404, code="not_found")
             current = connection.execute(
                 "SELECT * FROM book_progress WHERE user_id = ? AND book_id = ?",
@@ -550,7 +558,7 @@ class BookStore:
             raise BookRequestError("Invalid book library group")
         with self.lock, self.connection() as connection:
             result = connection.execute(
-                "UPDATE books SET library_status = ? WHERE id = ?",
+                "UPDATE books SET library_status = ? WHERE id = ? AND removed_at = ''",
                 (status, int(book_id)),
             )
             if result.rowcount != 1:
@@ -614,14 +622,28 @@ class BookStore:
             ))
         return self.get_preferences(user_id)
 
-    def get_book(self, book_id: int, *, public: bool = True) -> dict[str, Any] | None:
+    def get_book(self, book_id: int, *, public: bool = True, include_removed: bool = False) -> dict[str, Any] | None:
         with self.lock, self.connection() as connection:
-            row = connection.execute("SELECT * FROM books WHERE id = ?", (int(book_id),)).fetchone()
+            query = "SELECT * FROM books WHERE id = ?" + ("" if include_removed else " AND removed_at = ''")
+            row = connection.execute(query, (int(book_id),)).fetchone()
         if not row:
             return None
         if public:
             return self._row_public(row)
         return dict(row)
+
+    def remove_book(self, book_id: int) -> dict[str, Any]:
+        now = utc_now()
+        with self.lock, self.connection() as connection:
+            row = connection.execute(
+                "SELECT id, title FROM books WHERE id = ? AND removed_at = ''",
+                (int(book_id),),
+            ).fetchone()
+            if not row:
+                raise BookRequestError("Book not found", status=404, code="not_found")
+            connection.execute("DELETE FROM book_progress WHERE book_id = ?", (int(book_id),))
+            connection.execute("UPDATE books SET removed_at = ? WHERE id = ?", (now, int(book_id)))
+        return {"id": int(row["id"]), "title": row["title"], "removed": True}
 
     def update_content_hash(self, book_id: int, content_hash: str) -> None:
         with self.lock, self.connection() as connection:
@@ -849,6 +871,13 @@ class BooksService:
 
     def set_library_status(self, book_id: int, status: str) -> dict[str, Any]:
         return self.store.set_library_status(book_id, status)
+
+    def remove_book(self, book_id: int) -> dict[str, Any]:
+        removed = self.store.remove_book(book_id)
+        target = Path(self.config.cache_path).expanduser().resolve() / f"{int(book_id)}.epub"
+        if target.exists() and target.is_file():
+            target.unlink()
+        return removed
 
     def preferences(self, user_id: str) -> dict[str, Any]:
         return self.store.get_preferences(user_id)

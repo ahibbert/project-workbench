@@ -15,6 +15,7 @@ from xml.etree import ElementTree
 
 ATOM = "{http://www.w3.org/2005/Atom}"
 DC = "{http://purl.org/dc/terms/}"
+CALIBRE = "{http://calibre.kovidgoyal.net/2009/metadata}"
 OPDS_ACQUISITION = "http://opds-spec.org/acquisition"
 EPUB_MEDIA_TYPE = "application/epub+zip"
 
@@ -69,6 +70,26 @@ def _text(element: ElementTree.Element | None, limit: int = 1000) -> str:
     return (element.text or "").replace("\x00", "").strip()[:limit] if element is not None else ""
 
 
+def _series_metadata(entry: ElementTree.Element) -> tuple[str, float | None]:
+    name = _text(entry.find(CALIBRE + "series"), 1000)
+    raw_position = _text(entry.find(CALIBRE + "series_index"), 40)
+    if not name:
+        for category in entry.findall(ATOM + "category"):
+            scheme = str(category.get("scheme") or "").casefold()
+            label = str(category.get("label") or "").strip()
+            term = str(category.get("term") or "").strip()
+            if "series" not in scheme:
+                continue
+            name = label or term
+            raw_position = str(category.get("index") or category.get("position") or raw_position)
+            break
+    try:
+        position = float(raw_position) if raw_position else None
+    except ValueError:
+        position = None
+    return name, position if position is not None and 0 < position < 10_000 else None
+
+
 def parse_opds_feed(xml_bytes: bytes, feed_url: str) -> dict[str, Any]:
     try:
         root = ElementTree.fromstring(xml_bytes)
@@ -110,14 +131,15 @@ def parse_opds_feed(xml_bytes: bytes, feed_url: str) -> dict[str, Any]:
             continue
         if not acquisition:
             continue
+        series_name, series_position = _series_metadata(entry)
         books.append({
             "stableIdentifier": entry_id,
             "title": title,
             "subtitle": "",
             "description": _clean_html(_text(entry.find(ATOM + "summary"), 20_000) or _text(entry.find(ATOM + "content"), 20_000)),
             "authors": authors,
-            "seriesName": "",
-            "seriesPosition": None,
+            "seriesName": series_name,
+            "seriesPosition": series_position,
             "isbn": isbn[:40],
             "language": _text(entry.find(DC + "language"), 40),
             "publisher": _text(entry.find(DC + "publisher"), 500),

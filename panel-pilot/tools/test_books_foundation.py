@@ -22,7 +22,7 @@ from server import PanelPilotHandler  # noqa: E402
 
 
 OPDS_FIXTURE = b'''<?xml version="1.0" encoding="utf-8"?>
-<feed xmlns="http://www.w3.org/2005/Atom" xmlns:dcterms="http://purl.org/dc/terms/">
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:calibre="http://calibre.kovidgoyal.net/2009/metadata">
   <id>urn:panels:test</id><title>Test Library</title><updated>2026-10-02T00:00:00Z</updated>
   <link rel="next" href="?page=2" type="application/atom+xml" />
   <entry>
@@ -30,6 +30,7 @@ OPDS_FIXTURE = b'''<?xml version="1.0" encoding="utf-8"?>
     <author><name>Lewis Carroll</name></author>
     <summary type="html">&lt;p&gt;A public-domain adventure.&lt;/p&gt;</summary>
     <dcterms:language>en</dcterms:language><dcterms:identifier>urn:isbn:9780000000001</dcterms:identifier>
+    <calibre:series>Alice</calibre:series><calibre:series_index>1</calibre:series_index>
     <link rel="http://opds-spec.org/image" href="covers/alice.jpg" type="image/jpeg" />
     <link rel="http://opds-spec.org/acquisition" href="download/alice.epub" type="application/epub+zip" />
   </entry>
@@ -37,6 +38,11 @@ OPDS_FIXTURE = b'''<?xml version="1.0" encoding="utf-8"?>
 
 
 class BooksConfigurationTests(unittest.TestCase):
+    def test_opds_extracts_calibre_series_metadata(self):
+        parsed = parse_opds_feed(OPDS_FIXTURE, "http://cwa/opds")
+        self.assertEqual(parsed["books"][0]["seriesName"], "Alice")
+        self.assertEqual(parsed["books"][0]["seriesPosition"], 1.0)
+
     def test_disabled_books_need_no_credentials_and_create_no_database(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = pathlib.Path(temporary) / "books.sqlite3"
@@ -108,13 +114,13 @@ class BooksConfigurationTests(unittest.TestCase):
                     "SELECT name FROM sqlite_master WHERE type = 'table'"
                 )}
                 version = connection.execute("PRAGMA user_version").fetchone()[0]
-            self.assertEqual(version, 2)
+            self.assertEqual(version, 3)
             self.assertTrue({
                 "books", "book_progress", "book_reader_preferences",
                 "shelfmark_downloads", "book_meta",
             }.issubset(tables))
 
-    def test_version_one_store_migrates_book_library_groups(self):
+    def test_version_one_store_migrates_book_library_groups_and_removal_tombstone(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = pathlib.Path(temporary) / "books.sqlite3"
             connection = sqlite3.connect(path)
@@ -128,8 +134,9 @@ class BooksConfigurationTests(unittest.TestCase):
             with store.connection() as migrated:
                 version = migrated.execute("PRAGMA user_version").fetchone()[0]
                 columns = {row[1] for row in migrated.execute("PRAGMA table_info(books)")}
-            self.assertEqual(version, 2)
+            self.assertEqual(version, 3)
             self.assertIn("library_status", columns)
+            self.assertIn("removed_at", columns)
 
     def test_opds_sync_is_idempotent_and_matches_a_changed_stable_id_by_unique_isbn(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -176,6 +183,22 @@ class BooksConfigurationTests(unittest.TestCase):
                 })
             self.assertEqual(raised.exception.status, 409)
             self.assertEqual(raised.exception.current["revision"], 1)
+
+    def test_remove_book_hides_it_and_prevents_opds_sync_from_restoring_it(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = BookStore(str(pathlib.Path(temporary) / "books.sqlite3"))
+            fixture = {
+                "stableIdentifier": "urn:alice", "title": "Alice", "authors": ["Lewis Carroll"],
+                "isbn": "9780000000001", "acquisitionHref": "http://cwa/alice.epub", "coverHref": "",
+            }
+            store.sync_books([fixture])
+            book_id = store.list_books()["books"][0]["id"]
+            self.assertTrue(store.remove_book(book_id)["removed"])
+            self.assertEqual(store.list_books()["total"], 0)
+            self.assertIsNone(store.get_book(book_id))
+            store.sync_books([{**fixture, "title": "Alice Updated"}])
+            self.assertEqual(store.list_books()["total"], 0)
+            self.assertEqual(store.get_book(book_id, public=False, include_removed=True)["title"], "Alice Updated")
 
     def test_reader_preferences_are_validated_and_persisted(self):
         with tempfile.TemporaryDirectory() as temporary:

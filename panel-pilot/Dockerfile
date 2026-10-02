@@ -28,6 +28,7 @@ ENV PYTHONUNBUFFERED=1
 
 COPY --chown=panels:panels server.py ./server.py
 COPY --chown=panels:panels comic_recommendations.py ./comic_recommendations.py
+COPY --chown=panels:panels book_recommendations.py ./book_recommendations.py
 COPY --chown=panels:panels source_intelligence.py ./source_intelligence.py
 COPY --chown=panels:panels books.py shelfmark_client.py opds_client.py ./
 COPY --chown=panels:panels LICENSE THIRD_PARTY_NOTICES.md ./

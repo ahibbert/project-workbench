@@ -250,7 +250,22 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
         }
       });
       group.append(groupSelect);
-      copy.append(group, read);
+      const remove = element("button", "danger-button book-remove-button", "Remove from library");
+      remove.type = "button";
+      remove.addEventListener("click", async () => {
+        if (!window.confirm(`Remove “${book.title}” from Panel Pilot?\n\nThe CWA copy will be kept, but reading progress and the local EPUB cache will be removed.`)) return;
+        remove.disabled = true;
+        try {
+          await request(`/api/books/${encodeURIComponent(book.id)}`, { method: "DELETE" });
+          await Promise.resolve(onLibraryChange());
+          navigate("library");
+        } catch (error) {
+          remove.disabled = false;
+          remove.setCustomValidity(error.message);
+          remove.reportValidity();
+        }
+      });
+      copy.append(group, read, remove);
       detail.append(copy);
       content.replaceChildren(back, detail);
     } catch (error) {
@@ -369,6 +384,15 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
     bookMode.type = "button";
     bookMode.setAttribute("aria-pressed", "true");
     mediaSwitch.append(mangaMode, bookMode);
+    const recommendations = element("section", "book-recommendations");
+    const recommendationHeading = element("div", "book-recommendations-heading");
+    recommendationHeading.append(
+      element("div", "", "Books for you"),
+      element("small", "", "Personalized from books you have read"),
+    );
+    const recommendationRail = element("div", "recommendation-rail book-recommendation-rail");
+    recommendationRail.append(element("p", "books-loading", "Finding book recommendations…"));
+    recommendations.append(recommendationHeading, recommendationRail);
     const panel = element("section", "panel books-search-panel");
     panel.append(element("h2", "", "Find a book"), element("p", "books-search-help", "Search Shelfmark metadata, then choose an EPUB release for CWA to import."));
     const form = element("form", "books-search-form");
@@ -417,8 +441,53 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
     panel.append(form, results);
     const downloadHost = element("div");
     downloadHost.id = "books-downloads-container";
-    content.replaceChildren(back, mediaSwitch, panel, downloadHost);
+    content.replaceChildren(back, mediaSwitch, recommendations, panel, downloadHost);
     void renderDownloads(downloadHost);
+    void request("/api/book-recommendations?limit=12").then((payload) => {
+      recommendationRail.replaceChildren();
+      if (payload.status === "unconfigured") {
+        recommendationRail.append(element("p", "books-empty-result", "Add your LibraryThing key in Settings to enable book recommendations."));
+        return;
+      }
+      if (payload.status === "needs-library") {
+        recommendationRail.append(element("p", "books-empty-result", "Finish or start a book to personalize this list."));
+        return;
+      }
+      if (!payload.results?.length) {
+        recommendationRail.append(element("p", "books-empty-result", "No new matches right now. Try refreshing after reading another book."));
+        return;
+      }
+      payload.results.forEach((recommendation) => {
+        const card = element("article", "recommendation-card book-recommendation-card");
+        if (recommendation.coverUrl) {
+          const cover = element("img");
+          cover.src = recommendation.coverUrl;
+          cover.alt = "";
+          cover.loading = "lazy";
+          card.append(cover);
+        } else {
+          card.append(element("span", "book-recommendation-fallback", recommendation.title.slice(0, 1).toUpperCase()));
+        }
+        const copy = element("div", "book-recommendation-copy");
+        copy.append(element("strong", "", recommendation.title));
+        copy.append(element("small", "", recommendation.authors?.join(", ") || "Unknown author"));
+        const reason = recommendation.reason?.type === "next_in_series"
+          ? `Next in ${recommendation.series?.name || "your series"}`
+          : recommendation.reason?.seedTitles?.length ? `Because you read ${recommendation.reason.seedTitles[0]}` : "Selected for your library";
+        copy.append(element("small", "book-recommendation-reason", reason));
+        const readThis = element("button", "mini-button", "Read this");
+        readThis.type = "button";
+        readThis.addEventListener("click", () => {
+          input.value = recommendation.title;
+          form.requestSubmit();
+          panel.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+        card.append(copy, readThis);
+        recommendationRail.append(card);
+      });
+    }).catch((error) => {
+      recommendationRail.replaceChildren(element("p", "books-error", error.message));
+    });
     input.focus({ preventScroll: true });
   }
 

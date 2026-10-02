@@ -27,18 +27,38 @@ preferences are stored in the book database rather than browser storage.
 
 Books use the shared Panels shell without sharing manga data models: EPUBs
 appear in the main Library and Continue Reading card, acquisition starts from
-**Browse → Find books**, service checks and manual sync live in Settings, and
+**Browse → Books**, service checks and manual sync live in Settings, and
 the Stats view shows a separate EPUB shelf summary. Book details and reader
 routes remain isolated internally so a CWA or Shelfmark outage cannot disturb
 Suwayomi startup, browsing, or reading.
 
+The Books browse flow also shows a server-generated **Books for you** rail when
+the shared LibraryThing key is configured. It uses positively read book-library
+groups as seeds, resolves editions to works through Open Library, filters comic
+metadata and already-owned works/ISBNs, and only recommends the next known
+volume when explicit series metadata is available. Choosing **Read this** starts
+the normal Shelfmark metadata, edition, EPUB-release, and acquisition flow;
+provider credentials never enter the browser.
+
 The reader generates stable EPUB locations in the browser for its scrubber and
 approximate time remaining, while the server continues to store an exact CFI as
-the canonical position. Side taps, horizontal swipes, arrow/Page keys, and the
-visible previous/next controls navigate; a centre tap hides or restores reader
-chrome. Rotation preserves the current CFI, internal links and footnotes stay
+the canonical position. Invisible side tap regions, horizontal swipes, and
+arrow/Page keys navigate; a centre tap hides or restores reader chrome. The
+EPUB canvas always occupies the complete app viewport, with controls overlaid
+rather than reserving vertical space. A feature-detected full-screen button is
+available where WebKit permits it, and the Home Screen app uses a translucent
+iOS status-bar style. iPadOS can still retain the system status indicators even
+in Fullscreen API mode; a web app cannot force those indicators off. Rotation
+preserves the current CFI, internal links and footnotes stay
 inside the sanitized publication, and an available browser wake lock keeps the
 screen on while the reader is open.
+
+**Remove from library** hides a book from Panel Pilot, removes its Panel Pilot
+reading position and sanitized EPUB cache, and records a local tombstone so an
+OPDS sync cannot immediately restore it. It deliberately does not delete the
+operator-owned CWA copy. The equivalent action for manga, comics, and webtoons
+removes the Panel Pilot library entry without deleting the Suwayomi title or
+downloaded chapters.
 
 Shelfmark is only an acquisition provider. Panels does not install or configure
 Shelfmark download sources and does not handle DRM-protected files.
@@ -130,12 +150,17 @@ acquisition path still requires a source configured by the operator.
    scrubber; change theme, text size, line spacing, page width, and flow; rotate
    the device; then close it. Reopen it and confirm the exact location and
    preferences return.
+   Centre-tap twice to hide and restore the overlaid controls, and try the
+   full-screen button. On iPadOS, verify that content uses the entire viewport
+   even if WebKit keeps the system status indicators visible.
 6. Use **Browse → Find books**, inspect EPUB-only releases, queue one, and confirm the state
    advances through queued/downloading/importing/ready after CWA imports it.
 7. Stop Shelfmark and CWA. Confirm book connection errors are contained and
    existing manga browsing and reading remain available.
 8. Inspect browser storage, network responses, and logs to confirm no upstream
    credentials or acquisition URLs are exposed.
+9. Remove a book, sync CWA again, and confirm it stays absent in Panel Pilot
+   while the EPUB remains in CWA.
 
 ## Disabled behavior
 

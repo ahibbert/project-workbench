@@ -237,6 +237,8 @@ class BookMetadata:
     year: int | None = None
     cover_url: str = ""
     work_id: str = ""
+    series_name: str = ""
+    series_position: float | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "title", _clean_text(self.title, 300))
@@ -246,6 +248,13 @@ class BookMetadata:
         object.__setattr__(self, "publisher", _clean_text(self.publisher, 200))
         object.__setattr__(self, "cover_url", _clean_cover_url(self.cover_url))
         object.__setattr__(self, "work_id", _clean_text(self.work_id, 100))
+        object.__setattr__(self, "series_name", _clean_text(self.series_name, 300))
+        if self.series_position is not None:
+            try:
+                position = float(self.series_position)
+            except (TypeError, ValueError):
+                position = None
+            object.__setattr__(self, "series_position", position if position is not None and 0 < position < 10000 else None)
         if self.year is not None and not 1800 <= int(self.year) <= 2200:
             object.__setattr__(self, "year", None)
 
@@ -455,21 +464,35 @@ class OpenLibraryAdapter:
         return {"User-Agent": self._user_agent, "Accept": "application/json"}
 
     def resolve_seed(self, seed: ComicSeed, *, result_limit: int = 10) -> ResolvedSeed | None:
+        candidates = self.search_books(seed.title, authors=seed.creators, result_limit=result_limit)
+        return choose_seed_match(seed, candidates)
+
+    def search_books(
+        self,
+        title: str,
+        *,
+        authors: Sequence[str] = (),
+        result_limit: int = 10,
+    ) -> tuple[BookMetadata, ...]:
+        params = {
+            "title": _clean_text(title, 300),
+            "language": "eng",
+            "limit": str(max(3, min(20, int(result_limit)))),
+            "fields": "key,title,author_name,first_publish_year,isbn,cover_i,subject,publisher,series",
+        }
+        clean_authors = _clean_string_tuple(authors, 3)
+        if clean_authors:
+            params["author"] = clean_authors[0]
         payload = self._http.get_json(
             OPEN_LIBRARY_SEARCH_URL,
-            params={
-                "title": seed.title,
-                "language": "eng",
-                "limit": str(max(3, min(20, int(result_limit)))),
-                "fields": "key,title,author_name,first_publish_year,isbn,cover_i,subject,publisher",
-            },
+            params=params,
             headers=self._headers,
         )
         documents = payload.get("docs") if isinstance(payload, Mapping) else None
         if not isinstance(documents, Sequence) or isinstance(documents, (str, bytes)):
             raise RecommendationProviderError("Open Library search returned an invalid response")
         candidates = tuple(self._metadata_from_search_document(document) for document in documents)
-        return choose_seed_match(seed, tuple(candidate for candidate in candidates if candidate))
+        return tuple(candidate for candidate in candidates if candidate)
 
     def lookup_isbns(self, isbns: Sequence[str]) -> Mapping[str, BookMetadata]:
         cleaned = _clean_isbns(isbns, 100)
@@ -508,6 +531,7 @@ class OpenLibraryAdapter:
         cover_id = document.get("cover_i")
         cover_url = f"https://covers.openlibrary.org/b/id/{int(cover_id)}-M.jpg" if isinstance(cover_id, int) else ""
         year = document.get("first_publish_year")
+        series = _clean_string_tuple(document.get("series"), 5)
         return BookMetadata(
             title=title,
             isbns=isbns,
@@ -517,6 +541,7 @@ class OpenLibraryAdapter:
             year=int(year) if isinstance(year, int) else None,
             cover_url=cover_url,
             work_id=_clean_text(document.get("key"), 100),
+            series_name=series[0] if series else "",
         )
 
     @staticmethod
@@ -534,6 +559,7 @@ class OpenLibraryAdapter:
         year_match = re.search(r"(?:19|20)\d{2}", publish_date)
         url = _clean_text(record.get("url"), 1000)
         work_match = re.search(r"/works/([^/?#]+)", url)
+        series = _clean_string_tuple(record.get("series"), 5)
         return BookMetadata(
             title=title,
             isbns=record_isbns,
@@ -543,6 +569,7 @@ class OpenLibraryAdapter:
             year=int(year_match.group(0)) if year_match else None,
             cover_url=_clean_text(cover.get("medium") or cover.get("large") or cover.get("small"), 2000),
             work_id=work_match.group(1) if work_match else "",
+            series_name=series[0] if series else "",
         )
 
 

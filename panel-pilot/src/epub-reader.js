@@ -76,12 +76,15 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
   titleGroup.append(title, chapterTitle);
   const tocButton = node("button", "epub-tool", "Contents");
   tocButton.type = "button";
+  const fullscreenButton = node("button", "epub-tool epub-fullscreen", "⛶");
+  fullscreenButton.type = "button";
+  fullscreenButton.setAttribute("aria-label", "Toggle full screen");
   const settings = node("details", "epub-settings");
   const settingsSummary = node("summary", "epub-tool", "Aa");
   settingsSummary.setAttribute("aria-label", "Reading appearance");
   const settingsPanel = node("div", "epub-settings-panel");
   settings.append(settingsSummary, settingsPanel);
-  toolbar.append(back, titleGroup, tocButton, settings);
+  toolbar.append(back, titleGroup, tocButton, fullscreenButton, settings);
 
   const stage = node("div", "epub-stage");
   stage.style.setProperty("--book-content-width", `${preferences.contentWidth}px`);
@@ -172,7 +175,12 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
     [html, body].forEach((element) => {
       setImportant(element.style, "background", palette.background);
       setImportant(element.style, "color", palette.color);
+      setImportant(element.style, "min-height", "100%");
     });
+    setImportant(body.style, "margin-block-start", "0");
+    setImportant(body.style, "margin-block-end", "0");
+    setImportant(body.style, "padding-block-start", "0");
+    setImportant(body.style, "padding-block-end", "0");
     setImportant(body.style, "font-family", font);
     setImportant(body.style, "font-size", `${preferences.fontSize}%`);
     setImportant(body.style, "line-height", String(preferences.lineHeight));
@@ -196,8 +204,28 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
   function setControlsVisible(visible, linger = true) {
     window.clearTimeout(controlsTimer);
     reader.classList.toggle("epub-chrome-hidden", !visible);
+    reader.dataset.controlsVisible = visible ? "true" : "false";
     if (visible && linger && !settings.open && !toc.open) {
-      controlsTimer = window.setTimeout(() => reader.classList.add("epub-chrome-hidden"), 5000);
+      controlsTimer = window.setTimeout(() => {
+        reader.classList.add("epub-chrome-hidden");
+        reader.dataset.controlsVisible = "false";
+      }, 5000);
+    }
+  }
+
+  async function toggleFullscreen() {
+    const active = document.fullscreenElement || document.webkitFullscreenElement;
+    try {
+      if (active) {
+        const exit = document.exitFullscreen || document.webkitExitFullscreen;
+        if (exit) await exit.call(document);
+      } else {
+        const enter = reader.requestFullscreen || reader.webkitRequestFullscreen;
+        if (!enter) throw new Error("Full screen is not available in this iOS browser. Adding Panel Pilot to the Home Screen provides the cleanest supported view.");
+        await enter.call(reader);
+      }
+    } catch (error) {
+      timeRemaining.textContent = error?.message || "Full screen could not be opened.";
     }
   }
 
@@ -255,6 +283,9 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
       await rendition.display(locator || undefined);
     } else {
       applyPreferences();
+      const locator = pendingPosition?.cfi || currentProgress?.locator;
+      rendition?.resize?.();
+      if (locator) await rendition?.display?.(locator).catch(() => {});
     }
   }
 
@@ -292,7 +323,7 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
       void rendition?.next();
       setControlsVisible(false);
     } else {
-      setControlsVisible(reader.classList.contains("epub-chrome-hidden"));
+      setControlsVisible(reader.classList.contains("epub-chrome-hidden"), false);
     }
   }
 
@@ -408,6 +439,7 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
   previous.addEventListener("click", () => rendition?.prev());
   next.addEventListener("click", () => rendition?.next());
   tocButton.addEventListener("click", () => { toc.showModal(); setControlsVisible(true, false); });
+  fullscreenButton.addEventListener("click", () => { void toggleFullscreen(); });
   tocClose.addEventListener("click", () => toc.close());
   toc.addEventListener("click", (event) => { if (event.target === toc) toc.close(); });
   toc.addEventListener("close", () => setControlsVisible(true));

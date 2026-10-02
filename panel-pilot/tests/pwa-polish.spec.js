@@ -318,6 +318,7 @@ async function installPolishFixture(page, { holdStoredChapters = false, detailCh
     downloadBufferRequests,
     storedQueries: () => storedQueries,
     storedStarted: () => storedStarted.promise,
+    items,
   };
 }
 
@@ -513,6 +514,21 @@ test("direct library actions repaint immediately instead of leaving an in-use ca
   await expect(card.getByText("Pinned", { exact: true })).toBeVisible();
   await card.locator(".manga-card-more summary").click();
   await expect(card.getByRole("button", { name: "Unpin", exact: true })).toBeVisible();
+});
+
+test("manga, comics, and webtoons can be removed from Panel Pilot without deleting Suwayomi data", async ({ page }) => {
+  const fixture = await installPolishFixture(page);
+  await page.goto("/");
+  await page.locator('[data-library-filter="all"]').click();
+  const card = page.locator(".library-card").filter({ hasText: "Reading Fixture" });
+  await card.locator(".manga-card-more summary").click();
+  page.once("dialog", (dialog) => {
+    expect(dialog.message()).toContain("Suwayomi title and downloaded chapters will be kept");
+    return dialog.accept();
+  });
+  await card.getByRole("button", { name: "Remove from library" }).click();
+  await expect(page.locator("#library-list")).not.toContainText("Reading Fixture");
+  await expect.poll(() => fixture.items.map((item) => item.mangaTitle)).toEqual(["Planned Fixture"]);
 });
 
 test("chapter details can change library group and mark every earlier chapter as read", async ({ page }) => {

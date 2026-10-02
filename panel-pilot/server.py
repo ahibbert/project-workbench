@@ -35,6 +35,11 @@ from comic_recommendations import (
     OpenLibraryAdapter,
     RecommendationProviderError,
 )
+from book_recommendations import (
+    BookRecommendationService,
+    book_inventory_from_library,
+    book_seeds_from_library,
+)
 
 
 USER_AGENT = (
@@ -59,6 +64,10 @@ SOURCE_INTELLIGENCE_PATH = os.environ.get(
 COMIC_RECOMMENDATIONS_CACHE_PATH = os.environ.get(
     "PANEL_PILOT_COMIC_RECOMMENDATIONS_CACHE_PATH",
     os.path.join(DATA_ROOT, "comic-recommendations-cache.json"),
+)
+BOOK_RECOMMENDATIONS_CACHE_PATH = os.environ.get(
+    "PANEL_PILOT_BOOK_RECOMMENDATIONS_CACHE_PATH",
+    os.path.join(DATA_ROOT, "book-recommendations-cache.json"),
 )
 COMIC_RECOMMENDATIONS_CONFIG_PATH = os.environ.get(
     "PANEL_PILOT_COMIC_RECOMMENDATIONS_CONFIG_PATH",
@@ -340,9 +349,11 @@ class ComicRecommendationCache:
     VERSION = 1
     MAX_ENTRIES = 24
 
-    def __init__(self, path=None, ttl_seconds=COMIC_RECOMMENDATIONS_CACHE_TTL):
+    def __init__(self, path=None, ttl_seconds=COMIC_RECOMMENDATIONS_CACHE_TTL, key_prefix="comic-recs", label="comic"):
         self.path = Path(path or COMIC_RECOMMENDATIONS_CACHE_PATH).expanduser().resolve()
         self.ttl_seconds = max(60, int(ttl_seconds))
+        self.key_prefix = str(key_prefix)
+        self.label = str(label)
 
     def _read_locked(self):
         try:
@@ -355,7 +366,7 @@ class ComicRecommendationCache:
         return payload
 
     def get(self, cache_key):
-        if not re.fullmatch(r"comic-recs-v\d+-[0-9a-f]{64}", str(cache_key or "")):
+        if not re.fullmatch(rf"{re.escape(self.key_prefix)}-v\d+-[0-9a-f]{{64}}", str(cache_key or "")):
             return None, "miss"
         with COMIC_RECOMMENDATIONS_CACHE_LOCK:
             entry = self._read_locked()["entries"].get(cache_key)
@@ -368,10 +379,10 @@ class ComicRecommendationCache:
         return entry["feed"], "hit" if age <= self.ttl_seconds else "stale"
 
     def put(self, cache_key, feed):
-        if not re.fullmatch(r"comic-recs-v\d+-[0-9a-f]{64}", str(cache_key or "")):
-            raise ValueError("Invalid comic recommendation cache key")
+        if not re.fullmatch(rf"{re.escape(self.key_prefix)}-v\d+-[0-9a-f]{{64}}", str(cache_key or "")):
+            raise ValueError(f"Invalid {self.label} recommendation cache key")
         if not isinstance(feed, dict):
-            raise ValueError("Invalid comic recommendation cache payload")
+            raise ValueError(f"Invalid {self.label} recommendation cache payload")
         with COMIC_RECOMMENDATIONS_CACHE_LOCK:
             payload = self._read_locked()
             payload["entries"][cache_key] = {"createdAt": time.time(), "feed": feed}
@@ -388,7 +399,7 @@ class ComicRecommendationCache:
             payload["entries"] = dict(ordered)
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with tempfile.NamedTemporaryFile(
-                "w", encoding="utf-8", dir=self.path.parent, prefix=".comic-recommendations-", delete=False
+                "w", encoding="utf-8", dir=self.path.parent, prefix=f".{self.label}-recommendations-", delete=False
             ) as temporary:
                 json.dump(payload, temporary, ensure_ascii=True, separators=(",", ":"))
                 temporary.write("\n")
@@ -441,6 +452,22 @@ def build_comic_recommendation_service():
         user_agent += f" ({contact})"
     http = RecommendationJsonHttpClient()
     return ComicRecommendationService(
+        librarything=LibraryThingAdapter(http, api_key=api_key),
+        open_library=OpenLibraryAdapter(http, user_agent=user_agent),
+    )
+
+
+def build_book_recommendation_service():
+    config = read_comic_recommendations_config()
+    api_key = config["apiKey"]
+    if not api_key:
+        return None
+    contact = config["contact"]
+    user_agent = "Panels book recommendations"
+    if contact:
+        user_agent += f" ({contact})"
+    http = RecommendationJsonHttpClient()
+    return BookRecommendationService(
         librarything=LibraryThingAdapter(http, api_key=api_key),
         open_library=OpenLibraryAdapter(http, user_agent=user_agent),
     )
@@ -2821,12 +2848,18 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             return
         if not self.require_auth(parsed):
             return
-        match = re.fullmatch(r"/api/moments/([^/]+)", parsed.path)
-        if not match:
-            self.send_json({"error": "Unknown DELETE endpoint"}, status=404)
-            return
         try:
-            self.handle_moment_delete(match.group(1))
+            book_match = re.fullmatch(r"/api/books/(\d+)", parsed.path)
+            if book_match:
+                self.handle_book_delete(int(book_match.group(1)))
+                return
+            moment_match = re.fullmatch(r"/api/moments/([^/]+)", parsed.path)
+            if moment_match:
+                self.handle_moment_delete(moment_match.group(1))
+                return
+            self.send_json({"error": "Unknown DELETE endpoint"}, status=404)
+        except BookRequestError as error:
+            self.send_json({"error": str(error), "code": error.code}, status=error.status)
         except Exception as error:
             self.send_json({"error": str(error)}, status=502)
 
@@ -2963,6 +2996,9 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
                 return
             if parsed.path == "/api/books/preferences":
                 self.handle_books_preferences_get()
+                return
+            if parsed.path == "/api/book-recommendations":
+                self.handle_book_recommendations(parsed)
                 return
             book_progress = re.fullmatch(r"/api/books/(\d+)/progress", parsed.path)
             if book_progress:
@@ -3126,6 +3162,64 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             self.send_json({"error": "Book not found"}, status=404)
             return
         self.send_json({"book": book, "progress": self.books_service().progress(self.book_user_id(), book_id)})
+
+    def handle_book_delete(self, book_id):
+        if not self.books_config().enabled:
+            self.send_json({"error": "Books are disabled", "code": "feature_disabled"}, status=404)
+            return
+        self.send_json(self.books_service().remove_book(book_id))
+
+    def handle_book_recommendations(self, parsed):
+        if not self.books_config().enabled:
+            self.send_json({"error": "Books are disabled", "code": "feature_disabled"}, status=404)
+            return
+        params = parse_qs(parsed.query)
+        try:
+            limit = max(1, min(20, int(params.get("limit", [12])[0])))
+        except (TypeError, ValueError):
+            self.send_json({"error": "limit must be an integer between 1 and 20"}, status=400)
+            return
+        service = build_book_recommendation_service()
+        if service is None:
+            self.send_json({
+                "schemaVersion": 1, "configured": False, "status": "unconfigured",
+                "mode": "unconfigured", "seedTitles": [], "cacheKey": "",
+                "cacheStatus": "disabled", "results": [],
+            })
+            return
+        library = self.books_service().list_books(self.book_user_id(), limit=200, offset=0)["books"]
+        seeds = book_seeds_from_library(library)
+        if not seeds:
+            self.send_json({
+                "schemaVersion": 1, "configured": True, "status": "needs-library",
+                "mode": "needs-library", "seedTitles": [], "cacheKey": "",
+                "cacheStatus": "miss", "results": [],
+            })
+            return
+        owned = book_inventory_from_library(library)
+        cache = ComicRecommendationCache(
+            path=BOOK_RECOMMENDATIONS_CACHE_PATH,
+            key_prefix="book-recs",
+            label="book",
+        )
+        cache_key = service.cache_key(seeds, limit=limit)
+        cached, cache_status = cache.get(cache_key)
+        if cache_status == "hit":
+            self.send_json({**cached, "configured": True, "status": "ready", "cacheStatus": "hit"})
+            return
+        feed = service.build_feed(seeds, owned_books=owned, limit=limit).to_public_dict()
+        if feed.get("mode") == "unavailable":
+            if cached is not None:
+                self.send_json({**cached, "configured": True, "status": "ready", "cacheStatus": "stale"})
+            else:
+                self.send_json({**feed, "configured": True, "status": "unavailable", "cacheStatus": "miss"})
+            return
+        response_cache_status = "miss"
+        try:
+            cache.put(cache_key, feed)
+        except OSError:
+            response_cache_status = "bypass"
+        self.send_json({**feed, "configured": True, "status": "ready", "cacheStatus": response_cache_status})
 
     def handle_book_cover(self, book_id):
         if not self.books_config().enabled:

@@ -2527,7 +2527,7 @@ function applyComicRecommendationsConfigStatus(payload = {}) {
       ? "Configured by the server environment. The key is not available to this browser."
       : state.comicRecommendationsConfigured
         ? "Configured. The key is stored on this server and is not returned to the browser."
-        : "The comic feed remains off until a key is configured.";
+        : "The comic and book feeds remain off until a key is configured.";
   }
 }
 
@@ -5191,6 +5191,20 @@ function renderLibrary({ preserveInteractions = true } = {}) {
     hide.textContent = item.hidden ? "Restore" : "Hide";
     hide.className = "quiet-card-action";
     hide.addEventListener("click", () => setLibraryItemFlag(item, "hidden", !item.hidden));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "Remove from library";
+    remove.className = "quiet-card-action danger-button";
+    remove.addEventListener("click", async () => {
+      const { removeLibraryEntry } = await import("./library-removal.js");
+      const result = removeLibraryEntry(state.libraryItems, item, libraryItemKey);
+      if (!result) return;
+      state.libraryItems = result.items;
+      if (result.removed?.mangabakaId) removeMangaBakaOutboxEntry(Number(result.removed.mangabakaId));
+      saveLibraryItems();
+      renderLibrary({ preserveInteractions: false });
+      showToast("Removed from your Panel Pilot library.", "good");
+    });
     const more = document.createElement("details");
     more.className = "manga-card-more";
     const moreLabel = document.createElement("summary");
@@ -5220,7 +5234,7 @@ function renderLibrary({ preserveInteractions = true } = {}) {
     });
     formatSelect.value = inferredMediaFormat(item);
     formatSelect.addEventListener("change", () => setLibraryItemFormat(item, formatSelect.value));
-    menu.append(formatSelect, statusSelect, pin, hide);
+    menu.append(formatSelect, statusSelect, pin, hide, remove);
     more.append(moreLabel, menu);
     actions.append(chapters, more);
 
