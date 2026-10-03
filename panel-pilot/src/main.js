@@ -294,6 +294,9 @@ const el = {
   navReaderImage: document.querySelector("#nav-reader-image"),
   navReaderLabel: document.querySelector("#nav-reader-label"),
   navReaderTitle: document.querySelector("#nav-reader-title"),
+  smartHome: document.querySelector("#smart-home"),
+  smartHomeRail: document.querySelector("#smart-home-rail"),
+  smartHomeRefresh: document.querySelector("#smart-home-refresh"),
   downloadStatusButton: document.querySelector("#download-status-button"),
   downloadStatusLabel: document.querySelector("#download-status-label"),
   downloadStatusCount: document.querySelector("#download-status-count"),
@@ -385,6 +388,10 @@ const el = {
   momentRediscovery: document.querySelector("#moment-rediscovery"),
   momentRediscoveryCard: document.querySelector("#moment-rediscovery-card"),
   momentRediscoveryNext: document.querySelector("#moment-rediscovery-next"),
+  momentsSearch: document.querySelector("#moments-search"),
+  momentsTitleFilter: document.querySelector("#moments-title-filter"),
+  momentsTypeFilters: [...document.querySelectorAll("[data-moment-type]")],
+  browseBookHighlights: document.querySelector("#browse-book-highlights"),
   mangaMode: document.querySelector("#manga-mode"),
   comicMode: document.querySelector("#comic-mode"),
   webtoonMode: document.querySelector("#webtoon-mode"),
@@ -585,6 +592,11 @@ const state = {
   momentsLoaded: false,
   momentRediscoveryState: normalizeMomentRediscoveryState(),
   momentRediscoveryMomentId: "",
+  momentsQuery: "",
+  momentsTitleFilter: "",
+  momentsTypeFilter: "all",
+  highlightBrowserMoments: [],
+  highlightBrowserIndex: 0,
   panelCalibration: normalizePanelCalibration(),
   librarySavePromise: null,
   librarySavePending: false,
@@ -1709,7 +1721,11 @@ function setActiveView(view, options = {}) {
   if (view === "stats") void refreshReadingStats();
   if (view === "moments") void loadMoments();
   if (view === "books") void showBooksRoute();
-  if (view === "library" && state.booksEnabled) void refreshIntegratedBookLibrary();
+  if (view === "library") {
+    if (state.booksEnabled) void refreshIntegratedBookLibrary();
+    if (!state.momentsLoaded) void loadMoments();
+    else renderSmartHome();
+  }
 
   if (view === "reader") {
     setReaderFocus(isReaderFocusAvailable());
@@ -5500,8 +5516,64 @@ function libraryGroupPhrase(filter = state.libraryFilter) {
   return libraryStatusLabels[filter] || filter;
 }
 
+function smartHomeCard({ kind, icon, eyebrow, title, detail, action }) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "smart-home-card";
+  button.dataset.kind = kind;
+  const mark = document.createElement("span");
+  mark.className = "smart-home-card-icon";
+  mark.setAttribute("aria-hidden", "true");
+  mark.textContent = icon;
+  const copy = document.createElement("span");
+  copy.className = "smart-home-card-copy";
+  const label = document.createElement("span"); label.textContent = eyebrow;
+  const strong = document.createElement("strong"); strong.textContent = title;
+  const small = document.createElement("small"); small.textContent = detail;
+  copy.append(label, strong, small);
+  const arrow = document.createElement("span"); arrow.className = "smart-home-card-arrow"; arrow.textContent = "›"; arrow.setAttribute("aria-hidden", "true");
+  button.append(mark, copy, arrow);
+  button.addEventListener("click", action);
+  return button;
+}
+
+function nextSeriesBook() {
+  const groups = new Map();
+  state.bookLibraryItems.filter((book) => book.seriesName && Number.isFinite(Number(book.seriesPosition))).forEach((book) => {
+    const key = normalizeTitle(book.seriesName);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(book);
+  });
+  for (const books of groups.values()) {
+    books.sort((a, b) => Number(a.seriesPosition) - Number(b.seriesPosition));
+    const lastStarted = books.reduce((index, book, current) => (["reading", "completed"].includes(normalizedBookLibraryStatus(book)) ? current : index), -1);
+    const candidate = books.slice(lastStarted + 1).find((book) => normalizedBookLibraryStatus(book) === "plan_to_read");
+    if (candidate) return candidate;
+  }
+  return null;
+}
+
+function renderSmartHome() {
+  if (!el.smartHomeRail) return;
+  const cards = [];
+  const resume = readerResumeItem();
+  if (resume) cards.push(smartHomeCard({ kind: "continue", icon: "▶", eyebrow: "Continue", title: resume.mangaTitle, detail: resume.progressLabel || resume.chapterTitle || "Return to reading", action: () => el.navReader?.click() }));
+  const nextBook = nextSeriesBook();
+  if (nextBook) cards.push(smartHomeCard({ kind: "series", icon: "Ⅱ", eyebrow: "Next in series", title: nextBook.title, detail: `${nextBook.seriesName} · Book ${nextBook.seriesPosition}`, action: () => navigateBookRoute("book-detail", { id: nextBook.id }) }));
+  const ready = Number(state.downloadStatus?.downloaded || 0) + [...state.deviceChapters.values()].filter((item) => item.status === "ready").length;
+  if (ready) cards.push(smartHomeCard({ kind: "downloads", icon: "↓", eyebrow: "Ready offline", title: `${ready} chapter${ready === 1 ? "" : "s"} ready`, detail: "Open download details", action: (event) => setDownloadStatusSheet(true, event.currentTarget) }));
+  const visibleMoments = state.moments.filter((moment) => state.showNsfwSources || !isNsfwLibraryItem(moment));
+  const rediscovered = visibleMoments.length ? chooseMomentForRediscovery(visibleMoments, { state: state.momentRediscoveryState })?.moment : null;
+  if (rediscovered) cards.push(smartHomeCard({ kind: "moment", icon: "★", eyebrow: "Rediscover", title: rediscovered.title || "Saved moment", detail: rediscovered.momentType === "text" ? String(rediscovered.quote || "Saved highlight").slice(0, 80) : rediscovered.chapterTitle || "Saved panel", action: () => { state.momentRediscoveryMomentId = rediscovered.id; setActiveView("moments"); } }));
+  const recommendation = state.mangabakaRecommendations[0] || state.comicRecommendations[0];
+  cards.push(smartHomeCard({ kind: "recommendation", icon: "✦", eyebrow: "Try next", title: recommendation?.title || "Find your next read", detail: recommendation ? "From your recommendations" : "Open personalized recommendations", action: () => setActiveView("browse") }));
+  el.smartHomeRail.replaceChildren(...cards);
+  el.smartHome.hidden = cards.length === 0;
+}
+
 function renderLibrary({ preserveInteractions = true } = {}) {
   if (!el.libraryList || !el.libraryCount) return;
+  renderSmartHome();
   const renderSignature = libraryRenderSignature();
   if (el.libraryList.dataset.renderSignature === renderSignature) {
     refreshLibraryOfflineBadges();
@@ -7059,6 +7131,7 @@ function renderDownloadStatus(status) {
   state.downloadStatus = status || null;
   updateLibraryOfflineReadiness(status);
   if (state.activeView === "library") refreshLibraryOfflineBadges();
+  if (state.activeView === "library") renderSmartHome();
   if (!el.downloadStatusButton) return;
   const total = Number(status?.windowSize) || 0;
   const downloaded = Number(status?.downloaded) || 0;
@@ -13736,6 +13809,7 @@ async function loadMoments() {
     state.moments = Array.isArray(payload.moments) ? payload.moments : [];
     state.momentsLoaded = true;
     renderMoments();
+    renderSmartHome();
   } catch (error) {
     if (!state.momentsLoaded) {
       el.momentsGrid.replaceChildren(createMomentsEmptyState("Moments could not be loaded", friendlySourceErrorMessage(error)));
@@ -13756,10 +13830,25 @@ function createMomentsEmptyState(title, copy) {
 
 function renderMoments() {
   if (!el.momentsGrid) return;
-  const visibleMoments = state.showNsfwSources
+  const allVisibleMoments = state.showNsfwSources
     ? state.moments
     : state.moments.filter((moment) => !isNsfwLibraryItem(moment));
-  if (el.momentsCount) el.momentsCount.textContent = `${visibleMoments.length} saved`;
+  const titles = [...new Set(allVisibleMoments.map((moment) => moment.title || "Untitled"))].sort((a, b) => a.localeCompare(b));
+  if (el.momentsTitleFilter) {
+    const current = state.momentsTitleFilter;
+    el.momentsTitleFilter.replaceChildren(new Option("All titles", ""), ...titles.map((title) => new Option(title, title)));
+    el.momentsTitleFilter.value = titles.includes(current) ? current : "";
+    state.momentsTitleFilter = el.momentsTitleFilter.value;
+  }
+  const query = normalizeTitle(state.momentsQuery);
+  const visibleMoments = allVisibleMoments.filter((moment) => (
+    (state.momentsTypeFilter === "all" || moment.momentType === state.momentsTypeFilter)
+    && (!state.momentsTitleFilter || (moment.title || "Untitled") === state.momentsTitleFilter)
+    && (!query || normalizeTitle([moment.title, moment.chapterTitle, moment.quote, moment.sourceLabel].filter(Boolean).join(" ")).includes(query))
+  ));
+  el.momentsTypeFilters?.forEach((button) => { const active = button.dataset.momentType === state.momentsTypeFilter; button.classList.toggle("active", active); button.setAttribute("aria-pressed", String(active)); });
+  if (el.browseBookHighlights) el.browseBookHighlights.disabled = !allVisibleMoments.some((moment) => moment.momentType === "text");
+  if (el.momentsCount) el.momentsCount.textContent = `${visibleMoments.length} of ${allVisibleMoments.length} saved`;
   el.momentsGrid.replaceChildren();
   if (!visibleMoments.length) {
     renderMomentRediscovery([]);
@@ -13771,8 +13860,30 @@ function renderMoments() {
   }
   renderMomentRediscovery(visibleMoments);
   const fragment = document.createDocumentFragment();
-  visibleMoments.forEach((moment) => {
-    fragment.append(createMomentCard(moment));
+  [["text", "Book highlights"], ["image", "Panel moments"]].forEach(([type, label]) => {
+    const matches = visibleMoments.filter((moment) => moment.momentType === type);
+    if (!matches.length) return;
+    const collection = document.createElement("section"); collection.className = "moments-collection";
+    const heading = document.createElement("div"); heading.className = "moments-collection-heading";
+    const title = document.createElement("h2"); title.textContent = label;
+    const count = document.createElement("span"); count.textContent = `${matches.length} saved`;
+    heading.append(title, count); collection.append(heading);
+    const byTitle = new Map();
+    matches.forEach((moment) => {
+      const name = moment.title || "Untitled";
+      if (!byTitle.has(name)) byTitle.set(name, []);
+      byTitle.get(name).push(moment);
+    });
+    [...byTitle.entries()].sort(([a], [b]) => a.localeCompare(b)).forEach(([name, moments]) => {
+      const group = document.createElement("section"); group.className = "moments-title-group";
+      const groupHeading = document.createElement("div"); groupHeading.className = "moments-title-heading";
+      const h3 = document.createElement("h3"); h3.textContent = name;
+      const total = document.createElement("span"); total.textContent = `${moments.length}`;
+      const cards = document.createElement("div"); cards.className = "moments-title-cards";
+      moments.forEach((moment) => cards.append(createMomentCard(moment)));
+      groupHeading.append(h3, total); group.append(groupHeading, cards); collection.append(group);
+    });
+    fragment.append(collection);
   });
   el.momentsGrid.append(fragment);
 }
@@ -13834,9 +13945,53 @@ function createMomentCard(moment, { featured = false } = {}) {
   remove.textContent = "Remove";
   remove.addEventListener("click", () => { void removeMoment(moment, remove); });
   actions.append(primary, remove);
+  if (textMoment) {
+    const share = document.createElement("button");
+    share.className = "text-button";
+    share.type = "button";
+    share.textContent = "Share quote card";
+    share.addEventListener("click", () => { void shareMomentQuoteCard(moment, share); });
+    actions.append(share);
+  }
   copy.append(title, chapter, details, actions);
   card.append(media, copy);
   return card;
+}
+
+function quoteCardLines(context, text, maxWidth) {
+  const words = String(text || "").trim().split(/\s+/).filter(Boolean);
+  const lines = []; let line = "";
+  words.forEach((word) => {
+    const next = line ? `${line} ${word}` : word;
+    if (line && context.measureText(next).width > maxWidth) { lines.push(line); line = word; } else line = next;
+  });
+  if (line) lines.push(line);
+  return lines;
+}
+
+async function shareMomentQuoteCard(moment, button) {
+  setBusy(button, true, "Making card");
+  try {
+    const canvas = document.createElement("canvas"); canvas.width = 1200; canvas.height = 1500;
+    const context = canvas.getContext("2d");
+    const gradient = context.createLinearGradient(0, 0, 1200, 1500); gradient.addColorStop(0, "#fff8e6"); gradient.addColorStop(1, "#dcefed");
+    context.fillStyle = gradient; context.fillRect(0, 0, canvas.width, canvas.height);
+    context.fillStyle = "#236c6e"; context.font = "700 34px system-ui"; context.fillText("PANEL PILOT · MOMENT", 100, 130);
+    context.fillStyle = "#202724"; context.font = "italic 62px Georgia";
+    const lines = quoteCardLines(context, moment.quote, 1000); let y = 270;
+    lines.slice(0, 13).forEach((line) => { context.fillText(line, 100, y); y += 86; });
+    context.fillStyle = "#52605a"; context.font = "500 34px system-ui";
+    context.fillText(String(moment.title || "Untitled").slice(0, 80), 100, 1320);
+    context.fillText(String(moment.chapterTitle || "Saved highlight").slice(0, 80), 100, 1372);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+    if (!blob) throw new Error("This browser could not create a quote card.");
+    const file = new File([blob], "panel-pilot-quote.png", { type: "image/png" });
+    const shareData = { title: moment.title || "Panel Pilot moment", text: moment.quote || "", files: [file] };
+    if (navigator.share && (!navigator.canShare || navigator.canShare(shareData))) await navigator.share(shareData);
+    else { const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = file.name; link.click(); window.setTimeout(() => URL.revokeObjectURL(link.href), 0); }
+  } catch (error) {
+    if (error?.name !== "AbortError") showToast(`Could not share quote card: ${error.message || "unknown error"}`, "bad");
+  } finally { setBusy(button, false); }
 }
 
 function renderMomentRediscovery(visibleMoments, { advance = false } = {}) {
@@ -13876,6 +14031,26 @@ function showAnotherMoment() {
     : state.moments.filter((moment) => !isNsfwLibraryItem(moment));
   state.momentRediscoveryMomentId = "";
   renderMomentRediscovery(visibleMoments, { advance: true });
+}
+
+function openBookHighlightBrowser() {
+  const moments = state.moments.filter((moment) => moment.momentType === "text" && (state.showNsfwSources || !isNsfwLibraryItem(moment)))
+    .sort((left, right) => `${left.title}|${left.createdAt}`.localeCompare(`${right.title}|${right.createdAt}`));
+  if (!moments.length) return;
+  let dialog = document.querySelector("#highlight-browser");
+  if (!dialog) { dialog = document.createElement("dialog"); dialog.id = "highlight-browser"; dialog.className = "highlight-browser"; document.body.append(dialog); }
+  state.highlightBrowserMoments = moments; state.highlightBrowserIndex = 0;
+  const render = () => {
+    const moment = state.highlightBrowserMoments[state.highlightBrowserIndex];
+    dialog.replaceChildren(); const shell = document.createElement("div"); shell.className = "highlight-browser-shell";
+    const heading = document.createElement("div"); heading.className = "highlight-browser-heading"; const label = document.createElement("strong"); label.textContent = `Highlight ${state.highlightBrowserIndex + 1} of ${state.highlightBrowserMoments.length}`; const close = document.createElement("button"); close.type = "button"; close.className = "mini-button"; close.textContent = "Close"; close.addEventListener("click", () => dialog.close()); heading.append(label, close);
+    const quote = document.createElement("blockquote"); quote.className = "highlight-browser-quote"; quote.textContent = moment.quote;
+    const meta = document.createElement("div"); meta.className = "highlight-browser-meta"; const title = document.createElement("strong"); title.textContent = moment.title || "Untitled"; const chapter = document.createElement("span"); chapter.textContent = moment.chapterTitle || "Saved highlight"; meta.append(title, chapter);
+    const actions = document.createElement("div"); actions.className = "highlight-browser-actions"; const read = document.createElement("button"); read.type = "button"; read.textContent = "Read from here"; read.addEventListener("click", () => { dialog.close(); navigateBookRoute("book-read", { id: moment.bookId, href: moment.locator }); }); const share = document.createElement("button"); share.type = "button"; share.className = "text-button"; share.textContent = "Share quote card"; share.addEventListener("click", () => { void shareMomentQuoteCard(moment, share); }); actions.append(read, share);
+    const nav = document.createElement("div"); nav.className = "highlight-browser-nav"; [["‹ Previous", -1], ["Next ›", 1]].forEach(([text, delta]) => { const button = document.createElement("button"); button.type = "button"; button.textContent = text; button.disabled = state.highlightBrowserIndex + delta < 0 || state.highlightBrowserIndex + delta >= state.highlightBrowserMoments.length; button.addEventListener("click", () => { state.highlightBrowserIndex += delta; render(); }); nav.append(button); });
+    shell.append(heading, quote, meta, actions, nav); dialog.append(shell);
+  };
+  render(); if (!dialog.open) dialog.showModal();
 }
 
 async function removeMoment(moment, button) {
@@ -14999,6 +15174,16 @@ function wireEvents() {
   el.redetect.addEventListener("click", redetectCurrentPage);
   el.saveMoment?.addEventListener("click", () => { void saveCurrentMoment(); });
   el.momentRediscoveryNext?.addEventListener("click", showAnotherMoment);
+  el.momentsSearch?.addEventListener("input", (event) => { state.momentsQuery = event.target.value; renderMoments(); });
+  el.momentsTitleFilter?.addEventListener("change", (event) => { state.momentsTitleFilter = event.target.value; renderMoments(); });
+  el.momentsTypeFilters?.forEach((button) => button.addEventListener("click", () => { state.momentsTypeFilter = button.dataset.momentType || "all"; renderMoments(); }));
+  el.browseBookHighlights?.addEventListener("click", openBookHighlightBrowser);
+  el.smartHomeRefresh?.addEventListener("click", async () => {
+    el.smartHomeRefresh.disabled = true;
+    await Promise.allSettled([loadMoments(), refreshIntegratedBookLibrary({ render: false }), loadMangaBakaRecommendations(), loadComicRecommendations()]);
+    renderSmartHome();
+    el.smartHomeRefresh.disabled = false;
+  });
   el.finishReadingSession?.addEventListener("click", finishReadingSession);
   el.reportBadPanels?.addEventListener("click", reportBadPanels);
   el.redetectChapter?.addEventListener("click", redetectChapterPanels);

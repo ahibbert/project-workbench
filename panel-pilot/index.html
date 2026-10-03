@@ -180,6 +180,16 @@
             </button>
           </div>
         </header>
+        <section class="smart-home" id="smart-home" aria-labelledby="smart-home-title">
+          <div class="section-heading smart-home-heading">
+            <div>
+              <p class="kicker">Your reading, together</p>
+              <h2 id="smart-home-title">For right now</h2>
+            </div>
+            <button class="mini-button" id="smart-home-refresh" type="button">Refresh</button>
+          </div>
+          <div class="smart-home-rail" id="smart-home-rail" aria-live="polite"></div>
+        </section>
         <section class="library-content">
           <div class="library-tools"><input class="library-search" id="library-search" type="search" aria-label="Search library" placeholder="Search your library"><label class="library-sort"><span>Sort</span><select id="library-sort"><option value="recent">Recently read</option><option value="title">Title</option><option value="added">Date added</option><option value="progress">Progress</option></select></label></div>
           <div class="library-format-filters" id="library-format-filters" role="group" aria-label="Filter library by format">
@@ -355,6 +365,20 @@
             <button class="mini-button" id="moment-rediscovery-next" type="button">Another</button>
           </div>
           <div id="moment-rediscovery-card"></div>
+        </section>
+        <section class="moments-tools" aria-label="Filter saved moments">
+          <div class="moments-filter-row">
+            <input id="moments-search" type="search" placeholder="Search moments" aria-label="Search saved moments">
+            <select id="moments-title-filter" aria-label="Filter moments by title">
+              <option value="">All titles</option>
+            </select>
+          </div>
+          <div class="moments-type-filters" role="group" aria-label="Filter moments by type">
+            <button type="button" class="active" data-moment-type="all" aria-pressed="true">All</button>
+            <button type="button" data-moment-type="image" aria-pressed="false">Panels</button>
+            <button type="button" data-moment-type="text" aria-pressed="false">Highlights</button>
+            <button type="button" id="browse-book-highlights">Read highlights</button>
+          </div>
         </section>
         <div class="moments-grid" id="moments-grid" aria-live="polite">
           <div class="app-empty-state" id="moments-empty">

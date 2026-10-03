@@ -206,6 +206,21 @@ the cache directly, which keeps recovery working before a service worker has
 taken control of a newly installed PWA. Removing a Panel Pilot library item also
 removes that account's offline copy; it never deletes the shared CWA EPUB.
 
+## Moments and the personal Library home
+
+The Library starts with a personal, account-scoped **For right now** rail. It
+can surface Continue Reading, the next owned book in a numbered series, ready
+offline chapters, a rediscovered Moment, and a shortcut to recommendations.
+It is a convenience layer only: it never changes library membership, progress,
+or recommendations for another household account.
+
+Moments can be searched and filtered by title or type. They are organised into
+book highlights and panel moments, then by title. **Read highlights** opens a
+sequential browser with an exact **Read from here** action. A book highlight can
+also create a local PNG quotation card for the platform share sheet (or a
+download fallback); the quote is rendered in the browser and is never uploaded
+to a third-party service.
+
 ## Disabled behavior
 
 With `BOOKS_ENABLED=false`, Panels does not validate book credentials, create

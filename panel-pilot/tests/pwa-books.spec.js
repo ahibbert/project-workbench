@@ -355,6 +355,40 @@ test("a selected book passage saves to Moments and reopens at its exact EPUB loc
   await expect(page.frameLocator(".epub-viewport iframe").locator("body")).toContainText("Alice was beginning");
 });
 
+test("Moments filter, browse book highlights, and share a local quote card", async ({ page }) => {
+  const moments = [
+    { id: "book-a", momentType: "text", mediaFormat: "book", bookId: 1, title: "Alice's Adventures in Wonderland", chapterTitle: "Chapter I", quote: "Alice was beginning to get very tired.", locator: "epubcfi(/6/2!/4/2/1:0)", createdAt: "2026-10-03T00:00:00Z" },
+    { id: "book-b", momentType: "text", mediaFormat: "book", bookId: 1, title: "Alice's Adventures in Wonderland", chapterTitle: "Chapter II", quote: "The Rabbit actually took a watch out of its waistcoat-pocket.", locator: "epubcfi(/6/4!/4/2/1:0)", createdAt: "2026-10-03T01:00:00Z" },
+    { id: "panel-a", momentType: "image", mediaFormat: "manga", title: "Kingdom", chapterTitle: "Chapter 1", imageUrl: "/api/moments/panel-a/image", width: 100, height: 200, byteSize: 100, createdAt: "2026-10-03T02:00:00Z" },
+  ];
+  await stubApp(page, { booksEnabled: true, moments });
+  await page.addInitScript(() => { window.__quoteShares = []; navigator.share = async (payload) => { window.__quoteShares.push(payload); }; navigator.canShare = () => true; });
+  await page.goto("/", { waitUntil: "networkidle" });
+  await page.locator("#nav-moments").click();
+  await expect(page.locator(".moments-collection-heading")).toHaveText([/Book highlights/, /Panel moments/]);
+  await page.getByRole("button", { name: "Highlights", exact: true }).click();
+  await expect(page.locator(".moments-collection")).toHaveCount(1);
+  await page.getByRole("button", { name: "Read highlights" }).click();
+  await expect(page.locator("#highlight-browser")).toContainText("Highlight 1 of 2");
+  await page.locator("#highlight-browser").getByRole("button", { name: "Next ›" }).click();
+  await expect(page.locator("#highlight-browser")).toContainText("Highlight 2 of 2");
+  await page.locator("#highlight-browser").getByRole("button", { name: "Share quote card" }).click();
+  await expect.poll(() => page.evaluate(() => window.__quoteShares.length)).toBe(1);
+  await expect(page.locator("#highlight-browser").getByRole("button", { name: "Close" })).toBeVisible();
+});
+
+test("Library home brings together resume, rediscovery, and the next recommendation", async ({ page }) => {
+  const moments = [{ id: "home-highlight", momentType: "text", mediaFormat: "book", bookId: 1, title: "Alice's Adventures in Wonderland", chapterTitle: "Chapter I", quote: "Alice was beginning to get very tired.", locator: "epubcfi(/6/2!/4/2/1:0)", createdAt: "2026-10-03T00:00:00Z" }];
+  await stubApp(page, { booksEnabled: true, moments, progressState: { current: { locator: "epubcfi(/6/2!/4/2/1:0)", progression: 0.2, updatedAt: "2026-10-03T01:00:00Z" } } });
+  await page.goto("/", { waitUntil: "networkidle" });
+  await expect(page.locator("#smart-home-rail")).toContainText("Continue");
+  await expect(page.locator("#smart-home-rail")).toContainText("Rediscover");
+  await expect(page.locator("#smart-home-rail")).toContainText("Try next");
+  await page.locator("#smart-home-rail [data-kind='moment']").click();
+  await expect(page.locator("#moments-view")).toBeVisible();
+  await expect(page.locator("#moment-rediscovery-card")).toContainText("Alice was beginning");
+});
+
 test("books join the main Library filters without entering manga storage", async ({ page }) => {
   await stubApp(page, { booksEnabled: true });
   await page.goto("/", { waitUntil: "networkidle" });
