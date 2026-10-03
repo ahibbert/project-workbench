@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import re
+import threading
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urljoin, urlparse
@@ -18,6 +19,13 @@ class ShelfmarkError(RuntimeError):
         super().__init__(message)
         self.code = code
         self.status = status
+
+
+# Shelfmark v1.4.0 reuses a single IRC socket and fails concurrent searches with
+# ConcurrentObjectUseError. Panel Pilot is a small household app, so serializing
+# release discovery is both cheap and safer than allowing one search to cancel
+# another midway through its DCC result transfer.
+_RELEASE_SEARCH_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -262,22 +270,23 @@ class ShelfmarkClient:
             "book_id": _text(provider_book_id, 300),
             "content_type": "ebook",
         }
-        payload = self._request("/api/releases", query=query, timeout_seconds=345)
-        releases = normalize_releases(payload)
+        with _RELEASE_SEARCH_LOCK:
+            payload = self._request("/api/releases", query=query, timeout_seconds=345)
+            releases = normalize_releases(payload)
 
-        # Shelfmark's generic plan can make IRC queries overly exact (notably when a
-        # metadata title contains a subtitle). A short title + surname query produces
-        # genuinely independent DCC results without exposing IRC commands to the client.
-        manual_query = _manual_irc_query(title, authors)
-        if manual_query and not any(item.get("source") == "irc" for item in releases):
-            try:
-                irc_payload = self._request("/api/releases", query={
-                    **query, "source": "irc", "manual_query": manual_query,
-                }, timeout_seconds=120)
-            except ShelfmarkError:
-                irc_payload = None
-            if irc_payload is not None:
-                releases.extend(normalize_releases(irc_payload))
+            # Shelfmark's generic plan can make IRC queries overly exact (notably when a
+            # metadata title contains a subtitle). A short title + surname query produces
+            # genuinely independent DCC results without exposing IRC commands to the client.
+            manual_query = _manual_irc_query(title, authors)
+            if manual_query and not any(item.get("source") == "irc" for item in releases):
+                try:
+                    irc_payload = self._request("/api/releases", query={
+                        **query, "source": "irc", "manual_query": manual_query,
+                    }, timeout_seconds=120)
+                except ShelfmarkError:
+                    irc_payload = None
+                if irc_payload is not None:
+                    releases.extend(normalize_releases(irc_payload))
 
         unique: dict[tuple[str, str], dict[str, Any]] = {}
         for release in releases:
