@@ -30,6 +30,7 @@ async function stubApp(page, {
   removed = [],
   progressState = { current: null },
   progressWrites = [],
+  progressResponder = null,
   downloads = [],
   recommendations = null,
   bookSearchQueries = [],
@@ -71,6 +72,13 @@ async function stubApp(page, {
     if (url.pathname === "/api/books/1/progress" && route.request().method() === "POST") {
       const incoming = route.request().postDataJSON();
       progressWrites.push(incoming);
+      if (progressResponder) {
+        const response = await progressResponder({ incoming, index: progressWrites.length - 1 });
+        if (response?.status && response.status >= 400) {
+          await route.fulfill({ status: response.status, contentType: "application/json", body: JSON.stringify(response.body || { error: "Offline" }) });
+          return;
+        }
+      }
       progressState.current = { ...incoming, bookId: 1, revision: (progressState.current?.revision || 0) + 1, updatedAt: new Date().toISOString() };
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ progress: progressState.current }) });
       return;
@@ -724,7 +732,7 @@ test("iOS-style content touches always escape distraction-free reading in both f
     }
     await tapContent();
     await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "false");
-    await expect(page.getByRole("button", { name: "Show reader controls" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Show reader controls", exact: true })).toBeVisible();
     await page.waitForTimeout(400);
     await tapContent();
     await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "true");
@@ -733,6 +741,174 @@ test("iOS-style content touches always escape distraction-free reading in both f
 
   await tapContent();
   await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "false");
-  await page.getByRole("button", { name: "Show reader controls" }).click();
+  await page.getByRole("button", { name: "Show reader controls", exact: true }).click();
+  await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "true");
+});
+
+test("hidden paginated EPUB has an unobstructed parent centre escape zone", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await stubApp(page, { booksEnabled: true });
+  await openEpubReader(page);
+  const body = page.frameLocator(".epub-viewport iframe").locator("body");
+  await body.evaluate((element) => {
+    const view = element.ownerDocument.defaultView;
+    const point = { clientX: view.innerWidth / 2, clientY: view.innerHeight / 2, pointerId: 12, bubbles: true };
+    element.dispatchEvent(new PointerEvent("pointerdown", point));
+    element.dispatchEvent(new PointerEvent("pointerup", point));
+  });
+  await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "false");
+
+  const geometry = await page.locator(".epub-reader").evaluate((reader) => {
+    const stage = reader.querySelector(".epub-stage");
+    const zone = reader.querySelector(".epub-centre-restore");
+    const handle = reader.querySelector(".epub-restore-controls");
+    const viewport = reader.querySelector(".epub-viewport");
+    const stageRect = stage.getBoundingClientRect();
+    const zoneRect = zone.getBoundingClientRect();
+    const handleRect = handle.getBoundingClientRect();
+    const viewportRect = viewport.getBoundingClientRect();
+    const hit = document.elementFromPoint(zoneRect.left + zoneRect.width / 2, zoneRect.top + zoneRect.height / 2);
+    return {
+      zoneDisplay: getComputedStyle(zone).display,
+      zoneZ: Number(getComputedStyle(zone).zIndex),
+      leftRatio: (zoneRect.left - stageRect.left) / stageRect.width,
+      rightRatio: (zoneRect.right - stageRect.left) / stageRect.width,
+      centreHit: hit === zone,
+      contentClearsHandle: viewportRect.top >= handleRect.bottom - 1,
+    };
+  });
+  expect(geometry).toMatchObject({ zoneDisplay: "block", zoneZ: 4, centreHit: true, contentClearsHandle: true });
+  expect(geometry.leftRatio).toBeGreaterThanOrEqual(0.23);
+  expect(geometry.rightRatio).toBeLessThanOrEqual(0.77);
+
+  const zone = page.getByRole("button", { name: "Show reader controls from page centre" });
+  await zone.click();
+  await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "true");
+  await expect(zone).toBeHidden();
+
+  await page.locator(".epub-settings summary").click();
+  await page.getByLabel("Reading flow").selectOption("scrolled");
+  await page.locator(".epub-settings summary").click();
+  await expect(page.frameLocator(".epub-viewport iframe").locator("body")).toContainText("Alice was beginning");
+  await body.evaluate((element) => {
+    const view = element.ownerDocument.defaultView;
+    const point = { clientX: view.innerWidth / 2, clientY: view.innerHeight / 2, pointerId: 13, bubbles: true };
+    element.dispatchEvent(new PointerEvent("pointerdown", point));
+    element.dispatchEvent(new PointerEvent("pointerup", point));
+  });
+  await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "false");
+  await expect(zone).toBeHidden();
+});
+
+test("offline lifecycle recovery restores an exact CFI then reconciles canonically", async ({ page }) => {
+  let offline = false;
+  const progressWrites = [];
+  const progressState = { current: null };
+  await stubApp(page, {
+    booksEnabled: true,
+    progressWrites,
+    progressState,
+    progressResponder: async () => offline ? { status: 503 } : null,
+  });
+  await openEpubReader(page);
+  await expect.poll(() => progressWrites.length).toBeGreaterThan(0);
+  offline = true;
+  progressWrites.length = 0;
+  await page.getByRole("button", { name: "Next page" }).click();
+  await page.waitForTimeout(100);
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true })));
+  await expect.poll(() => progressWrites.length).toBeGreaterThan(0);
+  const cached = await page.evaluate(() => JSON.parse(localStorage.getItem("panel-pilot:book-position:1")));
+  expect(cached.locator).toMatch(/^epubcfi\(/);
+  expect(cached.baseRevision).toBe(progressState.current.revision);
+
+  await page.getByRole("button", { name: /Books library/ }).click();
+  offline = false;
+  progressWrites.length = 0;
+  await page.getByRole("button", { name: "Continue reading" }).click();
+  await expect(page.frameLocator(".epub-viewport iframe").locator("body")).toContainText("Alice was beginning");
+  await expect.poll(() => progressWrites.some((write) => write.locator === cached.locator), { timeout: 4000 }).toBe(true);
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("panel-pilot:book-position:1"))).toBeNull();
+});
+
+test("continuous EPUB edge and page keys move by a readable viewport before the spine", async ({ page }) => {
+  await page.setViewportSize({ width: 430, height: 932 });
+  await stubApp(page, { booksEnabled: true });
+  await openEpubReader(page);
+  await page.locator(".epub-settings summary").click();
+  await page.getByLabel("Reading flow").selectOption("scrolled");
+  await page.locator(".epub-settings summary").click();
+  const body = page.frameLocator(".epub-viewport iframe").locator("body");
+  await expect(body).toContainText("Alice was beginning");
+  await body.evaluate((element) => { element.style.minHeight = "4000px"; });
+  const scrollPosition = () => page.locator(".epub-viewport").evaluate((viewport) => {
+    const container = viewport.querySelector(".epub-container");
+    const frame = viewport.querySelector("iframe");
+    return { outer: container?.scrollTop || 0, inner: frame?.contentWindow?.scrollY || 0, height: container?.clientHeight || frame?.clientHeight || 0 };
+  });
+  const before = await scrollPosition();
+  await page.getByRole("button", { name: "Next page" }).click();
+  await expect.poll(async () => {
+    const current = await scrollPosition();
+    return Math.max(current.outer, current.inner);
+  }).toBeGreaterThan(Math.max(before.outer, before.inner));
+  const afterEdge = await scrollPosition();
+  expect(Math.max(afterEdge.outer, afterEdge.inner) - Math.max(before.outer, before.inner)).toBeLessThanOrEqual(afterEdge.height * 0.95 + 2);
+  await page.locator(".epub-viewport").evaluate((viewport) => {
+    viewport.querySelector(".epub-container")?.scrollTo({ top: 0 });
+    viewport.querySelector("iframe")?.contentWindow?.scrollTo({ top: 0 });
+  });
+  await body.evaluate((element) => element.dispatchEvent(new KeyboardEvent("keydown", { key: "PageDown", bubbles: true, cancelable: true })));
+  await expect.poll(async () => Math.max((await scrollPosition()).outer, (await scrollPosition()).inner)).toBeGreaterThan(0);
+  const afterDown = await scrollPosition();
+  await body.evaluate((element) => element.dispatchEvent(new KeyboardEvent("keydown", { key: "PageUp", bubbles: true, cancelable: true })));
+  await expect.poll(async () => Math.max((await scrollPosition()).outer, (await scrollPosition()).inner)).toBeLessThan(Math.max(afterDown.outer, afterDown.inner));
+  await body.evaluate((element) => element.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true })));
+  await expect.poll(async () => Math.max((await scrollPosition()).outer, (await scrollPosition()).inner)).toBeGreaterThan(0);
+});
+
+test("iPad viewport and orientation reflow preserve the exact EPUB position", async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 1366 });
+  const progressWrites = [];
+  await stubApp(page, { booksEnabled: true, progressWrites });
+  await openEpubReader(page);
+  await expect.poll(() => progressWrites.length).toBeGreaterThan(0);
+  const exact = progressWrites.at(-1).locator;
+  progressWrites.length = 0;
+  await page.evaluate(() => window.visualViewport?.dispatchEvent(new Event("resize")));
+  await expect.poll(() => progressWrites.length, { timeout: 3000 }).toBeGreaterThan(0);
+  expect(progressWrites.at(-1).locator).toBe(exact);
+  progressWrites.length = 0;
+  await page.setViewportSize({ width: 1366, height: 1024 });
+  await page.evaluate(() => window.dispatchEvent(new Event("orientationchange")));
+  await expect.poll(() => progressWrites.length, { timeout: 3000 }).toBeGreaterThan(0);
+  expect(progressWrites.at(-1).locator).toBe(exact);
+});
+
+test("long press and selected EPUB text never trigger taps", async ({ page }) => {
+  await stubApp(page, { booksEnabled: true });
+  await openEpubReader(page);
+  const body = page.frameLocator(".epub-viewport iframe").locator("body");
+  const paragraph = page.frameLocator(".epub-viewport iframe").locator("p").first();
+  const point = await body.evaluate((element) => {
+    const view = element.ownerDocument.defaultView;
+    return { clientX: view.innerWidth / 2, clientY: view.innerHeight / 2 };
+  });
+  await paragraph.dispatchEvent("pointerdown", { ...point, pointerId: 44 });
+  await page.waitForTimeout(550);
+  await paragraph.dispatchEvent("pointerup", { ...point, pointerId: 44 });
+  await paragraph.dispatchEvent("click", point);
+  await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "true");
+  await body.evaluate((element) => {
+    const document = element.ownerDocument;
+    const text = (element.querySelector("p") || element).firstChild;
+    const range = document.createRange();
+    range.selectNodeContents(text?.nodeType === Node.TEXT_NODE ? text.parentNode : (element.querySelector("p") || element));
+    const selection = document.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    const view = document.defaultView;
+    (element.querySelector("p") || element).dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: view.innerWidth / 2, clientY: view.innerHeight / 2 }));
+  });
   await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "true");
 });

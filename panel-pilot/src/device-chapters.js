@@ -122,7 +122,7 @@ function openDatabase() {
     }, { once: true });
     request.addEventListener("blocked", () => {
       databasePromise = null;
-      reject(new Error("The device chapter library is blocked by another open Panel Pilot tab."));
+      reject(new Error("The device chapter library is blocked by another open Panels tab."));
     }, { once: true });
   });
   return databasePromise;

@@ -156,6 +156,26 @@ test("two-finger overview springs back and leaves continuous webtoon scrolling u
   expect(await page.evaluate(() => window.PanelPilot.getReaderInteractionDiagnostics().overviewActive)).toBe(false);
 });
 
+test("landscape touch iPads keep distraction-free mode and keyboard recovery", async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 1366, height: 1024 }, hasTouch: true });
+  const page = await context.newPage();
+  await openDemo(page);
+
+  await expect(page.locator("body")).toHaveClass(/\breader-focus\b/);
+  const initialPanel = await page.locator("#panel-stat").textContent();
+  await page.keyboard.press("PageDown");
+  await expect(page.locator("#panel-stat")).not.toHaveText(initialPanel || "");
+  await page.keyboard.press("PageUp");
+  await expect(page.locator("#panel-stat")).toHaveText(initialPanel || "");
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#reader-view")).toHaveClass(/\bactive\b/);
+  await expect(page.locator("body")).not.toHaveClass(/\breader-chrome-hidden\b/);
+  await page.keyboard.press("Escape");
+  await expect(page.locator("#reader-view")).not.toHaveClass(/\bactive\b/);
+  await page.close({ runBeforeUnload: false });
+  await context.close();
+});
+
 test("cinematic motion adapts the pan and respects both its toggle and reduced-motion", async ({ page }) => {
   await openDemo(page, { readerMotion: "smooth", cinematicMotion: true });
   await page.locator("#next-panel").click({ force: true });

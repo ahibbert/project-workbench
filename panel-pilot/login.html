@@ -43,9 +43,9 @@
           <input name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus>
         </label>
         <label>
-          <span>Password</span>
+          <span id="login-password-label">Password</span>
           <span class="password-row">
-            <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+            <input id="login-password" name="password" type="password" autocomplete="current-password" aria-labelledby="login-password-label" required>
             <button id="toggle-password" type="button" aria-controls="login-password" aria-pressed="false">Show</button>
           </span>
         </label>

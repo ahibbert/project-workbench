@@ -38,6 +38,7 @@ test("a failed chapter can migrate to another source without losing reading stat
   const newChapter = chapter(newManga.id, 90142);
   const mangaLibraryState = new Map([[oldManga.id, true], [newManga.id, false]]);
   const sourceSearches = [];
+  const sourceSearchPages = [];
   const libraryUpdates = [];
   let sharedLibrary = [{
     mangaId: oldManga.id,
@@ -113,12 +114,19 @@ test("a failed chapter can migrate to another source without losing reading stat
         data = { fetchChapters: { chapters: mangaId === oldManga.id ? [oldChapter] : [newChapter] } };
       } else if (query.includes("GET_SOURCE_MANGAS_FETCH")) {
         const sourceId = Number(variables.input?.source);
-        if (variables.input?.type === "SEARCH") sourceSearches.push(sourceId);
+        const searchPage = Number(variables.input?.page) || 1;
+        if (variables.input?.type === "SEARCH") {
+          sourceSearches.push(sourceId);
+          sourceSearchPages.push({ sourceId, page: searchPage });
+        }
+        const pagedNewSourceResults = searchPage === 1
+          ? [{ ...newManga, id: 900, title: "Golden Kamuy Anthology" }]
+          : [newManga];
         data = {
           fetchSourceManga: {
-            hasNextPage: false,
+            hasNextPage: variables.input?.type === "SEARCH" && sourceId === newSource.id && searchPage === 1,
             mangas: variables.input?.type === "SEARCH"
-              ? sourceId === newSource.id ? [newManga] : sourceId === weakSource.id ? [weakManga] : []
+              ? sourceId === newSource.id ? pagedNewSourceResults : sourceId === weakSource.id ? [weakManga] : []
               : [],
           },
         };
@@ -234,9 +242,10 @@ test("a failed chapter can migrate to another source without losing reading stat
   await page.locator("#reader-error-source").click();
 
   await expect(page.locator("#recommendation-context-title")).toHaveText("Move Golden Kamuy to another source");
-  const replacement = page.locator("#manga-results .manga-card").filter({
-    has: page.locator(".manga-cover-eyebrow", { hasText: /^Reliable Manga \(en\)$/ }),
-  });
+  await page.getByRole("button", { name: /load more results/i }).click();
+  const replacement = page.locator("#manga-results .manga-card")
+    .filter({ has: page.locator(".manga-cover-eyebrow", { hasText: /^Reliable Manga \(en\)$/ }) })
+    .filter({ has: page.locator(".manga-cover-title", { hasText: /^Golden Kamuy$/ }) });
   await expect(replacement).toBeVisible();
   await expect(page.locator("#manga-results .manga-card").first()).toContainText("Reliable Manga");
   await expect(replacement).toContainText("Recommended · 92/100 · established");
@@ -256,6 +265,7 @@ test("a failed chapter can migrate to another source without losing reading stat
   expect(sourceSearches).toContain(newSource.id);
   expect(sourceSearches).toContain(weakSource.id);
   expect(sourceSearches).not.toContain(oldSource.id);
+  expect(sourceSearchPages).toContainEqual({ sourceId: newSource.id, page: 2 });
 
   await expect.poll(async () => page.evaluate(() => {
     const items = JSON.parse(localStorage.getItem("panel-pilot-library") || "[]");

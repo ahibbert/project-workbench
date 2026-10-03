@@ -115,6 +115,23 @@ class StaticServingTests(unittest.TestCase):
             with urlopen(f"{self.base_url}/login", timeout=5) as response:
                 self.assertEqual(response.read(), b"built login")
 
+    def test_historical_worker_url_serves_current_worker_without_auth(self):
+        with mock.patch.dict(
+            os.environ,
+            {"PANEL_PILOT_AUTH_USER": "reader", "PANEL_PILOT_AUTH_PASSWORD": "secret"},
+            clear=False,
+        ):
+            with urlopen(f"{self.base_url}/src/sw.js", timeout=5) as response:
+                self.assertEqual(response.status, 200)
+                body = response.read().decode("utf-8")
+                self.assertIn('self.addEventListener("install"', body)
+                self.assertIn("self.skipWaiting()", body)
+                self.assertIn('key !== deviceCacheName', body)
+                self.assertNotIn("caches.delete(deviceCacheName)", body)
+                self.assertEqual(response.headers["Content-Type"], "text/javascript; charset=utf-8")
+                self.assertEqual(response.headers["Cache-Control"], "no-store")
+                self.assertEqual(response.headers["Service-Worker-Allowed"], "/")
+
     def test_security_headers_are_sent_without_permissive_cors(self):
         request = panel_pilot_server.Request(
             f"{self.base_url}/",

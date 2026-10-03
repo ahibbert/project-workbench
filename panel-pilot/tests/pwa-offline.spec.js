@@ -279,6 +279,10 @@ test("reconnect stays single-flight and reports server failure without reloading
     await page.addInitScript(() => {
       const loads = Number(sessionStorage.getItem("panel-pilot-offline-loads") || 0);
       sessionStorage.setItem("panel-pilot-offline-loads", String(loads + 1));
+      localStorage.setItem("panel-pilot-settings", JSON.stringify({
+        baseUrl: "http://127.0.0.1:65530",
+        suwayomiConfigured: true,
+      }));
     });
     await establishControlledApp(page, fixture.origin);
     const loadsBeforeTransition = await page.evaluate(
@@ -309,6 +313,10 @@ test("reconnect stays single-flight and reports server failure without reloading
     await expect(page.locator("#network-status-note")).toContainText(/did not respond/i);
     await expect(page.locator("#retry-network")).toBeVisible();
     await expect(page.locator("#retry-network")).toBeEnabled();
+    await page.locator("#nav-browse").click();
+    await expect(page.locator("#source-count")).toHaveText("Suwayomi temporarily unavailable");
+    await expect(page.locator("#browse-open-settings")).toHaveText("Retry connection");
+    await expect(page.locator("#browse-open-settings")).toHaveAccessibleName(/retry.*unavailable.*suwayomi/i);
     expect(fixture.suwayomiProbeRequestCount()).toBe(1);
     expect(await page.evaluate(() => Number(sessionStorage.getItem("panel-pilot-offline-loads"))))
       .toBe(loadsBeforeTransition);

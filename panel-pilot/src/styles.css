@@ -1823,7 +1823,7 @@ body.reader-active .app-nav {
   display: none;
 }
 
-@media (max-width: 1024px), (max-height: 540px) and (pointer: coarse) {
+@media (any-pointer: coarse), (max-width: 1024px), (max-height: 540px) {
   .app-shell {
     padding: 0.7rem;
   }
@@ -2174,6 +2174,21 @@ body.has-network-status.reader-focus .reader-topbar {
 
 .cover-grid > .app-empty-state {
   grid-column: 1 / -1;
+}
+
+.browse-pagination {
+  grid-column: 1 / -1;
+  display: grid;
+  justify-items: center;
+  gap: 0.35rem;
+  padding: 0.4rem 0 0.85rem;
+  color: var(--muted);
+  text-align: center;
+  font-size: 0.8rem;
+}
+
+.browse-pagination .browse-load-more {
+  width: min(100%, 24rem);
 }
 
 .app-empty-state,

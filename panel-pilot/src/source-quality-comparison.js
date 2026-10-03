@@ -11,6 +11,7 @@ import {
 const CANDIDATE_LIMIT = 5;
 const SAMPLES_PER_CANDIDATE = 2;
 const IMAGE_BYTE_LIMIT = 12 * 1024 * 1024;
+const SOURCE_SEARCH_PAGE_LIMIT = 20;
 
 function clamp(value, minimum = 0, maximum = 1) {
   return Math.min(maximum, Math.max(minimum, Number(value) || 0));
@@ -338,11 +339,19 @@ export function createSourceQualityComparison(adapter) {
       3,
       async (source) => {
         try {
-          const mangas = await adapter.searchSource(source, migration.title, signal);
-          const manga = mangas.find((item) => normalizeTitle(item.title) === desiredTitle);
-          if (manga) matches.push({ manga: { ...manga, sourceId: manga.sourceId || source.id }, source });
+          for (let page = 1; page <= SOURCE_SEARCH_PAGE_LIMIT; page += 1) {
+            const response = await adapter.searchSource(source, migration.title, page, signal);
+            const mangas = Array.isArray(response) ? response : (response?.mangas || []);
+            const manga = mangas.find((item) => normalizeTitle(item.title) === desiredTitle);
+            if (manga) {
+              matches.push({ manga: { ...manga, sourceId: manga.sourceId || source.id }, source });
+              break;
+            }
+            const hasNextPage = Array.isArray(response) ? false : Boolean(response?.hasNextPage);
+            if (!hasNextPage || !mangas.length) break;
+          }
         } catch (error) {
-          if (error?.name === "AbortError") throw error;
+          if (["AbortError", "ReaderLoadCancelled"].includes(error?.name)) throw error;
         }
       },
     );
@@ -387,7 +396,7 @@ export function createSourceQualityComparison(adapter) {
         candidate.status = candidate.samples.length ? "ready" : "failed";
       }
     } catch (error) {
-      if (error?.name === "AbortError") throw error;
+      if (["AbortError", "ReaderLoadCancelled"].includes(error?.name)) throw error;
       candidate.status = "failed";
       candidate.error = adapter.friendlyError(error);
     }
@@ -485,7 +494,7 @@ export function createSourceQualityComparison(adapter) {
       ui.retry.hidden = false;
       render();
     } catch (error) {
-      if (error?.name === "AbortError" || activeGeneration !== generation) return;
+      if (["AbortError", "ReaderLoadCancelled"].includes(error?.name) || activeGeneration !== generation) return;
       setProgress(100, `Comparison stopped: ${adapter.friendlyError(error)}`);
       ui.retry.hidden = false;
     } finally {

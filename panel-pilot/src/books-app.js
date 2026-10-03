@@ -213,7 +213,7 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
       const remove = element("button", "danger-button book-remove-button", "Remove from library");
       remove.type = "button";
       remove.addEventListener("click", async () => {
-        if (!window.confirm(`Remove “${book.title}” from Panel Pilot?\n\nThe CWA copy will be kept, but reading progress and the local EPUB cache will be removed.`)) return;
+        if (!window.confirm(`Remove “${book.title}” from Panels?\n\nThe CWA copy will be kept, but reading progress and the local EPUB cache will be removed.`)) return;
         remove.disabled = true;
         try {
           await request(`/api/books/${encodeURIComponent(book.id)}`, { method: "DELETE" });

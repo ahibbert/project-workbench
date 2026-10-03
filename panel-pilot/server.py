@@ -564,6 +564,34 @@ PROTECTED_STATIC_PATHS = {
     "/vite.config.js",
 }
 PROTECTED_STATIC_PREFIXES = ("/.git/", "/__pycache__/", "/data/", "/tests/", "/tools/")
+LEGACY_SERVICE_WORKER_BRIDGE = b"""const shellCachePattern = /^panel-pilot-v\\d+$/;
+const deviceCacheName = "panels-device-chapters-v1";
+const devicePathPrefix = "/__panels_device_chapters/v1/";
+self.addEventListener("install", (event) => event.waitUntil(self.skipWaiting()));
+self.addEventListener("activate", (event) => event.waitUntil((async () => {
+  const keys = await caches.keys();
+  await Promise.all(keys.filter((key) => key !== deviceCacheName && shellCachePattern.test(key)).map((key) => caches.delete(key)));
+  await self.clients.claim();
+})()));
+self.addEventListener("message", (event) => {
+  if (event.data?.type === "SKIP_WAITING") self.skipWaiting();
+  if (event.data?.type === "DEVICE_CHAPTER_CAPABILITY") event.ports?.[0]?.postMessage({ supported: true, version: 1 });
+  if (event.data?.type === "APP_LIFECYCLE_CAPABILITY") event.ports?.[0]?.postMessage({ supported: true, protocolVersion: 0, buildId: "legacy-bridge" });
+});
+self.addEventListener("fetch", (event) => {
+  const request = event.request;
+  if (request.method !== "GET") return;
+  const url = new URL(request.url);
+  if (url.origin !== self.location.origin) return;
+  if (url.pathname.startsWith(devicePathPrefix)) {
+    event.respondWith(caches.open(deviceCacheName).then(async (cache) => (
+      await cache.match(request, { ignoreSearch: true }) || new Response("Device chapter media not found", { status: 404 })
+    )));
+    return;
+  }
+  event.respondWith(fetch(request));
+});
+"""
 
 
 def resolve_static_root():
@@ -2685,6 +2713,17 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def serve_legacy_service_worker_bridge(self):
+        """Update workers installed from the historical /src/sw.js URL."""
+        body = LEGACY_SERVICE_WORKER_BRIDGE
+        self.send_response(200)
+        self.send_header("Content-Type", "text/javascript; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Service-Worker-Allowed", "/")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def safe_next_path(self, value):
         return value if value.startswith("/") and not value.startswith("//") else "/"
 
@@ -2970,6 +3009,9 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
+        if parsed.path == "/src/sw.js":
+            self.serve_legacy_service_worker_bridge()
+            return
         if self.protected_static_request(parsed.path):
             self.send_error(404, "Not found")
             return

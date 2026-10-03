@@ -101,7 +101,7 @@ export function createLibraryCard(book, { createCoverButton, navigate, statusLab
   remove.className = "danger-card-action";
   remove.textContent = "Remove from library";
   remove.addEventListener("click", async () => {
-    if (!window.confirm(`Remove “${book.title || "this book"}” from Panel Pilot?\n\nThe CWA copy will be kept, but reading progress and the local EPUB cache will be removed.`)) return;
+    if (!window.confirm(`Remove “${book.title || "this book"}” from Panels?\n\nThe CWA copy will be kept, but reading progress and the local EPUB cache will be removed.`)) return;
     remove.disabled = true;
     try {
       await request(`/api/books/${encodeURIComponent(book.id)}`, { method: "DELETE" });

@@ -225,8 +225,10 @@ async function installPolishFixture(page, { holdStoredChapters = false, detailCh
           }
           const results = requested === "Focus cards"
             ? [searchManga("First Focus Card", 9101), searchManga("Second Focus Card", 9102)]
+            : requested === "Paged results"
+              ? [searchManga(input.page === 1 ? "Paged result one" : "Paged result two", input.page === 1 ? 9301 : 9302)]
             : [searchManga(`${requested} result`, requested === "First request" ? 9201 : 9202)];
-          data = { fetchSourceManga: { hasNextPage: false, mangas: results } };
+          data = { fetchSourceManga: { hasNextPage: requested === "Paged results" && input.page === 1, mangas: results } };
         }
       } else if (query.includes("GET_MANGA_CHAPTERS_FETCH")) {
         data = { fetchChapters: { chapters: detailChapters || [chapterFor(Number(variables.input?.mangaId) || 9101)] } };
@@ -406,6 +408,21 @@ test("a blank replacement search cancels an older request instead of restoring s
   await expect(page.locator("#search-source")).toBeEnabled();
 });
 
+test("Browse search exposes accessible load-more pagination and appends later source pages", async ({ page }) => {
+  await installPolishFixture(page);
+  await openReadyBrowse(page);
+
+  await page.locator("#search-query").fill("Paged results");
+  await page.locator("#search-query").press("Enter");
+  await expect(page.locator("#manga-results")).toContainText("Paged result one");
+  const loadMore = page.getByRole("button", { name: /load more results from 1 source/i });
+  await expect(loadMore).toBeVisible();
+  await loadMore.click();
+  await expect(page.locator("#manga-results .browse-card")).toHaveCount(2);
+  await expect(page.locator("#manga-results")).toContainText("Paged result two");
+  await expect(page.locator(".browse-pagination")).toContainText("All 2 available results are loaded");
+});
+
 test("closing manga detail restores focus to the exact initiating Browse card", async ({ page }) => {
   await installPolishFixture(page);
   await openReadyBrowse(page);
@@ -541,6 +558,13 @@ test("library formats filter titles, persist corrections, and detach comics from
   }))).toEqual({ comic: "comic", manga: "manga", webtoon: "webtoon" });
   await expect(allFormats).toHaveAttribute("aria-pressed", "false");
   await expect(page.locator("#library-format-filters")).toHaveAccessibleName(/library.*format/i);
+});
+
+test("library empty copy names the selected format and reading group", async ({ page }) => {
+  await installPolishFixture(page);
+  await page.goto("/");
+  await page.locator('[data-library-format-filter="webtoon"]').click();
+  await expect(page.locator("#library-list")).toContainText("No webtoons are currently in Reading or Rereading.");
 });
 
 test("direct library actions repaint immediately instead of leaving an in-use card stale", async ({ page }) => {

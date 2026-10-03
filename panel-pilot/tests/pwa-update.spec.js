@@ -14,21 +14,45 @@ const contentTypes = {
   ".png": "image/png",
   ".webmanifest": "application/manifest+json; charset=utf-8",
 };
-function legacyWorker(cacheName) {
+function legacyWorker(cacheName, { cacheNavigation = false } = {}) {
   return `
   const cacheName = ${JSON.stringify(cacheName)};
   self.addEventListener("install", (event) => {
-    event.waitUntil(caches.open(cacheName).then((cache) => cache.put(
-      "/legacy-cache-marker",
-      new Response("legacy"),
-    )));
+    event.waitUntil(caches.open(cacheName).then(async (cache) => {
+      await cache.put("/legacy-cache-marker", new Response("legacy"));
+      ${cacheNavigation ? 'await cache.put("/", new Response("<!doctype html><title>Legacy v52 shell</title><main><h1>Legacy v52 shell</h1></main>", { headers: { "Content-Type": "text/html" } }));' : ""}
+    }));
     self.skipWaiting();
   });
   self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
+  ${cacheNavigation ? `self.addEventListener("fetch", (event) => {
+    const url = new URL(event.request.url);
+    if (event.request.mode === "navigate" && url.pathname === "/") {
+      event.respondWith(caches.open(cacheName).then((cache) => cache.match("/")));
+    }
+  });` : ""}
 `;
 }
 
-function startMigrationServer({ failWorker = false, legacyCacheName = "panel-pilot-v103", serverBuildId = "" } = {}) {
+function bridgeWorker() {
+  return `
+  const shellCachePattern = /^panel-pilot-v\\d+$/;
+  const deviceCacheName = "panels-device-chapters-v1";
+  self.addEventListener("install", (event) => event.waitUntil(self.skipWaiting()));
+  self.addEventListener("activate", (event) => event.waitUntil((async () => {
+    const keys = await caches.keys();
+    await Promise.all(keys.filter((key) => key !== deviceCacheName && shellCachePattern.test(key)).map((key) => caches.delete(key)));
+    await self.clients.claim();
+  })()));
+  self.addEventListener("fetch", (event) => {
+    if (event.request.method === "GET" && new URL(event.request.url).origin === self.location.origin) {
+      event.respondWith(fetch(event.request));
+    }
+  });
+  `;
+}
+
+function startMigrationServer({ failWorker = false, legacyCacheName = "panel-pilot-v103", serverBuildId = "", historicalWorker = false, requireSession = false } = {}) {
   let servePhaseOneWorker = false;
   const server = createServer((request, response) => {
     const url = new URL(request.url, "http://127.0.0.1");
@@ -83,12 +107,27 @@ function startMigrationServer({ failWorker = false, legacyCacheName = "panel-pil
       return;
     }
 
-    if (url.pathname === "/sw.js" && !servePhaseOneWorker) {
+    if (url.pathname === "/src/sw.js" && historicalWorker) {
+      response.writeHead(200, {
+        "Content-Type": "text/javascript; charset=utf-8",
+        "Cache-Control": "no-store",
+        "Service-Worker-Allowed": "/",
+      });
+      response.end(servePhaseOneWorker ? bridgeWorker() : legacyWorker(legacyCacheName, { cacheNavigation: true }));
+      return;
+    }
+
+    if (url.pathname === "/sw.js" && !historicalWorker && !servePhaseOneWorker) {
       response.writeHead(200, {
         "Content-Type": "text/javascript; charset=utf-8",
         "Service-Worker-Allowed": "/",
       });
       response.end(legacyWorker(legacyCacheName));
+      return;
+    }
+
+    if (requireSession && !/(?:^|;\s*)panel_pilot_session=migration-test(?:;|$)/.test(String(request.headers.cookie || ""))) {
+      response.writeHead(303, { Location: `/login?next=${encodeURIComponent(url.pathname)}` }).end();
       return;
     }
 
@@ -256,11 +295,13 @@ test("a legacy v52 shell is repaired without deleting downloaded chapters or dev
   const fixture = await startMigrationServer({
     legacyCacheName: "panel-pilot-v52",
     serverBuildId: "server-build-newer-than-client",
+    historicalWorker: true,
+    requireSession: true,
   });
   try {
     await page.goto(`${fixture.origin}/legacy.html`);
     await page.evaluate(async () => {
-      await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+      await navigator.serviceWorker.register("/src/sw.js", { scope: "/" });
       await navigator.serviceWorker.ready;
       if (!navigator.serviceWorker.controller) {
         await new Promise((resolveController) => {
@@ -331,17 +372,24 @@ test("a legacy v52 shell is repaired without deleting downloaded chapters or dev
           transaction.onerror = () => rejectDatabase(transaction.error);
         };
       });
-      await fetch("/__switch-to-phase-one", { method: "POST" });
     });
 
     await page.goto(`${fixture.origin}/`, { waitUntil: "load" });
-    await expect(page.locator("#app-update")).toBeVisible({ timeout: 15_000 });
-    await expect(page.locator("#app-update-note")).toContainText(/older|newer|update/i);
-    const updatedNavigation = page.waitForEvent("load");
-    await page.locator("#app-update").click();
-    await updatedNavigation;
-    await page.waitForTimeout(750);
+    await expect(page.getByRole("heading", { name: "Legacy v52 shell" })).toBeVisible();
+    await page.evaluate(async () => {
+      const registration = await navigator.serviceWorker.getRegistration("/");
+      const oldController = navigator.serviceWorker.controller;
+      const changed = new Promise((resolve) => navigator.serviceWorker.addEventListener("controllerchange", resolve, { once: true }));
+      await fetch("/__switch-to-phase-one", { method: "POST" });
+      await registration.update();
+      if (navigator.serviceWorker.controller === oldController) await changed;
+    });
     await expect.poll(() => page.evaluate(async () => (await caches.keys()).includes("panel-pilot-v52"))).toBe(false);
+
+    await page.goto(`${fixture.origin}/`, { waitUntil: "load" });
+    await expect(page).toHaveURL(/\/login\?next=/);
+    await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Password", exact: true })).toHaveCount(1);
 
     const preserved = await page.evaluate(async () => {
       const cached = await (await caches.open("panels-device-chapters-v1")).match(
@@ -368,6 +416,19 @@ test("a legacy v52 shell is repaired without deleting downloaded chapters or dev
     expect(preserved.library).toEqual([expect.objectContaining({ mangaId: 52, pageIndex: 8 })]);
     expect(preserved.position).toEqual({ pageIndex: 8 });
     expect(preserved.caches).toContain("panels-device-chapters-v1");
+
+    await page.context().addCookies([{
+      name: "panel_pilot_session",
+      value: "migration-test",
+      url: fixture.origin,
+    }]);
+    await page.goto(`${fixture.origin}/`, { waitUntil: "load" });
+    await expect(page.locator("#library-view")).toHaveClass(/\bactive\b/);
+    await expect.poll(() => page.evaluate(async () => {
+      const registration = await navigator.serviceWorker.getRegistration("/");
+      return [registration?.active, registration?.waiting, registration?.installing]
+        .some((worker) => worker?.scriptURL.endsWith("/sw.js"));
+    }), { timeout: 15_000 }).toBe(true);
   } finally {
     await fixture.close();
   }

@@ -10,16 +10,16 @@ const budgets = {
   // and long-series chapter controls (a reviewed two-KiB interaction envelope).
   indexHtml: 55 * 1024,
   // Includes offline milestones, source intelligence, the Detection Lab,
-  // per-series calibration, spread handling, enhanced-reader controls, and
-  // the small feature-flag/books lazy-loader bootstrap and shared navigation hooks.
-  mainJavaScript: 400 * 1024,
+  // per-series calibration, spread handling, enhanced-reader controls,
+  // paginated source search, and the feature-flag/books navigation hooks.
+  mainJavaScript: 404 * 1024,
   mainCss: 72 * 1024,
   // Includes the integrated Books controls, cross-format resume, authentication
-  // boundary, and the unified Library/chapter-list polish (reviewed 9 KiB envelope).
-  criticalPath: 541 * 1024,
+  // boundary, unified Library/chapter-list polish, and paginated source search.
+  criticalPath: 546 * 1024,
   // The installable shell precaches the authentication lifecycle and unified
-  // Library controls so both recovery and offline library management still work.
-  installShell: 781 * 1024,
+  // Library and paginated Browse controls so recovery and offline management work.
+  installShell: 787 * 1024,
   domContentLoadedMs: 1_500,
   loadMs: 2_000,
   applicationReadyMs: 2_500,

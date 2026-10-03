@@ -9,9 +9,9 @@ const distRoot = join(projectRoot, "dist");
 const iconSetBudgetBytes = 300_000;
 // Includes offline achievement artwork, reading sessions, source selection,
 // repair controls, the Detection Lab, calibration models, enhanced-reader UI,
-// the feature-flagged Books bootstrap, and unified Library/chapter controls
-// (the EPUB reader and app lifecycle remain lazy).
-const installShellBudgetBytes = 800_000;
+// the feature-flagged Books bootstrap, unified Library/chapter controls, and
+// paginated multi-source Browse results (the EPUB reader and lifecycle stay lazy).
+const installShellBudgetBytes = 806_000;
 
 function readSource(path) {
   return readFileSync(join(projectRoot, path), "utf8");
