@@ -2081,6 +2081,14 @@ function setKeepScreenAwake(enabled) {
 }
 
 function showReconnectingNetworkStatus() {
+  if (!state.visualContentEnabled) {
+    setNetworkStatus(
+      "reconnecting",
+      "Back online",
+      "Reconnecting to Panels…"
+    );
+    return;
+  }
   setNetworkStatus(
     "reconnecting",
     "Back online",
@@ -2098,6 +2106,10 @@ function showRestoredNetworkStatus() {
 }
 
 function showServerUnavailableStatus() {
+  if (!state.visualContentEnabled) {
+    hideNetworkStatus();
+    return;
+  }
   setNetworkStatus(
     "server-unavailable",
     "Network available · Suwayomi unavailable",
@@ -2108,7 +2120,9 @@ function showServerUnavailableStatus() {
 
 function handleBrowserOffline() {
   showOfflineNetworkStatus();
-  setConnection(false, "Device offline. Suwayomi will reconnect when the network returns.", "bad");
+  if (state.visualContentEnabled) {
+    setConnection(false, "Device offline. Suwayomi will reconnect when the network returns.", "bad");
+  }
 }
 
 async function reconnectPanelPilot() {
@@ -2117,6 +2131,17 @@ async function reconnectPanelPilot() {
     return false;
   }
   if (networkReconnectPromise) return networkReconnectPromise;
+
+  if (!state.visualContentEnabled) {
+    showReconnectingNetworkStatus();
+    await initializeBooksFeature().catch(() => null);
+    if (!navigator.onLine) {
+      handleBrowserOffline();
+      return false;
+    }
+    showRestoredNetworkStatus();
+    return true;
+  }
 
   showReconnectingNetworkStatus();
   networkReconnectPromise = (async () => {
@@ -13935,6 +13960,7 @@ let activateWaitingServiceWorker = null;
 let panelPilotServiceWorkerRegistration = null;
 let serviceWorkerReloadPending = false;
 let serviceWorkerReloaded = false;
+let serviceWorkerReloadFallbackTimer = 0;
 let appUpdateReady = false;
 let deferredInstallPrompt = null;
 let installRequestPending = false;
@@ -14103,9 +14129,26 @@ async function activateAppUpdate() {
   setAppUpdateMessage("Applying the update and preserving your reading position…");
 
   try {
+    window.clearTimeout(serviceWorkerReloadFallbackTimer);
+    serviceWorkerReloadFallbackTimer = window.setTimeout(async () => {
+      if (!serviceWorkerReloadPending || serviceWorkerReloaded) return;
+      try {
+        const registration = await navigator.serviceWorker.getRegistration("/");
+        // Some iOS Home Screen builds fail to deliver controllerchange even
+        // after accepting SKIP_WAITING. Re-register on the next online load;
+        // browser storage and the separate device-chapter cache are retained.
+        if (registration?.waiting && navigator.onLine) await registration.unregister();
+        location.reload();
+      } catch (error) {
+        serviceWorkerReloadPending = false;
+        showAppUpdate();
+        setAppUpdateMessage(`Could not finish the app update: ${error.message}. Try Repair a stuck update.`);
+      }
+    }, 6000);
     if (waitingWorker) waitingWorker.postMessage({ type: "SKIP_WAITING" });
-    else await activateWaitingServiceWorker(false);
+    if (activateWaitingServiceWorker) await activateWaitingServiceWorker(false);
   } catch (error) {
+    window.clearTimeout(serviceWorkerReloadFallbackTimer);
     serviceWorkerReloadPending = false;
     showAppUpdate();
     setAppUpdateMessage(`Could not activate the app update: ${error.message}`);
@@ -14186,6 +14229,7 @@ async function registerPanelPilotServiceWorker() {
     if (el.chapterList?.children.length) renderChapters();
     void refreshDeviceChapterWorkerCapability();
     if (!serviceWorkerReloadPending || serviceWorkerReloaded) return;
+    window.clearTimeout(serviceWorkerReloadFallbackTimer);
     serviceWorkerReloaded = true;
     location.reload();
   });
@@ -14607,6 +14651,7 @@ async function retryFailedDownloads() {
 function startBackgroundHealthChecks() {
   window.clearInterval(state.reconnectTimer);
   window.clearInterval(state.downloadStatusTimer);
+  if (!state.visualContentEnabled) return;
   state.reconnectTimer = window.setInterval(() => {
     if (!state.connected) void recoverSuwayomiConnection();
   }, reconnectIntervalMs);
@@ -14949,7 +14994,9 @@ function wireEvents() {
       handleBrowserOffline();
       return;
     }
-    if (state.connected) {
+    if (!state.visualContentEnabled) {
+      hideNetworkStatus();
+    } else if (state.connected) {
       void reconcileSuwayomiOnForeground().catch(() => false);
       void refreshDownloadStatus().catch(() => null);
       void flushMangaBakaOutbox().catch(() => false);

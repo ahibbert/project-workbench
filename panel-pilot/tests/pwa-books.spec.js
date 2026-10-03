@@ -37,6 +37,7 @@ async function stubApp(page, {
   preferenceResponder = null,
   preferenceWrites = [],
   account = null,
+  suwayomiRequests = [],
 }) {
   let currentBook = { ...book, libraryStatus: progressState.current ? "reading" : book.libraryStatus };
   let currentPreferences = {
@@ -183,6 +184,7 @@ async function stubApp(page, {
       return;
     }
     if (url.pathname === "/api/suwayomi/graphql") {
+      suwayomiRequests.push(route.request().postDataJSON?.() || {});
       const query = String(route.request().postDataJSON?.()?.query || "");
       const data = query.includes("HEALTH")
         ? { __schema: { queryType: { name: "Query" }, mutationType: { name: "Mutation" } } }
@@ -211,12 +213,14 @@ test("books navigation disappears completely while the feature is disabled", asy
 });
 
 test("a books-only household account gets a private book-first shell", async ({ page }) => {
+  const suwayomiRequests = [];
   await stubApp(page, {
     booksEnabled: true,
     account: {
       id: "acct_11111111111111111111111111111111", username: "reader2",
       displayName: "Reader Two", isAdmin: false, contentTypes: ["books"],
     },
+    suwayomiRequests,
   });
   await page.goto("/", { waitUntil: "networkidle" });
   await expect(page.locator("body")).toHaveAttribute("data-account-id", "acct_11111111111111111111111111111111");
@@ -229,6 +233,12 @@ test("a books-only household account gets a private book-first shell", async ({ 
   await page.locator("#nav-browse").click();
   await expect(page).toHaveURL(/#books-search$/);
   await expect(page.getByRole("heading", { name: "Browse books" })).toBeVisible();
+  await page.evaluate(() => window.dispatchEvent(new Event("offline")));
+  await expect(page.locator("#network-status-title")).toHaveText("You’re offline");
+  await page.evaluate(() => window.dispatchEvent(new Event("online")));
+  await expect(page.locator("#network-status-title")).toHaveText("Connection restored");
+  await expect(page.locator("#network-status-banner")).not.toContainText("Suwayomi");
+  expect(suwayomiRequests).toEqual([]);
 });
 
 test("enabled books join the main library and open an isolated detail view", async ({ page }) => {
