@@ -168,6 +168,11 @@ acquisition path still requires a source configured by the operator.
    Centre-tap twice to hide and restore the overlaid controls, and try the
    full-screen button. On iPadOS, verify that content uses the entire viewport
    even if WebKit keeps the system status indicators visible.
+   Use the Book menu to search the complete EPUB and open a result, review saved
+   highlights grouped by chapter, and open both same-file and cross-file
+   footnotes without losing the current reading location. Select a passage and
+   verify Save, Copy, and Look up all work without turning the selection into a
+   page-navigation gesture.
 6. Use **Browse → Find books**, inspect EPUB-only releases, queue one, and confirm the state
    advances through queued/downloading/importing/ready after CWA imports it.
 7. Stop Shelfmark and CWA. Confirm book connection errors are contained and
@@ -176,6 +181,30 @@ acquisition path still requires a source configured by the operator.
    credentials or acquisition URLs are exposed.
 9. Remove a book, sync CWA again, and confirm it stays absent in Panel Pilot
    while the EPUB remains in CWA.
+10. From a book detail page, choose **Download for offline**, wait for the saved
+    state, then disconnect the book services and reload the installed app. The
+    saved book must remain in the account's Library and open at its exact EPUB
+    location. Choose **Remove offline copy** and confirm only that account's
+    cached EPUB is removed.
+
+## EPUB reading and offline behavior
+
+The reader's Book menu combines the EPUB contents tree, full-text search, and
+the current account's saved highlights. Search indexes the publication in the
+browser for the open session and navigates with an exact CFI. Footnotes are
+rendered as text-only popovers; scripts and external EPUB resources remain
+blocked. Selected passages can be copied, saved to Moments, or handed to an
+explicit Wiktionary or Wikipedia lookup.
+
+Offline EPUBs are opt-in. **Download for offline** stores the original EPUB in a
+dedicated Cache Storage cache and records a small account-scoped manifest in
+local storage. The application shell and service worker are separate from this
+cache, so ordinary update cleanup cannot silently delete downloaded books. A
+cold launch can reconstruct the Books library from these manifests when the
+Panel Pilot book API, Shelfmark, or CWA is unavailable. The reader also checks
+the cache directly, which keeps recovery working before a service worker has
+taken control of a newly installed PWA. Removing a Panel Pilot library item also
+removes that account's offline copy; it never deletes the shared CWA EPUB.
 
 ## Disabled behavior
 

@@ -7,6 +7,7 @@ import {
 const legacyAppCachePattern = /^panel-pilot-v\d+$/;
 const deviceChapterCacheName = "panels-device-chapters-v1";
 const deviceChapterPathPrefix = "/__panels_device_chapters/v1/";
+const offlineBookCacheName = "panels-offline-books-v1";
 const lifecycleProtocolVersion = 2;
 const workerBuildId = typeof __BUILD_ID__ === "string" ? __BUILD_ID__ : "unknown";
 
@@ -29,6 +30,20 @@ function isAppShellNavigation(request, pathname) {
 
 function isObsoleteLegacyAppCache(cacheKey) {
   return cacheKey !== deviceChapterCacheName && legacyAppCachePattern.test(cacheKey);
+}
+
+async function offlineBookResponse(request) {
+  try {
+    return await fetch(request);
+  } catch {
+    const cache = await caches.open(offlineBookCacheName);
+    const cached = await cache.match(request);
+    if (cached) return cached;
+    return new Response(JSON.stringify({ error: "This EPUB is not downloaded on this device." }), {
+      status: 503,
+      headers: { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
+    });
+  }
 }
 
 async function deviceChapterResponse(request) {
@@ -79,6 +94,11 @@ self.addEventListener("fetch", (event) => {
 
   if (url.pathname.startsWith(deviceChapterPathPrefix)) {
     event.respondWith(deviceChapterResponse(request));
+    return;
+  }
+
+  if (/^\/api\/books\/\d+\/epub$/.test(url.pathname) && url.searchParams.has("offlineAccount")) {
+    event.respondWith(offlineBookResponse(request));
     return;
   }
 

@@ -331,6 +331,10 @@ test("a selected book passage saves to Moments and reopens at its exact EPUB loc
     document.dispatchEvent(new Event("selectionchange"));
   });
   await expect(page.getByRole("button", { name: "Save highlight" })).toBeVisible();
+  await page.getByRole("button", { name: "Look up" }).click();
+  await expect(page.locator(".epub-lookup-dialog")).toBeVisible();
+  await expect(page.locator(".epub-lookup-copy")).toContainText("Alice was beginning");
+  await page.locator(".epub-lookup-dialog").getByRole("button", { name: "Close" }).click();
   await page.getByRole("button", { name: "Save highlight" }).click();
   await expect(page.locator(".epub-reader-notice")).toContainText("Highlight saved to Moments");
   expect(momentWrites).toHaveLength(1);
@@ -820,6 +824,68 @@ test("nested EPUB contents preserve their hierarchy", async ({ page }) => {
   await expect(page.locator("#toc-test-host .epub-toc-link")).toHaveText(["Part one", "Chapter one", "Scene one"]);
 });
 
+test("EPUB book menu searches full text and organizes saved highlights by chapter", async ({ page }) => {
+  const moments = [{
+    id: "book-highlight-1", momentType: "text", mediaFormat: "book", bookId: 1,
+    title: "Alice's Adventures in Wonderland", chapterTitle: "Chapter I",
+    quote: "Alice was beginning to get very tired", locator: "epubcfi(/6/2!/4/2/1:0)",
+    resourceHref: "chapter1.xhtml", progression: 0.02,
+  }];
+  await stubApp(page, { booksEnabled: true, moments });
+  await openEpubReader(page);
+  await page.getByRole("button", { name: "Contents" }).click();
+  await page.getByRole("button", { name: "Search", exact: true }).click();
+  await page.getByRole("searchbox", { name: "Search this book" }).fill("Alice");
+  await page.locator(".epub-search-form").getByRole("button", { name: "Search" }).click();
+  await expect(page.locator(".epub-search-status")).toContainText(/match/i);
+  await expect(page.locator(".epub-search-result").first()).toContainText(/Alice/i);
+  await page.getByRole("button", { name: "Highlights" }).click();
+  await expect(page.locator(".epub-highlight-group")).toContainText("Chapter I");
+  await expect(page.locator(".epub-highlight-link")).toContainText("Alice was beginning");
+});
+
+test("book details explicitly download and remove an account-scoped offline EPUB", async ({ page }) => {
+  await stubApp(page, { booksEnabled: true });
+  await page.goto("/", { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: /^Books$/ }).first().click();
+  await page.getByRole("button", { name: /^Plan/ }).click();
+  await page.locator(".book-library-card").getByRole("button", { name: /Alice's Adventures/ }).click();
+  const offline = page.getByRole("button", { name: "Download for offline" });
+  await expect(offline).toBeVisible();
+  await offline.click();
+  await expect(page.getByRole("button", { name: "Remove offline copy" })).toBeVisible();
+  await expect.poll(() => page.evaluate(async () => {
+    const cache = await caches.open("panels-offline-books-v1");
+    return (await cache.keys()).some((request) => request.url.includes("/api/books/1/epub?offlineAccount=local"));
+  })).toBe(true);
+  await page.getByRole("button", { name: "Remove offline copy" }).click();
+  await expect(page.getByRole("button", { name: "Download for offline" })).toBeVisible();
+  await expect.poll(() => page.evaluate(async () => {
+    const cache = await caches.open("panels-offline-books-v1");
+    return (await cache.keys()).length;
+  })).toBe(0);
+});
+
+test("a cold offline launch reconstructs the saved book and opens its cached EPUB", async ({ page }) => {
+  await stubApp(page, { booksEnabled: true });
+  await page.goto("/", { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: /^Books$/ }).first().click();
+  await page.getByRole("button", { name: /^Plan/ }).click();
+  await page.locator(".book-library-card").getByRole("button", { name: /Alice's Adventures/ }).click();
+  await page.getByRole("button", { name: "Download for offline" }).click();
+  await expect(page.getByRole("button", { name: "Remove offline copy" })).toBeVisible();
+  await page.locator("#nav-library").click();
+  await page.unroute("**/api/**");
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("button", { name: /^Books$/ }).first()).toBeVisible();
+  await page.getByRole("button", { name: /^Books$/ }).first().click();
+  await page.getByRole("button", { name: /^Plan/ }).click();
+  await expect(page.locator(".book-library-card")).toContainText("Alice's Adventures in Wonderland");
+  await page.locator(".book-library-card").getByRole("button", { name: /Alice's Adventures/ }).click();
+  await page.getByRole("button", { name: /Read book|Continue reading/ }).click();
+  await expect(page.frameLocator(".epub-viewport iframe").locator("body")).toContainText("Alice was beginning");
+});
+
 test("EPUB preferences are latest-wins and failed changes revert without blocking reading", async ({ page }) => {
   let failNext = false;
   const preferenceWrites = [];
@@ -905,6 +971,28 @@ test("external EPUB links require an explicit safe handoff", async ({ page }) =>
   expect(await page.evaluate(() => window.__openedExternal.length)).toBe(0);
   await page.getByRole("button", { name: "Open in browser" }).click();
   expect(await page.evaluate(() => window.__openedExternal)).toEqual([["https://example.com/about", "_blank", "noopener,noreferrer"]]);
+});
+
+test("EPUB footnotes open as readable popovers without losing the current page", async ({ page }) => {
+  await stubApp(page, { booksEnabled: true });
+  await openEpubReader(page);
+  const body = page.frameLocator(".epub-viewport iframe").locator("body");
+  await body.evaluate((element) => {
+    const link = element.ownerDocument.createElement("a");
+    link.href = "#panels-note-1";
+    link.setAttribute("epub:type", "noteref");
+    link.textContent = "1";
+    const note = element.ownerDocument.createElement("aside");
+    note.id = "panels-note-1";
+    note.textContent = "A concise explanatory footnote.";
+    element.prepend(link);
+    element.append(note);
+  });
+  await page.frameLocator(".epub-viewport iframe").getByRole("link", { name: "1" }).click();
+  await expect(page.locator(".epub-footnote-dialog")).toBeVisible();
+  await expect(page.locator(".epub-footnote-copy")).toContainText("A concise explanatory footnote");
+  await page.locator(".epub-footnote-dialog").getByRole("button", { name: "Close" }).click();
+  await expect(page.frameLocator(".epub-viewport iframe").locator("body")).toContainText("Alice was beginning");
 });
 
 test("iOS-style content touches always escape distraction-free reading in both flows", async ({ page }) => {

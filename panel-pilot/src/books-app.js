@@ -43,6 +43,7 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
   let downloadPoll = 0;
   let readerController = null;
   let readerGeneration = 0;
+  const accountId = () => document.body.dataset.accountNamespace || "";
 
   function shell() {
     if (initialized) return;
@@ -152,7 +153,27 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
       }
       content.append(summary, grid);
     } catch (error) {
-      content.replaceChildren(element("p", "books-error", error.message));
+      const { listOfflineBooks } = await import("./book-offline.js");
+      const offline = listOfflineBooks(accountId()).map((record) => ({
+        ...record.book, progress: record.progress, offlineAvailable: true,
+      }));
+      if (!offline.length) {
+        content.replaceChildren(element("p", "books-error", error.message));
+        return;
+      }
+      content.replaceChildren(element("p", "books-offline-note", "Offline library · showing books downloaded on this device"));
+      const grid = element("div", "books-grid");
+      offline.forEach((book) => {
+        const button = element("button", "book-card");
+        button.type = "button";
+        button.dataset.bookId = book.id;
+        button.append(element("span", "book-cover book-cover-fallback", book.title.slice(0, 1).toUpperCase()));
+        const copy = element("span", "book-card-copy");
+        copy.append(element("strong", "", book.title), element("small", "", `${bookByline(book)} · Offline`));
+        button.append(copy);
+        grid.append(button);
+      });
+      content.append(grid);
     }
   }
 
@@ -160,7 +181,16 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
     const content = root.querySelector("#books-content");
     content.replaceChildren(element("p", "books-loading", "Loading book…"));
     try {
-      const { book, progress, series } = await request(`/api/books/${encodeURIComponent(id)}`);
+      const offlineModule = await import("./book-offline.js");
+      let detailPayload;
+      try {
+        detailPayload = await request(`/api/books/${encodeURIComponent(id)}`);
+      } catch (error) {
+        const record = offlineModule.offlineBookRecord(id, accountId());
+        if (!record) throw error;
+        detailPayload = { book: record.book, progress: record.progress, series: null };
+      }
+      const { book, progress, series } = detailPayload;
       const back = element("button", "text-button books-back", "‹ Library");
       back.type = "button";
       back.dataset.booksAction = "back";
@@ -222,6 +252,7 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
         remove.disabled = true;
         try {
           await request(`/api/books/${encodeURIComponent(book.id)}`, { method: "DELETE" });
+          await offlineModule.removeOfflineBook(book, accountId()).catch(() => null);
           await Promise.resolve(onLibraryChange());
           navigate("library");
         } catch (error) {
@@ -247,8 +278,37 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
           moreLike.disabled = false;
         }
       });
+      const offline = element("button", "", "Checking offline copy…");
+      offline.type = "button";
+      offline.disabled = true;
+      let offlineState = await offlineModule.offlineBookStatus(book, accountId()).catch(() => ({ available: false }));
+      const renderOfflineAction = () => {
+        offline.disabled = false;
+        offline.textContent = offlineState.available ? "Remove offline copy" : "Download for offline";
+      };
+      renderOfflineAction();
+      offline.addEventListener("click", async () => {
+        offline.disabled = true;
+        offline.textContent = offlineState.available ? "Removing…" : "Downloading…";
+        try {
+          if (offlineState.available) {
+            offlineState = await offlineModule.removeOfflineBook(book, accountId());
+          } else {
+            const preferenceProfile = await request(`/api/books/${encodeURIComponent(book.id)}/preferences`);
+            offlineState = await offlineModule.saveOfflineBook({
+              book, progress, preferences: preferenceProfile.preferences, accountId: accountId(),
+            });
+          }
+          renderOfflineAction();
+          await Promise.resolve(onLibraryChange());
+        } catch (error) {
+          renderOfflineAction();
+          offline.setCustomValidity(error.message);
+          offline.reportValidity();
+        }
+      });
       const actions = element("div", "book-detail-actions detail-actions");
-      actions.append(read, moreLike, remove);
+      actions.append(read, offline, moreLike, remove);
       copy.append(actions);
       detail.append(cover, copy);
 
@@ -326,7 +386,10 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
       }
       try {
         const module = await import("./epub-reader.js");
-        const navigation = await module.loadEpubNavigation(book.epubUrl);
+        const navigationUrl = offlineState.available
+          ? offlineModule.offlineEpubUrl(book.epubUrl, accountId())
+          : book.epubUrl;
+        const navigation = await module.loadEpubNavigation(navigationUrl);
         contentsList.replaceChildren();
         module.renderEpubToc(navigation, contentsList, (href) => navigate("book-read", { id: book.id, href }));
         if (!contentsList.children.length) {
@@ -346,11 +409,32 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
     const content = root.querySelector("#books-content");
     content.replaceChildren(element("div", "epub-reader-state books-reader-loading", "Preparing reader…"));
     try {
-      const [{ book, progress }, preferenceProfile, module] = await Promise.all([
-        request(`/api/books/${encodeURIComponent(id)}`),
-        request(`/api/books/${encodeURIComponent(id)}/preferences`),
-        import("./epub-reader.js"),
-      ]);
+      const [module, offlineModule] = await Promise.all([import("./epub-reader.js"), import("./book-offline.js")]);
+      let detailPayload;
+      let preferenceProfile;
+      try {
+        [detailPayload, preferenceProfile] = await Promise.all([
+          request(`/api/books/${encodeURIComponent(id)}`),
+          request(`/api/books/${encodeURIComponent(id)}/preferences`),
+        ]);
+      } catch (error) {
+        const offlineRecord = offlineModule.offlineBookRecord(id, accountId());
+        if (!offlineRecord) throw error;
+        detailPayload = { book: offlineRecord.book, progress: offlineRecord.progress };
+        preferenceProfile = {
+          preferences: offlineRecord.preferences,
+          scope: "book",
+          scopeLabel: offlineRecord.book.title,
+        };
+      }
+      const { progress } = detailPayload;
+      const offlineRecord = offlineModule.offlineBookRecord(id, accountId());
+      const book = offlineRecord
+        ? { ...detailPayload.book, epubUrl: offlineRecord.epubUrl }
+        : detailPayload.book;
+      offlineModule.updateOfflineBookRecord({
+        book, progress, preferences: preferenceProfile.preferences, accountId: accountId(),
+      });
       if (generation !== readerGeneration) return;
       readerController?.destroy?.();
       const createdReader = await module.createEpubReader({
@@ -360,7 +444,7 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
         preferences: preferenceProfile.preferences,
         preferenceScope: preferenceProfile,
         initialHref,
-        accountId: document.body.dataset.accountNamespace || "",
+        accountId: accountId(),
         onExit: () => navigate("book-detail", { id: book.id }),
       });
       if (generation !== readerGeneration) {

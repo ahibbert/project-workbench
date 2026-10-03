@@ -43,13 +43,31 @@ import {
 } from "./auth-boundary.js";
 
 installAuthenticationBoundary();
+const lastAccountStorageKey = "panel-pilot:last-account-v1";
 let currentAccount = {
   id: "local", username: "local", displayName: "Local reader", isAdmin: true,
   contentTypes: ["books", "manga", "comic", "webtoon"],
 };
 try {
+  const remembered = JSON.parse(localStorage.getItem(lastAccountStorageKey) || "null");
+  if (remembered?.id && Array.isArray(remembered.contentTypes)) currentAccount = { ...currentAccount, ...remembered };
+} catch {
+  // A malformed convenience record must never prevent startup or authentication.
+}
+try {
   const sessionResponse = await fetch("/api/session", { cache: "no-store", headers: { Accept: "application/json" } });
-  if (sessionResponse.ok) currentAccount = (await sessionResponse.json()).account || currentAccount;
+  if (sessionResponse.ok) {
+    currentAccount = (await sessionResponse.json()).account || currentAccount;
+    try {
+      localStorage.setItem(lastAccountStorageKey, JSON.stringify({
+        id: currentAccount.id,
+        username: currentAccount.username,
+        displayName: currentAccount.displayName,
+        isAdmin: Boolean(currentAccount.isAdmin),
+        contentTypes: currentAccount.contentTypes,
+      }));
+    } catch { /* Offline account memory is optional. */ }
+  }
 } catch {
   // Authentication recovery handles an expired session; local development keeps its default identity.
 }
@@ -1534,7 +1552,17 @@ async function refreshIntegratedBookLibrary({ render = true } = {}) {
     return state.bookLibraryItems;
   } catch {
     // CWA/Shelfmark outages must not disturb the existing manga library. Retain the
-    // last successful book snapshot and allow the dedicated Books view to explain errors.
+    // last successful book snapshot. After a reload while offline, explicitly downloaded
+    // EPUB manifests provide the minimum private library needed to reopen those books.
+    if (!state.bookLibraryItems.length) {
+      const { listOfflineBooks } = await import("./book-offline.js");
+      state.bookLibraryItems = listOfflineBooks(currentAccount.id).map((record) => ({
+        ...record.book,
+        progress: record.progress,
+        offlineAvailable: true,
+      }));
+      if (render && state.bookLibraryItems.length) renderLibrary({ preserveInteractions: false });
+    }
     return state.bookLibraryItems;
   } finally {
     state.booksLibraryLoading = false;
@@ -1550,7 +1578,7 @@ async function showBooksRoute() {
 async function initializeBooksFeature() {
   try {
     const response = await fetch("/api/books/status", { headers: { Accept: "application/json" }, cache: "no-store" });
-    if (!response.ok) return;
+    if (!response.ok) throw new Error(`Book status is unavailable (${response.status})`);
     const status = await response.json();
     state.booksEnabled = status.enabled === true;
     el.navBooks?.setAttribute("hidden", "");
@@ -1583,12 +1611,23 @@ async function initializeBooksFeature() {
       if (state.activeView === "books") void showBooksRoute();
     }
   } catch {
-    state.booksEnabled = false;
-    el.libraryFormatBooks?.setAttribute("hidden", "");
+    const { listOfflineBooks } = await import("./book-offline.js");
+    const records = listOfflineBooks(currentAccount.id);
+    state.booksEnabled = records.length > 0;
+    state.bookLibraryItems = records.map((record) => ({
+      ...record.book, progress: record.progress, offlineAvailable: true,
+    }));
+    el.navBooks?.setAttribute("hidden", "");
+    el.libraryFormatBooks?.toggleAttribute("hidden", !state.booksEnabled);
     el.browseBooks?.setAttribute("hidden", "");
     el.browseMediaSwitch?.setAttribute("hidden", "");
     el.bookServicesPanel?.setAttribute("hidden", "");
-    if (state.libraryFormatFilter === "book") state.libraryFormatFilter = "all";
+    if (!state.booksEnabled && state.libraryFormatFilter === "book") state.libraryFormatFilter = "all";
+    if (state.booksEnabled) {
+      state.booksIntegration ||= await import("./books-integration.js");
+      renderLibrary({ preserveInteractions: false });
+      if (state.activeView === "books") void showBooksRoute();
+    }
   }
 }
 

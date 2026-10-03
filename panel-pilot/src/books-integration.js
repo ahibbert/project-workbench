@@ -1,4 +1,5 @@
 import "./books.css";
+import { offlineBookRecord, removeOfflineBook } from "./book-offline.js";
 
 export const BOOK_LIBRARY_GROUPS = ["reading", "plan_to_read", "paused", "completed", "dropped", "rereading", "considering"];
 
@@ -49,6 +50,12 @@ export function createLibraryCard(book, { createCoverButton, navigate, statusLab
   statusBadge.className = "manga-card-badge muted-badge";
   statusBadge.textContent = statusLabels[libraryStatus(book)] || "Library";
   badges.append(formatBadge, statusBadge);
+  if (offlineBookRecord(book.id, document.body.dataset.accountNamespace || "")) {
+    const offlineBadge = document.createElement("span");
+    offlineBadge.className = "manga-card-badge offline-readiness-badge ready";
+    offlineBadge.textContent = "Offline";
+    badges.append(offlineBadge);
+  }
 
   const actions = document.createElement("div");
   actions.className = "manga-card-actions";
@@ -105,6 +112,7 @@ export function createLibraryCard(book, { createCoverButton, navigate, statusLab
     remove.disabled = true;
     try {
       await request(`/api/books/${encodeURIComponent(book.id)}`, { method: "DELETE" });
+      await removeOfflineBook(book, document.body.dataset.accountNamespace || "").catch(() => null);
       await Promise.resolve(onUpdate?.(null));
     } catch (error) {
       remove.disabled = false;

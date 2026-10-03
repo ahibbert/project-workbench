@@ -7,6 +7,23 @@ function node(tag, className, text) {
   return item;
 }
 
+export function textMatchOffsets(text, query, limit = 4) {
+  const haystack = String(text || "");
+  const needle = String(query || "").trim();
+  if (needle.length < 2 || !haystack) return [];
+  const lower = haystack.toLocaleLowerCase();
+  const target = needle.toLocaleLowerCase();
+  const matches = [];
+  let offset = 0;
+  while (matches.length < Math.max(1, limit)) {
+    const index = lower.indexOf(target, offset);
+    if (index < 0) break;
+    matches.push({ index, length: needle.length });
+    offset = index + Math.max(1, needle.length);
+  }
+  return matches;
+}
+
 export function renderEpubToc(entries, parent, onSelect, depth = 0) {
   if (!entries?.length) return;
   const list = node("ol", depth ? "epub-toc-children" : "epub-toc-root");
@@ -22,6 +39,30 @@ export function renderEpubToc(entries, parent, onSelect, depth = 0) {
   parent.append(list);
 }
 
+async function fetchEpubResponse(epubUrl) {
+  let response = null;
+  let failure = null;
+  try {
+    response = await fetch(epubUrl, { headers: { Accept: "application/epub+zip" }, cache: "default" });
+    if (response.ok) return response;
+  } catch (error) {
+    failure = error;
+  }
+  if ("caches" in window) {
+    try {
+      const cached = await caches.match(epubUrl);
+      if (cached) return cached;
+    } catch {
+      // Continue to the normalized network error below.
+    }
+  }
+  if (response) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || `EPUB could not be loaded (${response.status})`);
+  }
+  throw failure || new Error("EPUB could not be loaded while offline.");
+}
+
 function publicNavigationEntries(entries = []) {
   return entries.map((entry) => ({
     label: String(entry?.label || "").trim() || "Untitled section",
@@ -31,11 +72,7 @@ function publicNavigationEntries(entries = []) {
 }
 
 export async function loadEpubNavigation(epubUrl) {
-  const response = await fetch(epubUrl, { headers: { Accept: "application/epub+zip" }, cache: "default" });
-  if (!response.ok) {
-    const payload = await response.json().catch(() => ({}));
-    throw new Error(payload.error || `EPUB contents could not be loaded (${response.status})`);
-  }
+  const response = await fetchEpubResponse(epubUrl);
   const publication = ePub(await response.arrayBuffer());
   try {
     const navigation = await publication.loaded.navigation;
@@ -218,13 +255,35 @@ export async function createEpubReader({ root, book, progress, preferences, pref
 
   const toc = node("dialog", "epub-toc");
   const tocHeader = node("header");
-  tocHeader.append(node("strong", "", "Contents"));
+  tocHeader.append(node("strong", "", "Book menu"));
   const tocClose = node("button", "epub-tool", "Close");
   tocClose.type = "button";
   tocHeader.append(tocClose);
-  const tocList = node("nav", "epub-toc-list");
+  const tocTabs = node("div", "epub-menu-tabs");
+  const contentsTab = node("button", "epub-menu-tab active", "Contents");
+  const searchTab = node("button", "epub-menu-tab", "Search");
+  const highlightsTab = node("button", "epub-menu-tab", "Highlights");
+  [contentsTab, searchTab, highlightsTab].forEach((button) => { button.type = "button"; });
+  tocTabs.append(contentsTab, searchTab, highlightsTab);
+  const tocList = node("nav", "epub-toc-list epub-menu-panel");
   tocList.setAttribute("aria-label", "Book contents");
-  toc.append(tocHeader, tocList);
+  const searchPanel = node("section", "epub-search-panel epub-menu-panel");
+  searchPanel.hidden = true;
+  const searchForm = node("form", "epub-search-form");
+  const searchInput = node("input", "epub-search-input");
+  searchInput.type = "search";
+  searchInput.placeholder = "Search this book";
+  searchInput.setAttribute("aria-label", "Search this book");
+  const searchButton = node("button", "primary-button", "Search");
+  searchButton.type = "submit";
+  searchForm.append(searchInput, searchButton);
+  const searchStatus = node("p", "epub-search-status", "Search the complete EPUB text.");
+  searchStatus.setAttribute("role", "status");
+  const searchResults = node("div", "epub-search-results");
+  searchPanel.append(searchForm, searchStatus, searchResults);
+  const highlightsPanel = node("section", "epub-highlights-panel epub-menu-panel");
+  highlightsPanel.hidden = true;
+  toc.append(tocHeader, tocTabs, tocList, searchPanel, highlightsPanel);
   const externalDialog = node("dialog", "epub-external-link");
   const externalTitle = node("strong", "", "Open external link?");
   const externalCopy = node("p", "epub-external-copy");
@@ -234,6 +293,25 @@ export async function createEpubReader({ root, book, progress, preferences, pref
   externalCancel.type = externalOpen.type = "button";
   externalActions.append(externalCancel, externalOpen);
   externalDialog.append(externalTitle, externalCopy, externalActions);
+  const footnoteDialog = node("dialog", "epub-footnote-dialog");
+  const footnoteTitle = node("strong", "", "Note");
+  const footnoteCopy = node("div", "epub-footnote-copy");
+  const footnoteActions = node("div", "epub-external-actions");
+  const footnoteClose = node("button", "epub-tool", "Close");
+  const footnoteGo = node("button", "primary-button", "Go to note");
+  footnoteClose.type = footnoteGo.type = "button";
+  footnoteActions.append(footnoteClose, footnoteGo);
+  footnoteDialog.append(footnoteTitle, footnoteCopy, footnoteActions);
+  const lookupDialog = node("dialog", "epub-lookup-dialog");
+  const lookupTitle = node("strong", "", "Look up selection");
+  const lookupCopy = node("p", "epub-lookup-copy");
+  const lookupActions = node("div", "epub-external-actions");
+  const lookupClose = node("button", "epub-tool", "Close");
+  const lookupDictionary = node("button", "epub-tool", "Dictionary");
+  const lookupWikipedia = node("button", "primary-button", "Wikipedia");
+  [lookupClose, lookupDictionary, lookupWikipedia].forEach((button) => { button.type = "button"; });
+  lookupActions.append(lookupClose, lookupDictionary, lookupWikipedia);
+  lookupDialog.append(lookupTitle, lookupCopy, lookupActions);
   const notice = node("div", "epub-reader-notice");
   notice.hidden = true;
   notice.setAttribute("role", "status");
@@ -245,10 +323,14 @@ export async function createEpubReader({ root, book, progress, preferences, pref
   const selectionCopy = node("span", "epub-selection-copy", "Save this passage to Moments?");
   const saveHighlight = node("button", "primary-button", "Save highlight");
   saveHighlight.type = "button";
+  const copySelection = node("button", "epub-tool", "Copy");
+  copySelection.type = "button";
+  const lookupSelection = node("button", "epub-tool", "Look up");
+  lookupSelection.type = "button";
   const cancelHighlight = node("button", "epub-tool", "Cancel");
   cancelHighlight.type = "button";
-  selectionBar.append(selectionCopy, saveHighlight, cancelHighlight);
-  reader.append(toolbar, stage, footer, toc, externalDialog, notice, selectionBar);
+  selectionBar.append(selectionCopy, saveHighlight, copySelection, lookupSelection, cancelHighlight);
+  reader.append(toolbar, stage, footer, toc, externalDialog, footnoteDialog, lookupDialog, notice, selectionBar);
   root.append(reader);
 
   const nativeFullscreenAvailable = typeof reader.requestFullscreen === "function"
@@ -422,8 +504,143 @@ export async function createEpubReader({ root, book, progress, preferences, pref
         moment.momentType === "text" && Number(moment.bookId) === Number(book.id)
       ));
       bookMoments.forEach(addMomentHighlight);
+      renderHighlightsPanel();
     } catch {
       // Reading remains available if Moments cannot be loaded.
+    }
+  }
+
+  function showBookMenuPanel(name) {
+    const entries = [
+      ["contents", contentsTab, tocList],
+      ["search", searchTab, searchPanel],
+      ["highlights", highlightsTab, highlightsPanel],
+    ];
+    entries.forEach(([key, tab, panel]) => {
+      const active = key === name;
+      tab.classList.toggle("active", active);
+      tab.setAttribute("aria-pressed", active ? "true" : "false");
+      panel.hidden = !active;
+    });
+    if (name === "highlights") renderHighlightsPanel();
+    if (name === "search") window.setTimeout(() => searchInput.focus(), 0);
+  }
+
+  function renderHighlightsPanel() {
+    highlightsPanel.replaceChildren();
+    if (!bookMoments.length) {
+      highlightsPanel.append(node("p", "epub-toc-empty", "Select text in the reader to save your first highlight."));
+      return;
+    }
+    const groups = new Map();
+    [...bookMoments]
+      .sort((left, right) => Number(left.progression ?? 2) - Number(right.progression ?? 2))
+      .forEach((moment) => {
+        const label = String(moment.chapterTitle || "Other passages").trim() || "Other passages";
+        if (!groups.has(label)) groups.set(label, []);
+        groups.get(label).push(moment);
+      });
+    groups.forEach((moments, label) => {
+      const group = node("section", "epub-highlight-group");
+      group.append(node("h3", "", label));
+      moments.forEach((moment) => {
+        const button = node("button", "epub-highlight-link", `“${String(moment.quote || "Saved passage").slice(0, 220)}”`);
+        button.type = "button";
+        button.addEventListener("click", () => {
+          toc.close();
+          if (String(moment.locator || "").startsWith("epubcfi(")) void rendition?.display(moment.locator);
+        });
+        group.append(button);
+      });
+      highlightsPanel.append(group);
+    });
+  }
+
+  async function searchPublication(query) {
+    const term = String(query || "").replace(/\s+/g, " ").trim();
+    if (term.length < 2) throw new Error("Enter at least two characters.");
+    const results = [];
+    const sections = publication?.spine?.spineItems || [];
+    for (let sectionIndex = 0; sectionIndex < sections.length && results.length < 60; sectionIndex += 1) {
+      const section = sections[sectionIndex];
+      const alreadyLoaded = Boolean(section.document);
+      try {
+        await section.load(publication.load.bind(publication));
+        const document = section.document;
+        if (!document?.body) continue;
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        let textNode;
+        while ((textNode = walker.nextNode()) && results.length < 60) {
+          const text = String(textNode.nodeValue || "");
+          for (const match of textMatchOffsets(text, term, 3)) {
+            const range = document.createRange();
+            range.setStart(textNode, match.index);
+            range.setEnd(textNode, match.index + match.length);
+            let cfi = "";
+            try { cfi = section.cfiFromRange(range); } catch { /* Skip malformed ranges. */ }
+            if (!String(cfi).startsWith("epubcfi(")) continue;
+            const before = text.slice(Math.max(0, match.index - 70), match.index).replace(/\s+/g, " ").trimStart();
+            const found = text.slice(match.index, match.index + match.length);
+            const after = text.slice(match.index + match.length, match.index + match.length + 110).replace(/\s+/g, " ").trimEnd();
+            results.push({
+              cfi,
+              excerpt: `${before ? `…${before}` : ""}${found}${after ? `${after}…` : ""}`,
+              chapter: navigationEntryForHref(section.href)?.label?.trim() || `Section ${sectionIndex + 1}`,
+            });
+            if (results.length >= 60) break;
+          }
+        }
+      } finally {
+        if (!alreadyLoaded) section.unload?.();
+      }
+      searchStatus.textContent = `Searching… ${sectionIndex + 1} of ${sections.length} sections`;
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    }
+    return results;
+  }
+
+  function renderSearchResults(results, query) {
+    searchResults.replaceChildren();
+    searchStatus.textContent = results.length
+      ? `${results.length}${results.length >= 60 ? "+" : ""} match${results.length === 1 ? "" : "es"} for “${query}”`
+      : `No matches for “${query}”`;
+    results.forEach((result) => {
+      const button = node("button", "epub-search-result");
+      button.type = "button";
+      button.append(node("strong", "", result.chapter), node("span", "", result.excerpt));
+      button.addEventListener("click", () => {
+        toc.close();
+        void rendition?.display(result.cfi);
+      });
+      searchResults.append(button);
+    });
+  }
+
+  async function showFootnote(contents, href, label = "") {
+    const [pathPart, fragment = ""] = String(href || "").split("#", 2);
+    if (!fragment) return false;
+    let document = contents.document;
+    let section = null;
+    let unload = false;
+    if (pathPart) {
+      const targetName = pathPart.split("/").pop();
+      section = (publication?.spine?.spineItems || []).find((item) => String(item.href || "").split("#")[0].split("/").pop() === targetName);
+      if (!section) return false;
+      unload = !section.document;
+      await section.load(publication.load.bind(publication));
+      document = section.document;
+    }
+    try {
+      const target = document?.getElementById?.(decodeURIComponent(fragment));
+      const text = String(target?.textContent || "").replace(/\s+/g, " ").trim().slice(0, 5000);
+      if (!text) return false;
+      footnoteTitle.textContent = label || "Note";
+      footnoteCopy.textContent = text;
+      footnoteDialog.dataset.href = href;
+      footnoteDialog.showModal();
+      return true;
+    } finally {
+      if (unload) section?.unload?.();
     }
   }
 
@@ -479,6 +696,7 @@ export async function createEpubReader({ root, book, progress, preferences, pref
       if (payload.moment) {
         bookMoments = [payload.moment, ...bookMoments.filter((moment) => moment.id !== payload.moment.id)];
         addMomentHighlight(payload.moment);
+        renderHighlightsPanel();
       }
       clearSelectionSnapshot({ collapse: true });
       showNotice("Highlight saved to Moments.");
@@ -794,6 +1012,14 @@ export async function createEpubReader({ root, book, progress, preferences, pref
           return;
         }
         const href = link.getAttribute("href") || "";
+        const epubType = `${link.getAttribute("epub:type") || ""} ${link.getAttribute("role") || ""}`.toLocaleLowerCase();
+        if (href && /(?:^|\s)(?:noteref|doc-noteref)(?:\s|$)/.test(epubType)) {
+          event.preventDefault();
+          void showFootnote(contents, href, link.textContent?.trim() || "Note").then((shown) => {
+            if (!shown) void rendition?.display(href);
+          }).catch(() => { void rendition?.display(href); });
+          return;
+        }
         if (/^(?:https?:)?\/\//i.test(href) || /^mailto:/i.test(href)) {
           event.preventDefault();
           return;
@@ -869,11 +1095,7 @@ export async function createEpubReader({ root, book, progress, preferences, pref
     previous.hidden = false;
     next.hidden = false;
     try {
-      const response = await fetch(book.epubUrl, { headers: { Accept: "application/epub+zip" }, cache: "default" });
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
-        throw new Error(payload.error || `EPUB could not be loaded (${response.status})`);
-      }
+      const response = await fetchEpubResponse(book.epubUrl);
       const buffer = await response.arrayBuffer();
       if (destroyed) return;
       publication?.destroy();
@@ -949,8 +1171,25 @@ export async function createEpubReader({ root, book, progress, preferences, pref
       setControlsVisible(reader.classList.contains("epub-chrome-hidden"), false);
     }
   });
-  tocButton.addEventListener("click", () => { toc.showModal(); setControlsVisible(true, false); });
+  tocButton.addEventListener("click", () => { showBookMenuPanel("contents"); toc.showModal(); setControlsVisible(true, false); });
   fullscreenButton.addEventListener("click", () => { void toggleFullscreen(); });
+  contentsTab.addEventListener("click", () => showBookMenuPanel("contents"));
+  searchTab.addEventListener("click", () => showBookMenuPanel("search"));
+  highlightsTab.addEventListener("click", () => showBookMenuPanel("highlights"));
+  searchForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const query = searchInput.value.trim();
+    searchButton.disabled = true;
+    searchResults.replaceChildren();
+    searchStatus.textContent = "Searching this EPUB…";
+    try {
+      renderSearchResults(await searchPublication(query), query);
+    } catch (error) {
+      searchStatus.textContent = error.message || "This EPUB could not be searched.";
+    } finally {
+      searchButton.disabled = false;
+    }
+  });
   tocClose.addEventListener("click", () => toc.close());
   toc.addEventListener("click", (event) => { if (event.target === toc) toc.close(); });
   toc.addEventListener("close", () => setControlsVisible(true));
@@ -961,7 +1200,40 @@ export async function createEpubReader({ root, book, progress, preferences, pref
     if (href) window.open(href, "_blank", "noopener,noreferrer");
   });
   externalDialog.addEventListener("click", (event) => { if (event.target === externalDialog) externalDialog.close(); });
+  footnoteClose.addEventListener("click", () => footnoteDialog.close());
+  footnoteGo.addEventListener("click", () => {
+    const href = footnoteDialog.dataset.href;
+    footnoteDialog.close();
+    if (href) void rendition?.display(href);
+  });
+  footnoteDialog.addEventListener("click", (event) => { if (event.target === footnoteDialog) footnoteDialog.close(); });
+  lookupClose.addEventListener("click", () => lookupDialog.close());
+  lookupDictionary.addEventListener("click", () => {
+    const query = lookupDialog.dataset.query;
+    if (query) window.open(`https://en.wiktionary.org/w/index.php?search=${encodeURIComponent(query)}`, "_blank", "noopener,noreferrer");
+  });
+  lookupWikipedia.addEventListener("click", () => {
+    const query = lookupDialog.dataset.query;
+    if (query) window.open(`https://en.wikipedia.org/w/index.php?search=${encodeURIComponent(query)}`, "_blank", "noopener,noreferrer");
+  });
+  lookupDialog.addEventListener("click", (event) => { if (event.target === lookupDialog) lookupDialog.close(); });
   saveHighlight.addEventListener("click", () => { void saveSelectedHighlight(); });
+  copySelection.addEventListener("click", async () => {
+    if (!selectionSnapshot?.quote) return;
+    try {
+      await navigator.clipboard.writeText(selectionSnapshot.quote);
+      showNotice("Passage copied.");
+    } catch {
+      showNotice("Copy is unavailable here; use the browser selection menu instead.");
+    }
+  });
+  lookupSelection.addEventListener("click", () => {
+    if (!selectionSnapshot?.quote) return;
+    const query = selectionSnapshot.quote.slice(0, 500);
+    lookupDialog.dataset.query = query;
+    lookupCopy.textContent = query;
+    lookupDialog.showModal();
+  });
   cancelHighlight.addEventListener("click", () => clearSelectionSnapshot({ collapse: true }));
   scrubber.addEventListener("input", () => { location.textContent = `${Math.round(Number(scrubber.value) / 10)}%`; });
   scrubber.addEventListener("change", () => {
@@ -993,6 +1265,8 @@ export async function createEpubReader({ root, book, progress, preferences, pref
         settings.open = false;
         settingsSummary.focus();
       } else if (externalDialog.open) externalDialog.close();
+      else if (footnoteDialog.open) footnoteDialog.close();
+      else if (lookupDialog.open) lookupDialog.close();
       else if (toc.open) toc.close();
       else onExit();
       return;
@@ -1064,6 +1338,8 @@ export async function createEpubReader({ root, book, progress, preferences, pref
       publication?.destroy();
       if (toc.open) toc.close();
       if (externalDialog.open) externalDialog.close();
+      if (footnoteDialog.open) footnoteDialog.close();
+      if (lookupDialog.open) lookupDialog.close();
       destroyed = true;
     },
   };

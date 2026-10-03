@@ -14,7 +14,8 @@ const iconSetBudgetBytes = 300_000;
 // (the EPUB reader, book contents parser, and lifecycle stay lazy).
 // Household account management and the shared More-like-this dialog remain in
 // the eagerly loaded shell so access rules and title actions are consistent.
-const installShellBudgetBytes = 825_000;
+// Includes the lazily split EPUB search/offline tooling so saved books remain usable after a cold offline launch.
+const installShellBudgetBytes = 840_000;
 
 function readSource(path) {
   return readFileSync(join(projectRoot, path), "utf8");
@@ -284,6 +285,22 @@ test("the app negotiates device chapter support with the controlling worker", ()
     /async function downloadChapterToDevice\([^)]*\)\s*\{[\s\S]*?await requireDeviceChapterWorker\(\)/,
     "downloading device chapters must require the capable worker",
   );
+});
+
+test("offline EPUBs use an explicit account-scoped cache with network-first reading", () => {
+  const worker = readSource("src/sw.js");
+  const offline = readSource("src/book-offline.js");
+  const main = readSource("src/main.js");
+  assert.match(worker, /panels-offline-books-v1/, "the EPUB cache name must be stable");
+  assert.match(worker, /offlineAccount/, "offline EPUB requests must be account scoped");
+  assert.match(worker, /async function offlineBookResponse[\s\S]*?return await fetch\(request\)[\s\S]*?cache\.match\(request\)/,
+    "offline EPUB reading must prefer a fresh authenticated response and fall back to the saved copy");
+  assert.match(offline, /url\.searchParams\.set\("offlineAccount", accountKey\(accountId\)\)/,
+    "the browser cache key must include the account namespace");
+  assert.match(offline, /await cache\.put\(epubUrl, response\.clone\(\)\)/,
+    "EPUB storage must happen only after an explicit download action");
+  assert.doesNotMatch(main, /caches\.delete\(["']panels-offline-books-v1["']\)/,
+    "ordinary app-shell repair must preserve explicit offline books");
 });
 
 test("the server exposes an unauthenticated no-store build signal for stale-client recovery", () => {
