@@ -98,6 +98,12 @@ export default defineConfig({
           "assets/books-app-*.*",
           "assets/books-*.*",
           "assets/epub-reader-*.*",
+          // These account and discovery views require a live authenticated API
+          // response, so keeping their small lazy chunks out of the install
+          // shell preserves room for offline reading rather than caching a
+          // screen that cannot work while disconnected.
+          "assets/account-management-*.*",
+          "assets/more-like-this-*.*",
           // Stale-client checks are online-only and must never rely on the shell
           // cache they are responsible for repairing.
           "assets/app-lifecycle-*.*",
