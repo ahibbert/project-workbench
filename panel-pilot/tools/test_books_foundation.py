@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT))
 
 from books import (  # noqa: E402
     BookRequestError, BookStore, BooksConfig, BooksService,
-    sanitize_epub_archive, validate_epub_archive,
+    classify_download_failure, sanitize_epub_archive, score_book_release, validate_epub_archive,
 )
 from opds_client import OpdsClient, OpdsError, parse_opds_feed  # noqa: E402
 from shelfmark_client import _manual_irc_query, normalize_metadata_results, normalize_releases  # noqa: E402
@@ -114,10 +114,10 @@ class BooksConfigurationTests(unittest.TestCase):
                     "SELECT name FROM sqlite_master WHERE type = 'table'"
                 )}
                 version = connection.execute("PRAGMA user_version").fetchone()[0]
-            self.assertEqual(version, 5)
+            self.assertEqual(version, 6)
             self.assertTrue({
                 "books", "book_progress", "book_reader_preferences", "book_reader_profiles",
-                "shelfmark_downloads", "book_meta",
+                "shelfmark_downloads", "book_meta", "book_source_reliability",
             }.issubset(tables))
 
     def test_version_one_store_migrates_book_library_groups_and_removal_tombstone(self):
@@ -134,7 +134,7 @@ class BooksConfigurationTests(unittest.TestCase):
             with store.connection() as migrated:
                 version = migrated.execute("PRAGMA user_version").fetchone()[0]
                 columns = {row[1] for row in migrated.execute("PRAGMA table_info(books)")}
-            self.assertEqual(version, 5)
+            self.assertEqual(version, 6)
             self.assertIn("library_status", columns)
             self.assertIn("removed_at", columns)
 
@@ -300,9 +300,31 @@ class BooksConfigurationTests(unittest.TestCase):
             failed = store.get_download("stale-import")
             self.assertEqual(failed["status"], "failed")
             self.assertIn("did not import", failed["error"])
+            self.assertEqual(failed["errorCode"], "import_timeout")
+            self.assertEqual(store.source_reliability()["unknown-source"]["failures"], 1)
 
 
 class ShelfmarkNormalizationTests(unittest.TestCase):
+    def test_failure_messages_are_safe_and_actionable(self):
+        exhausted = classify_download_failure("All download sources failed: https://secret.invalid/key")
+        self.assertEqual(exhausted["code"], "sources_exhausted")
+        self.assertNotIn("secret", repr(exhausted))
+        self.assertIn("another release", exhausted["action"])
+        denied = classify_download_failure("HTTP 403 from upstream using api key abc")
+        self.assertEqual(denied["code"], "source_authorization")
+        self.assertNotIn("abc", repr(denied))
+
+    def test_release_score_rewards_matching_metadata_and_observed_reliability(self):
+        strong, reasons = score_book_release({
+            "language": "en", "sizeBytes": 3_500_000, "author": "A Writer",
+            "publisher": "A Publisher", "publishedYear": "2026", "downloads": 1200,
+        }, {"attempts": 4, "successes": 4})
+        weak, _ = score_book_release({
+            "language": "de", "sizeBytes": 40_000, "downloads": 0,
+        }, {"attempts": 3, "successes": 0})
+        self.assertGreater(strong, weak)
+        self.assertIn("English match", reasons)
+
     def test_manual_irc_query_uses_primary_title_and_author_surname(self):
         self.assertEqual(
             _manual_irc_query("The Bright Sword: A Novel of King Arthur", ["Lev Grossman"]),
@@ -389,12 +411,56 @@ class ShelfmarkNormalizationTests(unittest.TestCase):
             self.assertEqual(fake.queued["download_url"], "https://secret-upstream.invalid/alice.epub")
             failed = service.refresh_downloads()[0]
             self.assertEqual(failed["status"], "failed")
-            self.assertEqual(failed["error"], "Shelfmark reported a download failure")
+            self.assertEqual(failed["error"], "Shelfmark could not download this EPUB.")
+            self.assertEqual(failed["errorCode"], "download_failed")
             retried = service.releases("openlibrary", "alice")
             self.assertEqual(retried[0]["attemptStatus"], "failed")
-            self.assertEqual(retried[0]["attemptError"], "Shelfmark reported a download failure")
+            self.assertEqual(retried[0]["attemptError"], "Shelfmark could not download this EPUB.")
+            self.assertEqual(retried[0]["recommendation"], "Previously failed")
+            self.assertEqual(retried[0]["sourceReliability"]["failures"], 1)
             with self.assertRaisesRegex(ValueError, "expired"):
                 service.queue_download(public[0]["token"], "book-token")
+
+    def test_release_ranking_uses_observed_source_success_and_quality_signals(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = BooksConfig(
+                enabled=True,
+                database_path=str(pathlib.Path(temporary) / "books.sqlite3"),
+                cache_path=str(pathlib.Path(temporary) / "cache"),
+                sync_interval_seconds=300,
+                shelfmark_base_url="http://shelfmark:8084", shelfmark_api_key="secret-key",
+                cwa_opds_url="http://cwa:8083/opds", cwa_username="reader", cwa_password="password",
+            )
+            service = BooksService(config)
+            for index in range(3):
+                service.store.save_download(
+                    task_id=f"worked-{index}", release_id=f"worked-{index}", provider="openlibrary",
+                    provider_book_id="other", title="Other", isbn="", authors=[],
+                    source="direct_download", catalog_source="libgen",
+                )
+                service.store.update_download(f"worked-{index}", status="ready")
+
+            class FakeShelfmark:
+                def releases(self, provider, provider_book_id, **kwargs):
+                    return [{
+                        "id": "weak", "source": "direct_download", "catalogSource": "unknown-mirror",
+                        "title": "Book", "language": "de", "format": "EPUB", "sizeBytes": 40_000,
+                        "seeders": None, "downloads": 0, "author": "", "publisher": "", "publishedYear": "",
+                        "_release": {"source": "direct_download", "source_id": "weak", "format": "epub"},
+                    }, {
+                        "id": "strong", "source": "direct_download", "catalogSource": "libgen",
+                        "title": "Book", "language": "en", "format": "EPUB", "sizeBytes": 3_000_000,
+                        "seeders": None, "downloads": 500, "author": "A", "publisher": "P", "publishedYear": "2026",
+                        "_release": {"source": "direct_download", "source_id": "strong", "format": "epub"},
+                    }]
+
+            service.shelfmark_client = lambda: FakeShelfmark()
+            ranked = service.releases("openlibrary", "book")
+            self.assertEqual([item["title"] for item in ranked], ["Book", "Book"])
+            self.assertEqual(ranked[0]["catalogSource"], "libgen")
+            self.assertEqual(ranked[0]["recommendation"], "Recommended")
+            self.assertGreater(ranked[0]["score"], ranked[1]["score"])
+            self.assertEqual(ranked[0]["sourceReliability"]["successes"], 3)
 
 
 class OpdsParsingTests(unittest.TestCase):

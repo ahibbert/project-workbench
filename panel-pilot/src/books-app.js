@@ -416,7 +416,7 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
   }
 
   function acquisitionDetail(download) {
-    if (download.error) return download.error;
+    if (download.error) return [download.error, download.errorAction].filter(Boolean).join(" ");
     if (download.status === "ready") return "Added recently";
     if (download.status === "downloading" && Number.isFinite(Number(download.progress))) {
       const percent = Math.round(Math.max(0, Math.min(1, Number(download.progress))) * 100);
@@ -675,15 +675,34 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
       releaseResults.forEach((release, releaseIndex) => {
         const row = element("div", "book-release-row");
         if (release.attemptStatus) row.dataset.attemptStatus = release.attemptStatus;
-        const copy = element("span");
+        const copy = element("span", "book-release-copy");
+        const titleLine = element("span", "book-release-title");
+        titleLine.append(
+          element("strong", "", release.title || `${selectedBook.title} EPUB`),
+          element("span", `book-release-rank${release.recommendation === "Recommended" ? " is-recommended" : ""}`, release.recommendation || "Alternative"),
+        );
         const edition = [release.publisher, release.publishedYear].filter(Boolean).join(", ");
         const attempt = release.attemptStatus === "failed"
           ? (release.attemptError || "A previous download attempt failed")
           : release.attemptStatus ? `Already ${downloadLabel({ status: release.attemptStatus }).toLocaleLowerCase()}` : "Untried";
+        const reliability = release.sourceReliability || {};
+        const sourceHistory = Number(reliability.attempts) > 0
+          ? `${reliability.successes}/${reliability.attempts} successful here`
+          : "not yet tested here";
         copy.append(
-          element("strong", "", release.title || `${selectedBook.title} EPUB`),
-          element("small", "", [edition, release.language || "Language unknown", humanSize(release.sizeBytes), Number.isFinite(release.downloads) ? `${release.downloads.toLocaleString()} downloads` : "", attempt].filter(Boolean).join(" · ")),
+          titleLine,
+          element("small", "", [
+            release.catalogSource || release.source, edition, release.language || "Language unknown",
+            humanSize(release.sizeBytes), Number.isFinite(release.downloads) ? `${release.downloads.toLocaleString()} downloads` : "",
+            `${release.score ?? "–"}/100`, sourceHistory, attempt,
+          ].filter(Boolean).join(" · ")),
         );
+        if (Array.isArray(release.scoreReasons) && release.scoreReasons.length) {
+          copy.append(element("small", "book-release-reasons", release.scoreReasons.join(" · ")));
+        }
+        if (release.attemptStatus === "failed" && release.attemptErrorAction) {
+          copy.append(element("small", "book-release-action", release.attemptErrorAction));
+        }
         const add = element("button", release.attemptStatus ? "mini-button" : "primary-button", release.attemptStatus === "failed" ? "Retry this record" : "Add to Library");
         add.type = "button";
         add.dataset.booksAction = "queue-release";

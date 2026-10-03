@@ -140,10 +140,19 @@ export function createBookServicesController({ elements, navigate, onLibraryChan
     const connected = Boolean(status?.shelfmarkConfigured && status?.cwaConfigured && !status?.syncError);
     state.textContent = connected ? "Connected" : "Needs attention";
     state.dataset.state = connected ? "good" : "pending";
+    const histories = Array.isArray(status?.sourceReliability) ? status.sourceReliability : [];
+    const trackedAttempts = histories.reduce((total, item) => total + Number(item.attempts || 0), 0);
+    const strongest = histories
+      .filter((item) => Number(item.attempts || 0) > 0)
+      .sort((left, right) => Number(right.successRate || 0) - Number(left.successRate || 0))[0];
+    const reliabilityCopy = trackedAttempts
+      ? `${trackedAttempts} source result${trackedAttempts === 1 ? "" : "s"} tracked${strongest ? ` · ${strongest.source} ${Math.round(Number(strongest.successRate || 0) * 100)}% successful` : ""}`
+      : "Source reliability will learn from completed downloads";
     note.textContent = message || [
       status?.shelfmarkConfigured ? "Shelfmark ready" : "Shelfmark needs server configuration",
       status?.cwaConfigured ? "CWA connected" : "CWA needs server configuration",
       Number.isFinite(status?.books) ? `${status.books} book${status.books === 1 ? "" : "s"} indexed` : "",
+      reliabilityCopy,
       status?.syncError ? `Last sync failed: ${status.syncError}` : "",
     ].filter(Boolean).join(" · ");
   }

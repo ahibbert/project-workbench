@@ -62,6 +62,12 @@ downloaded chapters.
 
 Shelfmark is only an acquisition provider. Panels does not install or configure
 Shelfmark download sources and does not handle DRM-protected files.
+Panels ranks the EPUB releases returned by Shelfmark using language, plausible
+file size, edition metadata, popularity, and the household's observed success
+history for that source. The score is an explainable ordering aid rather than a
+guarantee of file quality. Failed records stay visible, receive a stable failure
+category and next-step guidance, and can be retried after a fresh release search.
+Raw source URLs and upstream error text remain server-side.
 
 ## Configuration
 
@@ -73,6 +79,8 @@ COMPOSE_PROFILES=books
 BOOKS_ENABLED=true
 SHELFMARK_BASE_URL=http://shelfmark:8084
 SHELFMARK_API_KEY=<a separate random secret>
+# Optional; belongs to Shelfmark only, never Panel Pilot
+AA_DONATOR_KEY=<rotated Anna's Archive donor key>
 CWA_OPDS_URL=http://calibre-web-automated:8083/opds
 CWA_USERNAME=<CWA OPDS user>
 CWA_PASSWORD=<CWA OPDS password>
@@ -82,6 +90,13 @@ BOOK_SYNC_INTERVAL_SECONDS=300
 Generate the Shelfmark key with `openssl rand -base64 32`. Configure the same
 value in both the Panels and Shelfmark containers. It grants administrative API
 access and must be treated like a root password.
+
+For Anna's Archive fast downloads, create or rotate the donor key in that
+service, put it in the server-side `.env` as `AA_DONATOR_KEY`, enable `aa-fast`
+under Shelfmark's **Direct Download → Fast downloads**, and restart Shelfmark.
+Do not paste the key into Panel Pilot, a browser, logs, or a support conversation.
+The Compose service passes it only to Shelfmark. Without it, Shelfmark continues
+to use the configured LibGen and slower direct-download fallbacks.
 
 The Shelfmark and CWA web ports bind to `127.0.0.1` by default. Reach their setup
 interfaces through an SSH tunnel rather than exposing them publicly:

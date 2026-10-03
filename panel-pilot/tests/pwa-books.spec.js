@@ -424,11 +424,17 @@ test("failed Shelfmark records are identified and untried alternatives are offer
     token: "untried-token", source: "direct_download", title: "The Bright Sword",
     language: "en", format: "EPUB", sizeBytes: 3_670_016, downloads: 98,
     publisher: "Penguin Publishing Group", publishedYear: "2024", attemptStatus: "", attemptError: "",
+    catalogSource: "libgen", score: 91, recommendation: "Recommended",
+    scoreReasons: ["English match", "Edition metadata available"],
+    sourceReliability: { attempts: 4, successes: 3 },
   }, {
     token: "failed-token", source: "direct_download", title: "The Bright Sword : A Novel of King Arthur",
     language: "en", format: "EPUB", sizeBytes: 10_000_000, downloads: 1466,
     publisher: "Penguin Random House", publishedYear: "2024", attemptStatus: "failed",
     attemptError: "No configured Shelfmark mirror could retrieve this EPUB",
+    attemptErrorAction: "Choose another release; this one is unlikely to succeed on an immediate retry.",
+    catalogSource: "annas_archive", score: 82, recommendation: "Previously failed",
+    scoreReasons: ["English match"], sourceReliability: { attempts: 2, successes: 0 },
   }];
   await stubApp(page, { booksEnabled: true, releaseRecords });
   await page.goto("/", { waitUntil: "networkidle" });
@@ -440,8 +446,12 @@ test("failed Shelfmark records are identified and untried alternatives are offer
   const rows = page.locator(".book-release-row");
   await expect(rows).toHaveCount(2);
   await expect(rows.first()).toContainText("3.5 MB");
+  await expect(rows.first()).toContainText("Recommended");
+  await expect(rows.first()).toContainText("91/100");
+  await expect(rows.first()).toContainText("3/4 successful here");
   await expect(rows.first()).toContainText("Untried");
   await expect(rows.last()).toContainText("No configured Shelfmark mirror");
+  await expect(rows.last()).toContainText("Choose another release");
   await expect(rows.last().getByRole("button")).toHaveText("Retry this record");
   await expect(page.locator(".books-release-note")).toContainText("Untried EPUB records are shown first");
 });

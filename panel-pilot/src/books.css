@@ -359,6 +359,38 @@
   gap: 0.2rem;
 }
 
+.book-release-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.book-release-rank {
+  display: inline-flex;
+  padding: 0.2rem 0.45rem;
+  border-radius: 999px;
+  background: #eef0ec;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.015em;
+}
+
+.book-release-rank.is-recommended {
+  background: color-mix(in srgb, var(--accent) 14%, white);
+  color: var(--accent-strong);
+}
+
+.book-release-reasons {
+  font-size: 0.76rem;
+}
+
+.book-release-action {
+  color: var(--ink) !important;
+  font-weight: 650;
+}
+
 .book-search-result small,
 .book-release-row small,
 .books-download-row small,

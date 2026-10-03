@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -23,7 +24,7 @@ from opds_client import OpdsClient, OpdsConfig, OpdsError
 from shelfmark_client import ShelfmarkClient, ShelfmarkConfig, ShelfmarkError
 
 
-BOOKS_SCHEMA_VERSION = 5
+BOOKS_SCHEMA_VERSION = 6
 BOOK_IMPORT_TIMEOUT_SECONDS = 60 * 60
 BOOK_LIBRARY_STATUSES = {
     "reading", "plan_to_read", "paused", "completed", "dropped", "rereading", "considering",
@@ -36,6 +37,96 @@ class BookRequestError(ValueError):
         self.status = status
         self.code = code
         self.current = current
+
+
+def classify_download_failure(message: str) -> dict[str, str]:
+    """Turn variable upstream text into stable, credential-safe user guidance."""
+    normalized = re.sub(r"\s+", " ", str(message or "").strip().casefold())
+    rules = (
+        (("all download sources failed", "all sources failed", "no download sources"),
+         "sources_exhausted", "Every configured source failed to retrieve this EPUB.",
+         "Try another release. If every edition fails, check Shelfmark source health."),
+        (("rate limit", "too many requests", "quota", "donator"),
+         "rate_limited", "The selected source is temporarily rate-limited.",
+         "Wait briefly or choose another release; check the server-side source plan if this persists."),
+        (("unauthorized", "forbidden", "authentication", "invalid key", "api key", "http 401", "http 403"),
+         "source_authorization", "The selected source rejected Shelfmark's access.",
+         "Check the server-side source credential, then retry or choose another release."),
+        (("not found", "removed", "unavailable", "http 404", "dead link"),
+         "source_missing", "This release is no longer available from its source.",
+         "Choose another release; this one is unlikely to succeed on an immediate retry."),
+        (("timeout", "timed out", "deadline"),
+         "source_timeout", "The selected source did not respond in time.",
+         "Retry once or choose another release if the source remains slow."),
+        (("invalid epub", "malformed", "corrupt", "unsupported format"),
+         "invalid_file", "The downloaded file was not a usable EPUB.",
+         "Choose another release, preferably from a different source."),
+    )
+    for needles, code, public_message, action in rules:
+        if any(needle in normalized for needle in needles):
+            return {"code": code, "message": public_message, "action": action}
+    return {
+        "code": "download_failed",
+        "message": "Shelfmark could not download this EPUB.",
+        "action": "Retry once or choose another release. Check Shelfmark health if several releases fail.",
+    }
+
+
+def score_book_release(
+    release: dict[str, Any], reliability: dict[str, Any] | None = None,
+) -> tuple[int, list[str]]:
+    """Return a transparent quality/reliability score without probing a source again."""
+    score = 50.0
+    reasons: list[str] = []
+    language = str(release.get("language") or "").strip().casefold()
+    if language in {"en", "eng", "english"} or language.startswith("en-"):
+        score += 14
+        reasons.append("English match")
+    elif not language or language in {"unknown", "und"}:
+        score += 2
+        reasons.append("Language not reported")
+    else:
+        score -= 18
+        reasons.append(f"Reported as {release.get('language')}")
+
+    size = release.get("sizeBytes")
+    if isinstance(size, int) and size > 0:
+        if 250_000 <= size <= 150_000_000:
+            score += 8
+            reasons.append("Plausible EPUB size")
+        elif size < 100_000:
+            score -= 22
+            reasons.append("Unusually small file")
+        elif size > 500_000_000:
+            score -= 8
+            reasons.append("Unusually large file")
+    else:
+        reasons.append("File size not reported")
+
+    metadata_fields = sum(bool(release.get(key)) for key in ("author", "publisher", "publishedYear"))
+    if metadata_fields >= 2:
+        score += 7
+        reasons.append("Edition metadata available")
+    elif metadata_fields == 1:
+        score += 3
+
+    downloads = release.get("downloads")
+    if isinstance(downloads, int) and downloads > 0:
+        score += min(10, max(1, math.log10(downloads + 1) * 3))
+        reasons.append("Used by other readers")
+
+    if reliability and int(reliability.get("attempts") or 0) > 0:
+        attempts = int(reliability.get("attempts") or 0)
+        successes = int(reliability.get("successes") or 0)
+        smoothed = (successes + 2) / (attempts + 4)
+        score += (smoothed - 0.5) * 32
+        if successes:
+            reasons.append(f"Worked {successes} of {attempts} tracked attempt{'s' if attempts != 1 else ''}")
+        else:
+            reasons.append(f"No success in {attempts} tracked attempt{'s' if attempts != 1 else ''}")
+    else:
+        reasons.append("No reliability history yet")
+    return max(0, min(100, round(score))), reasons[:5]
 
 
 def validate_epub_archive(path: Path) -> None:
@@ -342,6 +433,35 @@ class BookStore:
                         PRIMARY KEY(user_id, scope_key)
                     );
                     PRAGMA user_version = 5;
+                """)
+                version = 5
+            if version < 6:
+                download_columns = {row[1] for row in connection.execute("PRAGMA table_info(shelfmark_downloads)")}
+                additions = {
+                    "release_id": "TEXT NOT NULL DEFAULT ''",
+                    "source": "TEXT NOT NULL DEFAULT ''",
+                    "catalog_source": "TEXT NOT NULL DEFAULT ''",
+                    "failure_code": "TEXT NOT NULL DEFAULT ''",
+                    "failure_action": "TEXT NOT NULL DEFAULT ''",
+                    "reliability_recorded": "INTEGER NOT NULL DEFAULT 0",
+                }
+                for column, declaration in additions.items():
+                    if download_columns and column not in download_columns:
+                        connection.execute(f"ALTER TABLE shelfmark_downloads ADD COLUMN {column} {declaration}")
+                if download_columns:
+                    connection.execute("UPDATE shelfmark_downloads SET release_id=task_id WHERE release_id='' OR release_id IS NULL")
+                connection.executescript("""
+                    CREATE TABLE book_source_reliability (
+                        source_key TEXT PRIMARY KEY,
+                        display_name TEXT NOT NULL,
+                        attempts INTEGER NOT NULL DEFAULT 0,
+                        successes INTEGER NOT NULL DEFAULT 0,
+                        failures INTEGER NOT NULL DEFAULT 0,
+                        last_failure_code TEXT NOT NULL DEFAULT '',
+                        last_error TEXT NOT NULL DEFAULT '',
+                        updated_at TEXT NOT NULL
+                    );
+                    PRAGMA user_version = 6;
                 """)
 
     def ensure_owner_membership(self, owner_user_id: str, legacy_username: str = "") -> None:
@@ -871,14 +991,19 @@ class BookStore:
             result = {}
         return {**result, "at": row["updated_at"]}
 
-    def save_download(self, *, task_id: str, provider: str, provider_book_id: str, title: str, isbn: str, authors: list[str], user_id: str = "local") -> dict[str, Any]:
+    def save_download(
+        self, *, task_id: str, provider: str, provider_book_id: str, title: str,
+        isbn: str, authors: list[str], user_id: str = "local", release_id: str = "",
+        source: str = "", catalog_source: str = "",
+    ) -> dict[str, Any]:
         now = utc_now()
         with self.lock, self.connection() as connection:
             connection.execute("""
                 INSERT INTO shelfmark_downloads (
                     task_id, provider, provider_book_id, title, status, progress, error,
-                    expected_isbn, expected_authors_json, created_at, updated_at, requested_by_user_id
-                ) VALUES (?, ?, ?, ?, 'queued', 0, '', ?, ?, ?, ?, ?)
+                    expected_isbn, expected_authors_json, created_at, updated_at, requested_by_user_id,
+                    release_id, source, catalog_source, failure_code, failure_action, reliability_recorded
+                ) VALUES (?, ?, ?, ?, 'queued', 0, '', ?, ?, ?, ?, ?, ?, ?, ?, '', '', 0)
                 ON CONFLICT(task_id) DO UPDATE SET
                     provider = excluded.provider,
                     provider_book_id = excluded.provider_book_id,
@@ -887,10 +1012,15 @@ class BookStore:
                     expected_isbn = excluded.expected_isbn,
                     expected_authors_json = excluded.expected_authors_json,
                     book_id = NULL, updated_at = excluded.updated_at,
-                    requested_by_user_id = excluded.requested_by_user_id
+                    requested_by_user_id = excluded.requested_by_user_id,
+                    release_id = excluded.release_id,
+                    source = excluded.source,
+                    catalog_source = excluded.catalog_source,
+                    failure_code = '', failure_action = '', reliability_recorded = 0
             """, (
                 str(task_id)[:1000], str(provider)[:100], str(provider_book_id)[:300], str(title)[:1000],
                 str(isbn or "")[:40], json.dumps(self._authors(authors), ensure_ascii=True), now, now, str(user_id),
+                str(release_id or task_id)[:500], str(source)[:100], str(catalog_source or source)[:100],
             ))
         return self.get_download(task_id)
 
@@ -903,6 +1033,9 @@ class BookStore:
             "status": row["status"],
             "progress": row["progress"],
             "error": row["error"],
+            "errorCode": row["failure_code"] if "failure_code" in row.keys() else "",
+            "errorAction": row["failure_action"] if "failure_action" in row.keys() else "",
+            "source": row["catalog_source"] if "catalog_source" in row.keys() else "",
             "bookId": row["book_id"],
             "createdAt": row["created_at"],
             "updatedAt": row["updated_at"],
@@ -924,27 +1057,93 @@ class BookStore:
     def download_attempts(self, user_id: str, provider: str, provider_book_id: str) -> dict[str, dict[str, Any]]:
         with self.lock, self.connection() as connection:
             rows = connection.execute(
-                """SELECT task_id,status,error,updated_at FROM shelfmark_downloads
+                """SELECT task_id,release_id,status,error,failure_code,failure_action,updated_at FROM shelfmark_downloads
                    WHERE requested_by_user_id=? AND provider=? AND provider_book_id=?
                    ORDER BY updated_at DESC""",
                 (str(user_id), str(provider), str(provider_book_id)),
             ).fetchall()
         return {
-            str(row["task_id"]): {
-                "status": row["status"], "error": row["error"], "updatedAt": row["updated_at"],
+            str(row["release_id"] or row["task_id"]): {
+                "status": row["status"], "error": row["error"],
+                "errorCode": row["failure_code"], "errorAction": row["failure_action"],
+                "updatedAt": row["updated_at"],
             }
             for row in rows
         }
 
-    def update_download(self, task_id: str, *, status: str, progress: float | None = None, error: str = "") -> None:
+    def update_download(
+        self, task_id: str, *, status: str, progress: float | None = None, error: str = "",
+        failure_code: str = "", failure_action: str = "",
+    ) -> None:
         allowed = {"queued", "downloading", "importing", "ready", "failed", "cancelled"}
         if status not in allowed:
             raise ValueError("Invalid book download status")
         with self.lock, self.connection() as connection:
             connection.execute(
-                "UPDATE shelfmark_downloads SET status = ?, progress = COALESCE(?, progress), error = ?, updated_at = ? WHERE task_id = ?",
-                (status, progress, str(error or "")[:500], utc_now(), str(task_id)),
+                """UPDATE shelfmark_downloads
+                   SET status=?, progress=COALESCE(?, progress), error=?, failure_code=?, failure_action=?, updated_at=?
+                   WHERE task_id=?""",
+                (
+                    status, progress, str(error or "")[:500], str(failure_code or "")[:80],
+                    str(failure_action or "")[:500], utc_now(), str(task_id),
+                ),
             )
+        if status in {"ready", "failed"}:
+            self.record_download_outcome(task_id)
+
+    @staticmethod
+    def _source_key(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "-", str(value or "").casefold()).strip("-")[:100]
+
+    def record_download_outcome(self, task_id: str) -> bool:
+        """Record one terminal result per task for source ranking."""
+        with self.lock, self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM shelfmark_downloads WHERE task_id=?", (str(task_id),)
+            ).fetchone()
+            if not row or row["status"] not in {"ready", "failed"} or int(row["reliability_recorded"] or 0):
+                return False
+            display = str(row["catalog_source"] or row["source"] or "Unknown source")[:100]
+            key = self._source_key(display) or "unknown"
+            success = 1 if row["status"] == "ready" else 0
+            failure = 1 - success
+            connection.execute("""
+                INSERT INTO book_source_reliability(
+                    source_key,display_name,attempts,successes,failures,last_failure_code,last_error,updated_at
+                ) VALUES(?,?,1,?,?,?, ?,?)
+                ON CONFLICT(source_key) DO UPDATE SET
+                    display_name=excluded.display_name,
+                    attempts=book_source_reliability.attempts+1,
+                    successes=book_source_reliability.successes+excluded.successes,
+                    failures=book_source_reliability.failures+excluded.failures,
+                    last_failure_code=CASE WHEN excluded.failures=1 THEN excluded.last_failure_code ELSE book_source_reliability.last_failure_code END,
+                    last_error=CASE WHEN excluded.failures=1 THEN excluded.last_error ELSE book_source_reliability.last_error END,
+                    updated_at=excluded.updated_at
+            """, (
+                key, display, success, failure, str(row["failure_code"] or "")[:80],
+                str(row["error"] or "")[:500], utc_now(),
+            ))
+            connection.execute(
+                "UPDATE shelfmark_downloads SET reliability_recorded=1 WHERE task_id=?", (str(task_id),)
+            )
+        return True
+
+    def source_reliability(self) -> dict[str, dict[str, Any]]:
+        with self.lock, self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM book_source_reliability ORDER BY attempts DESC, display_name"
+            ).fetchall()
+        return {
+            str(row["source_key"]): {
+                "source": row["display_name"],
+                "attempts": int(row["attempts"]),
+                "successes": int(row["successes"]),
+                "failures": int(row["failures"]),
+                "successRate": round(int(row["successes"]) / max(1, int(row["attempts"])), 3),
+                "lastFailureCode": row["last_failure_code"],
+            }
+            for row in rows
+        }
 
     def reconcile_downloads(self) -> int:
         ready = 0
@@ -988,6 +1187,11 @@ class BookStore:
                         ON CONFLICT(user_id,book_id) DO UPDATE SET removed_at=''
                     """, (download["requested_by_user_id"], book_id, now))
                     ready += 1
+            completed = [str(row["task_id"]) for row in connection.execute(
+                "SELECT task_id FROM shelfmark_downloads WHERE status='ready' AND reliability_recorded=0"
+            ).fetchall()]
+        for task_id in completed:
+            self.record_download_outcome(task_id)
         return ready
 
     def fail_stale_imports(self, timeout_seconds: int = BOOK_IMPORT_TIMEOUT_SECONDS, now: datetime | None = None) -> int:
@@ -1004,10 +1208,20 @@ class BookStore:
                     updated = 0
                 if updated <= cutoff:
                     connection.execute(
-                        "UPDATE shelfmark_downloads SET status = 'failed', error = ?, updated_at = ? WHERE task_id = ?",
-                        ("CWA did not import this EPUB within one hour", utc_now(), row["task_id"]),
+                        """UPDATE shelfmark_downloads SET status='failed', error=?, failure_code='import_timeout',
+                           failure_action=?, updated_at=? WHERE task_id=?""",
+                        (
+                            "CWA did not import this EPUB within one hour",
+                            "Check CWA ingest health, then retry or choose another release.",
+                            utc_now(), row["task_id"],
+                        ),
                     )
                     failed += 1
+            terminal = [str(row["task_id"]) for row in connection.execute(
+                "SELECT task_id FROM shelfmark_downloads WHERE status='failed' AND reliability_recorded=0"
+            ).fetchall()]
+        for task_id in terminal:
+            self.record_download_outcome(task_id)
         return failed
 
 
@@ -1043,11 +1257,13 @@ class BooksService:
         ))
 
     def status(self) -> dict[str, Any]:
+        source_history = list(self.store.source_reliability().values())
         return {
             **self.config.public_status(),
             **self.store.counts(),
             "lastSync": self.store.last_sync(),
             "syncError": self._last_error,
+            "sourceReliability": source_history,
         }
 
     def test_connection(self, target: str) -> dict[str, Any]:
@@ -1205,6 +1421,7 @@ class BooksService:
     ) -> list[dict[str, Any]]:
         releases = self.shelfmark_client().releases(provider, provider_book_id, title=title, authors=authors)
         attempts = self.store.download_attempts(user_id, provider, provider_book_id)
+        reliability_by_source = self.store.source_reliability()
         now = time.monotonic()
         public = []
         with self._release_lock:
@@ -1217,18 +1434,44 @@ class BooksService:
                 attempt = attempts.get(release_id)
                 raw = release.pop("_release")
                 self._release_tokens[token] = (now + 15 * 60, raw)
+                source_name = str(release.get("catalogSource") or release.get("source") or "Unknown source")
+                reliability = reliability_by_source.get(self.store._source_key(source_name))
+                score, score_reasons = score_book_release(release, reliability)
                 public.append({
                     **{key: value for key, value in release.items() if key != "id"},
                     "token": token,
+                    "score": score,
+                    "scoreReasons": score_reasons,
+                    "sourceReliability": reliability or {
+                        "source": source_name, "attempts": 0, "successes": 0, "failures": 0,
+                        "successRate": None, "lastFailureCode": "",
+                    },
                     "attemptStatus": attempt.get("status") if attempt else "",
                     "attemptError": attempt.get("error") if attempt else "",
+                    "attemptErrorCode": attempt.get("errorCode") if attempt else "",
+                    "attemptErrorAction": attempt.get("errorAction") if attempt else "",
                 })
             if len(self._release_tokens) > 2000:
                 oldest = sorted(self._release_tokens.items(), key=lambda item: item[1][0])
                 for token, _ in oldest[:len(self._release_tokens) - 2000]:
                     self._release_tokens.pop(token, None)
         priority = {"": 0, "queued": 1, "downloading": 1, "importing": 1, "ready": 1, "failed": 2, "cancelled": 2}
-        return sorted(public, key=lambda item: (priority.get(item.get("attemptStatus", ""), 1), -(item.get("downloads") or 0)))
+        ranked = sorted(public, key=lambda item: (
+            priority.get(item.get("attemptStatus", ""), 1),
+            -int(item.get("score") or 0),
+            -(item.get("downloads") or 0),
+        ))
+        untried = [item for item in ranked if not item.get("attemptStatus")]
+        for item in ranked:
+            if item.get("attemptStatus") == "failed":
+                item["recommendation"] = "Previously failed"
+            elif item is (untried[0] if untried else None):
+                item["recommendation"] = "Recommended"
+            elif not item.get("attemptStatus"):
+                item["recommendation"] = "Alternative"
+            else:
+                item["recommendation"] = "In progress"
+        return ranked
 
     def queue_download(self, release_token: str, book_token: str, user_id: str = "local") -> dict[str, Any]:
         with self._release_lock:
@@ -1255,6 +1498,10 @@ class BooksService:
             response.get("task_id") or response.get("taskId") or response.get("id")
             or raw_release.get("source_id") or raw_release.get("sourceId") or raw_release.get("id")
         )
+        extra = raw_release.get("extra") if isinstance(raw_release.get("extra"), dict) else {}
+        release_id = str(raw_release.get("source_id") or raw_release.get("sourceId") or raw_release.get("id") or task_id)
+        source = str(raw_release.get("source") or raw_release.get("provider") or "")
+        catalog_source = str(extra.get("direct_download_provider") or raw_release.get("indexer") or source)
         download = self.store.save_download(
             task_id=task_id,
             provider=provider,
@@ -1263,6 +1510,9 @@ class BooksService:
             isbn=str(book.get("isbn") or ""),
             authors=self.store._authors(book.get("authors")),
             user_id=user_id,
+            release_id=release_id,
+            source=source,
+            catalog_source=catalog_source,
         )
         self.store.reconcile_downloads()
         return self.store.get_download(task_id) or download
@@ -1300,14 +1550,13 @@ class BooksService:
                     except (TypeError, ValueError):
                         progress = None
                     status_message = str(item.get("status_message") or item.get("message") or "").strip() if isinstance(item, dict) else ""
-                    normalized_message = status_message.lower()
-                    if local_status == "failed" and normalized_message == "all download sources failed":
-                        error = "No configured Shelfmark mirror could retrieve this EPUB"
-                    elif local_status == "failed" and normalized_message in {"download failed", "failed", "error"}:
-                        error = "Shelfmark could not download this EPUB"
-                    else:
-                        error = "Shelfmark reported a download failure" if local_status == "failed" else ""
-                    self.store.update_download(task_id, status=local_status, progress=progress, error=error)
+                    failure = classify_download_failure(status_message) if local_status == "failed" else {
+                        "code": "", "message": "", "action": "",
+                    }
+                    self.store.update_download(
+                        task_id, status=local_status, progress=progress, error=failure["message"],
+                        failure_code=failure["code"], failure_action=failure["action"],
+                    )
         self.store.reconcile_downloads()
         self.store.fail_stale_imports()
         return self.store.list_downloads(user_id)

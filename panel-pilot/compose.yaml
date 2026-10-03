@@ -86,6 +86,8 @@ services:
       PGID: ${BOOKS_PGID:-1000}
       TZ: ${TZ:-Australia/Sydney}
       SHELFMARK_API_KEY: ${SHELFMARK_API_KEY:-}
+      # Shelfmark consumes this secret directly; Panels never receives it.
+      AA_DONATOR_KEY: ${AA_DONATOR_KEY:-}
     volumes:
       - book-ingest:/books
       - shelfmark-config:/config
