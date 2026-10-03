@@ -22,6 +22,29 @@ export function renderEpubToc(entries, parent, onSelect, depth = 0) {
   parent.append(list);
 }
 
+function publicNavigationEntries(entries = []) {
+  return entries.map((entry) => ({
+    label: String(entry?.label || "").trim() || "Untitled section",
+    href: String(entry?.href || ""),
+    subitems: publicNavigationEntries(entry?.subitems || entry?.children || []),
+  })).filter((entry) => entry.href || entry.subitems.length);
+}
+
+export async function loadEpubNavigation(epubUrl) {
+  const response = await fetch(epubUrl, { headers: { Accept: "application/epub+zip" }, cache: "default" });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || `EPUB contents could not be loaded (${response.status})`);
+  }
+  const publication = ePub(await response.arrayBuffer());
+  try {
+    const navigation = await publication.loaded.navigation;
+    return publicNavigationEntries(navigation?.toc || []);
+  } finally {
+    publication.destroy();
+  }
+}
+
 function safeProgression(value) {
   const number = Number(value);
   return Number.isFinite(number) ? Math.max(0, Math.min(1, number)) : null;
@@ -70,7 +93,7 @@ async function jsonRequest(path, options = {}) {
   return payload;
 }
 
-export async function createEpubReader({ root, book, progress, preferences, onExit }) {
+export async function createEpubReader({ root, book, progress, preferences, initialHref = "", onExit }) {
   let rendition = null;
   let publication = null;
   let currentProgress = progress;
@@ -78,7 +101,6 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
   let saveTimer = 0;
   let resizeTimer = 0;
   let controlsTimer = 0;
-  let chromeResizeFrame = 0;
   let destroyed = false;
   let locationsReady = false;
   let wakeLock = null;
@@ -86,6 +108,7 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
   let preferenceRequest = 0;
   let noticeTimer = 0;
   let renditionFlow = "";
+  let currentSectionProgress = null;
   const emergencyPositionKey = `panel-pilot:book-position:${book.id}`;
 
   function readEmergencyPosition() {
@@ -298,6 +321,41 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
     });
   }
 
+  function applySectionStructure(document, label = "") {
+    if (!document?.body) return;
+    const headingStyles = {
+      display: "block",
+      marginBlockStart: "0.7em",
+      marginBlockEnd: "0.8em",
+      lineHeight: "1.2",
+      textAlign: "start",
+      breakAfter: "avoid",
+    };
+    document.querySelectorAll("h1, h2, h3, h4, h5, h6, [epub\\:type~='title'], [role='heading']").forEach((heading) => {
+      Object.entries(headingStyles).forEach(([property, value]) => setImportant(heading.style, property.replace(/[A-Z]/g, (match) => `-${match.toLowerCase()}`), value));
+    });
+    const normalizedLabel = String(label || "").replace(/\s+/g, " ").trim().toLocaleLowerCase();
+    if (!normalizedLabel) return;
+    const candidates = [...document.body.querySelectorAll("h1, h2, h3, h4, h5, h6, [role='heading'], p, div, span")].slice(0, 40);
+    const matching = candidates.find((candidate) => (
+      String(candidate.textContent || "").replace(/\s+/g, " ").trim().toLocaleLowerCase() === normalizedLabel
+    ));
+    if (matching) {
+      matching.setAttribute("data-panels-section-heading", "true");
+      Object.entries(headingStyles).forEach(([property, value]) => setImportant(matching.style, property.replace(/[A-Z]/g, (match) => `-${match.toLowerCase()}`), value));
+      setImportant(matching.style, "font-size", "1.35em");
+      setImportant(matching.style, "font-weight", "700");
+      return;
+    }
+    if (document.body.querySelector("[data-panels-section-heading]") || document.body.querySelector("h1, h2, h3, h4, h5, h6")) return;
+    const heading = document.createElement("h2");
+    heading.dataset.panelsSectionHeading = "true";
+    heading.textContent = label;
+    document.body.prepend(heading);
+    Object.entries(headingStyles).forEach(([property, value]) => setImportant(heading.style, property.replace(/[A-Z]/g, (match) => `-${match.toLowerCase()}`), value));
+    setImportant(heading.style, "font-size", "1.35em");
+  }
+
   function applyPreferences() {
     reader.dataset.theme = preferences.theme;
     reader.dataset.flow = preferences.readingFlow;
@@ -318,14 +376,12 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
     if (!visible && settings.open) settings.open = false;
     reader.classList.toggle("epub-chrome-hidden", !visible);
     reader.dataset.controlsVisible = visible ? "true" : "false";
-    window.cancelAnimationFrame(chromeResizeFrame);
-    chromeResizeFrame = window.requestAnimationFrame(() => rendition?.resize?.());
+    centreRestore.setAttribute("aria-label", visible ? "Hide reader controls from page centre" : "Show reader controls from page centre");
     if (visible && linger && !settings.open && !toc.open) {
       controlsTimer = window.setTimeout(() => {
         reader.classList.add("epub-chrome-hidden");
         reader.dataset.controlsVisible = "false";
-        window.cancelAnimationFrame(chromeResizeFrame);
-        chromeResizeFrame = window.requestAnimationFrame(() => rendition?.resize?.());
+        centreRestore.setAttribute("aria-label", "Show reader controls from page centre");
       }, 5000);
     }
   }
@@ -374,9 +430,27 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
       }
     }
     const percentage = progression == null ? null : Math.round(progression * 100);
-    location.textContent = percentage == null ? "Exact position saved" : `${percentage}%`;
+    let locationCount = "";
+    if (locationsReady && cfi) {
+      try {
+        const index = publication.locations.locationFromCfi(cfi);
+        const total = publication.locations.length();
+        if (Number.isInteger(index) && index >= 0 && total > 0) locationCount = ` (${Math.min(total, index + 1)}/${total})`;
+      } catch {
+        // Percentage remains useful when a malformed CFI cannot map to the generated index.
+      }
+    }
+    location.textContent = percentage == null ? "Exact position saved" : `${percentage}%${locationCount}`;
     if (progression != null) scrubber.value = String(Math.round(progression * 1000));
-    if (locationsReady && progression != null) {
+    if (currentSectionProgress?.total > 0) {
+      const pagesLeft = Math.max(0, currentSectionProgress.total - currentSectionProgress.page);
+      if (pagesLeft === 0) {
+        timeRemaining.textContent = `End of ${currentSectionProgress.label || "section"}`;
+      } else {
+        const duration = humanReadingTime(pagesLeft * 1.2).replace(/^About /, "about ");
+        timeRemaining.textContent = `${pagesLeft} page${pagesLeft === 1 ? "" : "s"} · ${duration} in ${currentSectionProgress.label || "this section"}`;
+      }
+    } else if (locationsReady && progression != null) {
       const remainingLocations = Math.max(0, publication.locations.length() * (1 - progression));
       timeRemaining.textContent = humanReadingTime((remainingLocations * 265) / 240);
     } else {
@@ -523,10 +597,24 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
     }
   }
 
+  function navigationEntryForHref(href, entries = publication?.navigation?.toc || []) {
+    const direct = publication?.navigation?.get?.(href);
+    if (direct) return direct;
+    const target = String(href || "").split("#")[0].split("/").pop();
+    for (const entry of entries) {
+      if (String(entry?.href || "").split("#")[0].split("/").pop() === target) return entry;
+      const child = navigationEntryForHref(href, entry?.subitems || entry?.children || []);
+      if (child) return child;
+    }
+    return null;
+  }
+
   function bindContentInteractions(contents) {
     const document = contents.document;
     sanitizeRenderedDocument(document);
     applyDocumentPreferences(document);
+    const sectionHref = contents.section?.href || "";
+    applySectionStructure(document, navigationEntryForHref(sectionHref)?.label || document.title);
     let contentGesture = null;
     let contentTouch = null;
     let lastHandledGesture = 0;
@@ -617,12 +705,24 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
     rendition.hooks.content.register(bindContentInteractions);
     rendition.on("relocated", (relocation) => {
       const start = relocation?.start || {};
+      const navigationItem = navigationEntryForHref(start.href);
+      currentSectionProgress = Number(start.displayed?.total) > 0 ? {
+        page: Math.max(1, Number(start.displayed.page) || 1),
+        total: Number(start.displayed.total),
+        label: navigationItem?.label?.trim() || "this section",
+      } : null;
       const progression = updateProgressDisplay(start.cfi, start.percentage ?? relocation?.percentage);
       pendingPosition = { cfi: start.cfi, href: start.href, progression };
-      const navigationItem = publication?.navigation?.get?.(start.href);
       chapterTitle.textContent = navigationItem?.label?.trim() || (start.displayed?.page && start.displayed?.total
         ? `Page ${start.displayed.page} of ${start.displayed.total}`
         : "Reading");
+      rendition?.getContents?.().forEach((contents) => {
+        const href = String(contents.section?.href || "").split("#")[0];
+        const activeHref = String(start.href || "").split("#")[0];
+        if (!activeHref || href === activeHref || href.split("/").pop() === activeHref.split("/").pop()) {
+          applySectionStructure(contents.document, navigationItem?.label);
+        }
+      });
       window.clearTimeout(saveTimer);
       saveTimer = window.setTimeout(() => { void savePosition(start.cfi, start.href, progression); }, 650);
     });
@@ -664,7 +764,7 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
       tocList.replaceChildren();
       renderEpubToc(navigation.toc || [], tocList, (href) => { toc.close(); void rendition.display(href); });
       if (!tocList.children.length) tocList.append(node("p", "epub-toc-empty", "This EPUB does not include a table of contents."));
-      await rendition.display(emergencyPosition?.locator || currentProgress?.locator || undefined);
+      await rendition.display(initialHref || emergencyPosition?.locator || currentProgress?.locator || undefined);
       loading.hidden = true;
       setControlsVisible(true, false);
       void generateLocations();
@@ -721,7 +821,9 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
   centreRestore.addEventListener("touchend", finishCentrePress, { passive: true });
   centreRestore.addEventListener("touchcancel", finishCentrePress, { passive: true });
   centreRestore.addEventListener("click", () => {
-    if (Date.now() >= suppressCentreClickUntil && !hasTextSelection(document)) setControlsVisible(true, false);
+    if (Date.now() >= suppressCentreClickUntil && !hasTextSelection(document)) {
+      setControlsVisible(reader.classList.contains("epub-chrome-hidden"), false);
+    }
   });
   tocButton.addEventListener("click", () => { toc.showModal(); setControlsVisible(true, false); });
   fullscreenButton.addEventListener("click", () => { void toggleFullscreen(); });
@@ -822,7 +924,6 @@ export async function createEpubReader({ root, book, progress, preferences, onEx
       window.clearTimeout(resizeTimer);
       window.clearTimeout(controlsTimer);
       window.clearTimeout(noticeTimer);
-      window.cancelAnimationFrame(chromeResizeFrame);
       window.removeEventListener("keydown", keyHandler);
       window.removeEventListener("resize", resizeHandler);
       window.removeEventListener("orientationchange", resizeHandler);

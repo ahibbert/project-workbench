@@ -195,6 +195,8 @@ test("enabled books join the main library and open an isolated detail view", asy
   await expect(page).toHaveURL(/#book-detail\?id=1$/);
   await expect(page.locator(".book-detail h2")).toHaveText("Alice's Adventures in Wonderland");
   await expect(page.locator(".book-detail .primary-button")).toBeEnabled();
+  await expect(page.locator(".book-about")).toContainText("A public-domain adventure.");
+  await expect(page.locator(".book-contents-list .epub-toc-link").first()).toBeVisible();
   await page.getByLabel("Library group", { exact: true }).selectOption("paused");
   await expect(page.getByLabel("Library group", { exact: true })).toHaveValue("paused");
   await page.locator("#nav-settings").click();
@@ -305,11 +307,21 @@ test("book Browse keeps recommendations separate and shows only useful acquisiti
   await page.locator(".browse-media-switch").getByRole("button", { name: "Books" }).click();
 
   await expect(page.locator("#books-connection")).toHaveCount(0);
+  await expect(page.locator(".books-content > .books-back")).toHaveCount(0);
   const cards = page.locator(".book-recommendation-card");
   await expect(cards).toHaveCount(3);
   const bounds = await cards.evaluateAll((items) => items.map((item) => item.getBoundingClientRect()).map((rect) => ({ left: rect.left, right: rect.right })));
   expect(bounds[0].right).toBeLessThanOrEqual(bounds[1].left + 0.5);
   expect(bounds[1].right).toBeLessThanOrEqual(bounds[2].left + 0.5);
+  const actionBounds = await cards.evaluateAll((items) => items.map((item) => {
+    const card = item.getBoundingClientRect();
+    const button = item.querySelector("button").getBoundingClientRect();
+    return { cardLeft: card.left, cardRight: card.right, buttonLeft: button.left, buttonRight: button.right };
+  }));
+  actionBounds.forEach((item) => {
+    expect(item.buttonLeft).toBeGreaterThanOrEqual(item.cardLeft - 0.5);
+    expect(item.buttonRight).toBeLessThanOrEqual(item.cardRight + 0.5);
+  });
 
   await expect(page.locator(".books-downloads h2")).toHaveText("Acquisition activity");
   await expect(page.locator(".books-downloads")).toContainText("Active Book");
@@ -349,7 +361,11 @@ test("EPUB reader opens a public-domain fixture and persists an exact CFI", asyn
   await expect(page.locator(".epub-reader-title")).toHaveText("Alice's Adventures in Wonderland");
   await expect(page.frameLocator(".epub-viewport iframe").locator("body")).toContainText("Alice was beginning to get very tired");
   await expect(page.getByRole("slider", { name: "Book progress" })).toBeEnabled({ timeout: 10_000 });
+  await expect(page.locator(".epub-progress-location")).toHaveText(/\d+% \(\d+\/\d+\)/);
+  await expect(page.locator(".epub-time-remaining")).toHaveText(/(?:page|End of)/);
   await expect(page.locator(".epub-time-remaining")).not.toContainText("Generating");
+  await expect(page.frameLocator(".epub-viewport iframe").locator("[data-panels-section-heading]").first()).toHaveText("Down the Rabbit-Hole");
+  await expect.poll(() => page.frameLocator(".epub-viewport iframe").locator("[data-panels-section-heading]").first().evaluate((heading) => getComputedStyle(heading).display)).toBe("block");
   await page.getByRole("button", { name: "Contents" }).click();
   await expect(page.locator(".epub-toc")).toBeVisible();
   await page.getByRole("button", { name: "Close" }).click();
@@ -474,7 +490,7 @@ test("every EPUB preference value applies and combinations survive reflow", asyn
   }))).toEqual({ font: "system-ui, sans-serif", size: "150%", lineHeight: "2", alignment: "justify" });
 });
 
-test("centre taps toggle reader controls and visible chrome never covers the EPUB", async ({ page }) => {
+test("centre taps toggle overlay controls without resizing or repaginating the EPUB", async ({ page }) => {
   await stubApp(page, { booksEnabled: true });
   await page.goto("/", { waitUntil: "networkidle" });
   await page.getByRole("button", { name: /^Books$/ }).first().click();
@@ -483,30 +499,22 @@ test("centre taps toggle reader controls and visible chrome never covers the EPU
   await page.getByRole("button", { name: "Read book" }).click();
   const body = page.frameLocator(".epub-viewport iframe").locator("body");
   await expect(body).toContainText("Alice was beginning");
-  const centralTap = () => body.evaluate((element) => {
-    const view = element.ownerDocument.defaultView;
-    const options = { bubbles: true, clientX: view.innerWidth / 2, clientY: view.innerHeight / 2, pointerId: 1 };
-    element.dispatchEvent(new PointerEvent("pointerdown", options));
-    element.dispatchEvent(new PointerEvent("pointerup", options));
+  const readerGeometry = () => page.locator(".epub-reader").evaluate((reader) => {
+    const stage = reader.querySelector(".epub-stage").getBoundingClientRect();
+    const viewport = reader.querySelector(".epub-viewport").getBoundingClientRect();
+    return { stage: [stage.x, stage.y, stage.width, stage.height], viewport: [viewport.x, viewport.y, viewport.width, viewport.height] };
   });
-  await centralTap();
+  const initialGeometry = await readerGeometry();
+  await page.getByRole("button", { name: "Hide reader controls from page centre" }).click();
   await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "false");
   await expect.poll(() => page.locator(".epub-reader").evaluate((reader) => {
     const stage = reader.querySelector(".epub-stage");
     return Math.abs(stage.getBoundingClientRect().height - reader.getBoundingClientRect().height);
   })).toBeLessThan(2);
-  await centralTap();
+  expect(await readerGeometry()).toEqual(initialGeometry);
+  await page.getByRole("button", { name: "Show reader controls from page centre" }).click();
   await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "true");
-  await expect.poll(() => page.locator(".epub-reader").evaluate((reader) => {
-    const stage = reader.querySelector(".epub-stage");
-    const toolbar = reader.querySelector(".epub-toolbar");
-    const footer = reader.querySelector(".epub-footer");
-    const stageBounds = stage.getBoundingClientRect();
-    return {
-      belowToolbar: stageBounds.top >= toolbar.getBoundingClientRect().bottom - 1,
-      aboveFooter: stageBounds.bottom <= footer.getBoundingClientRect().top + 1,
-    };
-  })).toEqual({ belowToolbar: true, aboveFooter: true });
+  expect(await readerGeometry()).toEqual(initialGeometry);
 
   await page.waitForTimeout(500);
   await body.evaluate((element) => {
@@ -773,23 +781,36 @@ test("hidden paginated EPUB has an unobstructed parent centre escape zone", asyn
       zoneZ: Number(getComputedStyle(zone).zIndex),
       leftRatio: (zoneRect.left - stageRect.left) / stageRect.width,
       rightRatio: (zoneRect.right - stageRect.left) / stageRect.width,
+      topRatio: (zoneRect.top - stageRect.top) / stageRect.height,
+      bottomRatio: (zoneRect.bottom - stageRect.top) / stageRect.height,
+      areaRatio: (zoneRect.width * zoneRect.height) / (stageRect.width * stageRect.height),
       centreHit: hit === zone,
       contentClearsHandle: viewportRect.top >= handleRect.bottom - 1,
     };
   });
   expect(geometry).toMatchObject({ zoneDisplay: "block", zoneZ: 4, centreHit: true, contentClearsHandle: true });
-  expect(geometry.leftRatio).toBeGreaterThanOrEqual(0.23);
-  expect(geometry.rightRatio).toBeLessThanOrEqual(0.77);
+  expect(geometry.leftRatio).toBeGreaterThanOrEqual(0.32);
+  expect(geometry.rightRatio).toBeLessThanOrEqual(0.68);
+  expect(geometry.topRatio).toBeGreaterThanOrEqual(0.38);
+  expect(geometry.bottomRatio).toBeLessThanOrEqual(0.62);
+  expect(geometry.areaRatio).toBeLessThanOrEqual(0.08);
 
   const zone = page.getByRole("button", { name: "Show reader controls from page centre" });
   await zone.click();
   await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "true");
-  await expect(zone).toBeHidden();
+  const hideZone = page.getByRole("button", { name: "Hide reader controls from page centre" });
+  await expect(hideZone).toBeVisible();
+  await hideZone.click();
+  await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "false");
+  await zone.click();
+  await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "true");
 
   await page.locator(".epub-settings summary").click();
   await page.getByLabel("Reading flow").selectOption("scrolled");
   await page.locator(".epub-settings summary").click();
   await expect(page.frameLocator(".epub-viewport iframe").locator("body")).toContainText("Alice was beginning");
+  await expect(page.getByRole("button", { name: "Previous page" })).toBeHidden();
+  await expect(page.getByRole("button", { name: "Next page" })).toBeHidden();
   await body.evaluate((element) => {
     const view = element.ownerDocument.defaultView;
     const point = { clientX: view.innerWidth / 2, clientY: view.innerHeight / 2, pointerId: 13, bubbles: true };
@@ -831,7 +852,7 @@ test("offline lifecycle recovery restores an exact CFI then reconciles canonical
   await expect.poll(() => page.evaluate(() => localStorage.getItem("panel-pilot:book-position:1"))).toBeNull();
 });
 
-test("continuous EPUB edge and page keys move by a readable viewport before the spine", async ({ page }) => {
+test("continuous EPUB hides edge overlays while page keys move by a readable viewport", async ({ page }) => {
   await page.setViewportSize({ width: 430, height: 932 });
   await stubApp(page, { booksEnabled: true });
   await openEpubReader(page);
@@ -847,7 +868,9 @@ test("continuous EPUB edge and page keys move by a readable viewport before the 
     return { outer: container?.scrollTop || 0, inner: frame?.contentWindow?.scrollY || 0, height: container?.clientHeight || frame?.clientHeight || 0 };
   });
   const before = await scrollPosition();
-  await page.getByRole("button", { name: "Next page" }).click();
+  await expect(page.getByRole("button", { name: "Next page" })).toBeHidden();
+  await expect(page.getByRole("button", { name: "Previous page" })).toBeHidden();
+  await body.evaluate((element) => element.dispatchEvent(new KeyboardEvent("keydown", { key: "PageDown", bubbles: true, cancelable: true })));
   await expect.poll(async () => {
     const current = await scrollPosition();
     return Math.max(current.outer, current.inner);

@@ -11,15 +11,18 @@ const budgets = {
   indexHtml: 55 * 1024,
   // Includes offline milestones, source intelligence, the Detection Lab,
   // per-series calibration, spread handling, enhanced-reader controls,
-  // paginated source search, and the feature-flag/books navigation hooks.
-  mainJavaScript: 404 * 1024,
+  // paginated source search, feature-flag/books navigation hooks, and
+  // source-provided manga credits, genres, and descriptions on detail views.
+  mainJavaScript: 408 * 1024,
   mainCss: 72 * 1024,
   // Includes the integrated Books controls, cross-format resume, authentication
-  // boundary, unified Library/chapter-list polish, and paginated source search.
-  criticalPath: 546 * 1024,
+  // boundary, unified Library/chapter-list polish, paginated source search, and
+  // source-provided series metadata rendered in the main application shell.
+  criticalPath: 550 * 1024,
   // The installable shell precaches the authentication lifecycle and unified
-  // Library and paginated Browse controls so recovery and offline management work.
-  installShell: 787 * 1024,
+  // Library, metadata-rich detail, and paginated Browse controls so recovery
+  // and offline management work.
+  installShell: 788 * 1024,
   domContentLoadedMs: 1_500,
   loadMs: 2_000,
   applicationReadyMs: 2_500,

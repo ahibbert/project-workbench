@@ -288,6 +288,14 @@
               </div>
             </div>
           </div>
+          <section class="media-about manga-about" id="detail-about" aria-labelledby="detail-about-title" hidden>
+            <div class="media-about-heading">
+              <h3 id="detail-about-title">About this series</h3>
+              <span class="media-about-meta" id="detail-credits"></span>
+            </div>
+            <div class="media-tag-list" id="detail-genres" aria-label="Series information"></div>
+            <p class="media-description" id="detail-description"></p>
+          </section>
           <div class="chapter-controls">
             <label class="chapter-filter">
               <span>Release group</span>
@@ -451,6 +459,7 @@
               <div class="button-row app-update-actions">
                 <button id="check-app-update" type="button">Check for updates</button>
                 <button id="apply-app-update" type="button" hidden>Apply update</button>
+                <a class="text-button" href="/api/app-recovery">Repair a stuck update</a>
               </div>
             </div>
           </div>

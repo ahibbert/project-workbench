@@ -163,18 +163,22 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
       const back = element("button", "text-button books-back", "‹ Library");
       back.type = "button";
       back.dataset.booksAction = "back";
-      const detail = element("article", "book-detail");
+      const detail = element("article", "book-detail media-detail");
+      const cover = element("div", "book-detail-cover detail-cover");
+      cover.style.setProperty("--cover-hue", String([...book.title].reduce((total, character) => total + character.codePointAt(0), 0) % 360));
       if (book.coverUrl) {
-        const image = element("img", "book-detail-cover");
+        const image = element("img");
         image.src = book.coverUrl;
         image.alt = `Cover of ${book.title}`;
-        detail.append(image);
+        cover.append(image);
+      } else {
+        cover.append(element("span", "", book.title.slice(0, 2).toUpperCase()));
       }
       const copy = element("div", "book-detail-copy");
-      copy.append(element("p", "book-kicker", "EPUB"), element("h2", "", book.title));
+      const progressLabel = progress?.progression == null ? "EPUB" : `EPUB · ${Math.round(progress.progression * 100)}% read`;
+      copy.append(element("p", "book-kicker detail-source", progressLabel), element("h2", "", book.title));
       if (book.subtitle) copy.append(element("p", "book-subtitle", book.subtitle));
       copy.append(element("p", "book-authors", bookByline(book)));
-      if (book.description) copy.append(element("p", "book-description", book.description));
       const read = element("button", "primary-button", progress?.locator ? "Continue reading" : "Read book");
       read.type = "button";
       read.disabled = !book.hasEpub;
@@ -225,15 +229,59 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
           remove.reportValidity();
         }
       });
-      copy.append(group, read, remove);
-      detail.append(copy);
-      content.replaceChildren(back, detail);
+      const actions = element("div", "book-detail-actions detail-actions");
+      actions.append(read, remove);
+      copy.append(actions);
+      detail.append(cover, copy);
+
+      const about = element("section", "media-about book-about");
+      const aboutHeading = element("div", "media-about-heading");
+      aboutHeading.append(element("h3", "", "About this book"));
+      const metadata = [
+        book.seriesName ? `${book.seriesName}${book.seriesPosition == null ? "" : ` #${book.seriesPosition}`}` : "",
+        book.publisher,
+        book.publishedDate,
+        book.language ? String(book.language).toUpperCase() : "",
+      ].filter(Boolean);
+      aboutHeading.append(element("span", "media-about-meta", metadata.join(" · ")));
+      about.append(aboutHeading);
+      if (book.description) about.append(element("p", "media-description book-description", book.description));
+      const controls = element("div", "chapter-controls book-detail-controls");
+      controls.append(group);
+
+      const contents = element("section", "book-contents");
+      const contentsHeading = element("div", "book-contents-heading");
+      contentsHeading.append(
+        element("h3", "", "Contents"),
+        element("span", "", progress?.locator ? "Choose a section or continue from your saved place" : "Choose where to begin"),
+      );
+      const contentsList = element("nav", "book-contents-list");
+      contentsList.setAttribute("aria-label", `Contents of ${book.title}`);
+      contentsList.append(element("p", "books-loading", "Loading book contents…"));
+      contents.append(contentsHeading, contentsList);
+      content.replaceChildren(back, detail, about, controls, contents);
+      if (!book.description && !metadata.length) about.hidden = true;
+      if (!book.hasEpub) {
+        contentsList.replaceChildren(element("p", "books-empty-result", "This book does not currently have a readable EPUB."));
+        return;
+      }
+      try {
+        const module = await import("./epub-reader.js");
+        const navigation = await module.loadEpubNavigation(book.epubUrl);
+        contentsList.replaceChildren();
+        module.renderEpubToc(navigation, contentsList, (href) => navigate("book-read", { id: book.id, href }));
+        if (!contentsList.children.length) {
+          contentsList.append(element("p", "books-empty-result", "This EPUB does not include a table of contents. You can still read it from the beginning."));
+        }
+      } catch (error) {
+        contentsList.replaceChildren(element("p", "books-error", error.message));
+      }
     } catch (error) {
       content.replaceChildren(element("p", "books-error", error.message));
     }
   }
 
-  async function renderReader(id) {
+  async function renderReader(id, initialHref = "") {
     const generation = ++readerGeneration;
     document.body.classList.add("book-reader-active");
     const content = root.querySelector("#books-content");
@@ -251,6 +299,7 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
         book,
         progress,
         preferences,
+        initialHref,
         onExit: () => navigate("book-detail", { id: book.id }),
       });
       if (generation !== readerGeneration) {
@@ -361,9 +410,6 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
 
   function renderSearch() {
     const content = root.querySelector("#books-content");
-    const back = element("button", "text-button books-back", "‹ Browse");
-    back.type = "button";
-    back.dataset.booksAction = "back-browse";
     const mediaSwitch = element("div", "browse-media-switch");
     mediaSwitch.setAttribute("role", "group");
     mediaSwitch.setAttribute("aria-label", "What do you want to find?");
@@ -435,7 +481,7 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
     panel.append(form, results);
     const downloadHost = element("div");
     downloadHost.id = "books-downloads-container";
-    content.replaceChildren(back, mediaSwitch, recommendations, panel, downloadHost);
+    content.replaceChildren(mediaSwitch, recommendations, panel, downloadHost);
     void renderDownloads(downloadHost);
     void request("/api/book-recommendations?limit=12").then((payload) => {
       recommendationRail.replaceChildren();
@@ -581,13 +627,14 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
       if (route.bookRoute !== "book-read") leaveReader();
       await loadStatus().catch(() => { status = null; });
       const id = new URLSearchParams(route.bookQuery || "").get("id");
+      const initialHref = new URLSearchParams(route.bookQuery || "").get("href") || "";
       if (route.bookRoute === "book-detail" && id) return renderDetail(id);
       if (route.bookRoute === "books-search") {
         renderSearch();
         scheduleDownloadPoll();
         return;
       }
-      if (route.bookRoute === "book-read" && id) return renderReader(id);
+      if (route.bookRoute === "book-read" && id) return renderReader(id, initialHref);
       return renderLibrary();
     },
     hide() {

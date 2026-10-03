@@ -146,6 +146,11 @@ const queries = {
       id
       title
       thumbnailUrl
+      author
+      artist
+      description
+      genre
+      status
     }
   }`,
   fetchChapters: `mutation GET_MANGA_CHAPTERS_FETCH($input: FetchChaptersInput!) {
@@ -416,6 +421,10 @@ const el = {
   detailCoverImage: document.querySelector("#detail-cover-image"),
   detailSource: document.querySelector("#detail-source"),
   detailTitle: document.querySelector("#detail-title"),
+  detailAbout: document.querySelector("#detail-about"),
+  detailCredits: document.querySelector("#detail-credits"),
+  detailGenres: document.querySelector("#detail-genres"),
+  detailDescription: document.querySelector("#detail-description"),
   detailPrimary: document.querySelector("#detail-primary"),
   detailLibrary: document.querySelector("#detail-library"),
   detailChangeSource: document.querySelector("#detail-change-source"),
@@ -4178,6 +4187,7 @@ function renderMangaResults() {
       }
       state.mangaDetailOrigin = "browse";
       showMangaDetail(manga, sourceText, { origin: "browse", returnFocusTarget: event.currentTarget });
+      void hydrateCurrentMangaDetails(manga.id);
       await fetchChapters();
     });
     card.append(button);
@@ -4226,6 +4236,51 @@ function renderMangaSkeletons() {
   }
 }
 
+function mangaGenreList(value) {
+  if (Array.isArray(value)) return value.map((item) => String(item || "").trim()).filter(Boolean);
+  return String(value || "").split(/[,;|]/).map((item) => item.trim()).filter(Boolean);
+}
+
+function renderMangaAbout(manga = state.currentManga) {
+  if (!el.detailAbout || !el.detailCredits || !el.detailGenres || !el.detailDescription) return;
+  const author = String(manga?.author || "").trim();
+  const artist = String(manga?.artist || "").trim();
+  const credits = [];
+  if (author) credits.push(`By ${author}`);
+  if (artist && artist.toLocaleLowerCase() !== author.toLocaleLowerCase()) credits.push(`Art by ${artist}`);
+  el.detailCredits.textContent = credits.join(" · ");
+  el.detailGenres.replaceChildren();
+  const tags = [];
+  const status = String(manga?.status || "").trim();
+  if (status && status.toLowerCase() !== "unknown") tags.push(status.replaceAll("_", " "));
+  tags.push(...mangaGenreList(manga?.genre));
+  [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))].slice(0, 10).forEach((tag) => {
+    const chip = document.createElement("span");
+    chip.textContent = tag;
+    el.detailGenres.append(chip);
+  });
+  const description = String(manga?.description || "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+  el.detailDescription.textContent = description;
+  el.detailDescription.hidden = !description;
+  el.detailCredits.hidden = !credits.length;
+  el.detailGenres.hidden = !el.detailGenres.children.length;
+  el.detailAbout.hidden = !credits.length && !description && !el.detailGenres.children.length;
+}
+
+async function hydrateCurrentMangaDetails(mangaId) {
+  const requestedId = Number(mangaId);
+  if (!Number.isInteger(requestedId) || requestedId <= 0) return;
+  try {
+    const data = await graphQL(queries.mangaCard, { id: requestedId }, { timeoutMs: 8000 });
+    const manga = data?.manga;
+    if (!manga || Number(state.currentManga?.id) !== requestedId) return;
+    state.currentManga = { ...state.currentManga, ...manga };
+    renderMangaAbout(state.currentManga);
+  } catch {
+    // Chapter browsing remains available when optional source metadata is unavailable.
+  }
+}
+
 function showMangaDetail(manga, sourceText = "", options = {}) {
   if (!el.mangaDetail || !el.browseBody) return;
   const title = manga?.title || manga?.mangaTitle || "Selected manga";
@@ -4252,6 +4307,7 @@ function showMangaDetail(manga, sourceText = "", options = {}) {
   }
   el.detailTitle.textContent = title;
   el.detailSource.textContent = source;
+  renderMangaAbout(Number(state.currentManga?.id) === Number(manga?.id) ? { ...manga, ...state.currentManga } : manga);
   el.detailCoverFallback.textContent = coverInitials(title);
   el.detailCover.style.setProperty("--cover-hue", String(coverHue(title)));
   el.detailCover.classList.remove("cover-loaded");
@@ -5371,7 +5427,15 @@ function renderLibrary({ preserveInteractions = true } = {}) {
   const allowedItems = libraryItemsAllowedByNsfw();
   const visibleItems = visibleLibraryItems();
   const visibleBooks = visibleBookLibraryItems();
-  const hiddenCount = allowedItems.filter((item) => item.hidden).length;
+  const hiddenCount = allowedItems.filter((item) => {
+    if (!item.hidden) return false;
+    if (state.libraryFormatFilter !== "all" && inferredMediaFormat(item) !== state.libraryFormatFilter) return false;
+    const status = normalizedLibraryStatus(item);
+    if (state.libraryFilter === "all") return true;
+    if (state.libraryFilter === "reading") return status === "reading" || status === "rereading";
+    if (state.libraryFilter === "other") return status === "dropped" || status === "considering";
+    return status === state.libraryFilter;
+  }).length;
   const statusCounts = Object.fromEntries(libraryStatuses.map((status) => [status, 0]));
   const unhiddenItems = allowedItems.filter((item) => !item.hidden);
   unhiddenItems

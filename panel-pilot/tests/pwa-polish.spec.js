@@ -233,8 +233,18 @@ async function installPolishFixture(page, { holdStoredChapters = false, detailCh
       } else if (query.includes("GET_MANGA_CHAPTERS_FETCH")) {
         data = { fetchChapters: { chapters: detailChapters || [chapterFor(Number(variables.input?.mangaId) || 9101)] } };
       } else if (query.includes("GET_MANGA_CARD")) {
-        const manga = fixtureMangas.find((entry) => Number(entry.id) === Number(variables.id));
-        data = { manga: manga ? { id: manga.id, title: manga.title, thumbnailUrl: manga.thumbnailUrl } : null };
+        const manga = fixtureMangas.find((entry) => Number(entry.id) === Number(variables.id))
+          || (Number(variables.id) === 9102 ? { id: 9102, title: "Second Focus Card", thumbnailUrl: cover } : null);
+        data = { manga: manga ? {
+          id: manga.id,
+          title: manga.title,
+          thumbnailUrl: manga.thumbnailUrl,
+          author: "Fixture Writer",
+          artist: "Fixture Artist",
+          description: "A detailed source synopsis for readers choosing this series.",
+          genre: ["Adventure", "Drama"],
+          status: "ONGOING",
+        } : null };
       } else if (query.includes("UPDATE_CHAPTER_PROGRESS")) {
         progressMutations.push(structuredClone(variables.input));
         data = { updateChapter: { chapter: { id: Number(variables.input?.id), ...variables.input?.patch } } };
@@ -437,6 +447,10 @@ test("closing manga detail restores focus to the exact initiating Browse card", 
   await initiatingCard.press("Enter");
   await expect(page.locator("#manga-detail")).toBeVisible();
   await expect(page.locator("#detail-title")).toHaveText("Second Focus Card");
+  await expect(page.locator("#detail-about")).toBeVisible();
+  await expect(page.locator("#detail-credits")).toContainText("Fixture Writer");
+  await expect(page.locator("#detail-description")).toContainText("detailed source synopsis");
+  await expect(page.locator("#detail-genres")).toContainText("Adventure");
 
   await page.locator("#close-manga-detail").click();
   await expect(page.locator("#manga-detail")).toBeHidden();
@@ -563,8 +577,16 @@ test("library formats filter titles, persist corrections, and detach comics from
 test("library empty copy names the selected format and reading group", async ({ page }) => {
   await installPolishFixture(page);
   await page.goto("/");
+  await page.evaluate(() => {
+    const items = JSON.parse(localStorage.getItem("panel-pilot-library") || "[]");
+    items[0].hidden = true;
+    localStorage.setItem("panel-pilot-library", JSON.stringify(items));
+  });
+  await page.reload();
   await page.locator('[data-library-format-filter="webtoon"]').click();
   await expect(page.locator("#library-list")).toContainText("No webtoons are currently in Reading or Rereading.");
+  await expect(page.locator("#library-count")).not.toContainText("hidden");
+  await expect(page.locator("#toggle-hidden-library")).toBeHidden();
 });
 
 test("direct library actions repaint immediately instead of leaving an in-use card stale", async ({ page }) => {

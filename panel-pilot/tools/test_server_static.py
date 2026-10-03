@@ -132,6 +132,23 @@ class StaticServingTests(unittest.TestCase):
                 self.assertEqual(response.headers["Cache-Control"], "no-store")
                 self.assertEqual(response.headers["Service-Worker-Allowed"], "/")
 
+    def test_app_recovery_is_uncached_and_preserves_reader_storage(self):
+        with mock.patch.dict(
+            os.environ,
+            {"PANEL_PILOT_AUTH_USER": "reader", "PANEL_PILOT_AUTH_PASSWORD": "secret"},
+            clear=False,
+        ):
+            with urlopen(f"{self.base_url}/api/app-recovery", timeout=5) as response:
+                body = response.read().decode("utf-8")
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.headers["Cache-Control"], "no-store")
+                self.assertIn("Repair and reopen Panels", body)
+                self.assertIn("registration.unregister()", body)
+                self.assertIn("/^panel-pilot-v", body)
+                self.assertIn("name!=='panels-device-chapters-v1'", body)
+                self.assertNotIn("indexedDB.deleteDatabase", body)
+                self.assertNotIn("localStorage.clear", body)
+
     def test_security_headers_are_sent_without_permissive_cors(self):
         request = panel_pilot_server.Request(
             f"{self.base_url}/",

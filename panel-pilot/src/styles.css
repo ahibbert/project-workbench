@@ -1838,9 +1838,9 @@ body.reader-active .app-nav {
   }
 
   body.reader-focus.reader-chrome-hidden {
-    --reader-full-height: calc(100dvh + env(safe-area-inset-top));
+    --reader-full-height: 100dvh;
     position: fixed;
-    top: calc(-1 * env(safe-area-inset-top));
+    top: 0;
     right: 0;
     bottom: 0;
     left: 0;
@@ -2462,6 +2462,69 @@ body.has-network-status.reader-focus .reader-topbar {
 .chapter-filter {
   padding: 0.2rem 0;
   border-block: 1px solid var(--line);
+}
+
+.media-about {
+  display: grid;
+  gap: 0.65rem;
+  margin: 0 0 1rem;
+  border-block: 1px solid var(--line);
+  padding: 0.9rem 0;
+}
+
+.media-about[hidden] {
+  display: none;
+}
+
+.media-about-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.media-about-heading h3,
+.media-description {
+  margin: 0;
+}
+
+.media-about-heading h3 {
+  font-size: 1rem;
+}
+
+.media-about-meta {
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-align: right;
+}
+
+.media-tag-list {
+  display: flex;
+  gap: 0.35rem;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.media-tag-list::-webkit-scrollbar {
+  display: none;
+}
+
+.media-tag-list span {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  padding: 0.25rem 0.55rem;
+  background: #edf3f0;
+  color: var(--accent-2);
+  font-size: 0.68rem;
+  font-weight: 760;
+  text-transform: capitalize;
+}
+
+.media-description {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.55;
+  white-space: pre-line;
 }
 
 .chapter-controls {

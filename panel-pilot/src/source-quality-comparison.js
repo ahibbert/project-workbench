@@ -7,6 +7,7 @@ import {
   sourceCoverageScore,
   summarizeSeriesSamples,
 } from "./source-quality.js";
+import { sourceTitleMatch } from "./source-title-match.js";
 
 const CANDIDATE_LIMIT = 5;
 const SAMPLES_PER_CANDIDATE = 2;
@@ -15,10 +16,6 @@ const SOURCE_SEARCH_PAGE_LIMIT = 20;
 
 function clamp(value, minimum = 0, maximum = 1) {
   return Math.min(maximum, Math.max(minimum, Number(value) || 0));
-}
-
-function normalizeTitle(value) {
-  return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
 function mapWithConcurrency(items, concurrency, task) {
@@ -218,6 +215,12 @@ export function createSourceQualityComparison(adapter) {
           ? "Checking chapter and image quality…"
           : candidate.error || `${candidate.chapterCount || 0} chapters · no equivalent chapter found`;
       copy.append(eyebrow, title, chapter);
+      if (candidate.titleMatch === "variant") {
+        const matchedTitle = document.createElement("small");
+        matchedTitle.className = "source-quality-title-match";
+        matchedTitle.textContent = `Source title: ${candidate.manga.title}`;
+        copy.append(matchedTitle);
+      }
       const score = metric("overall", candidate.overall);
       score.className = "source-quality-score";
       heading.append(copy, score);
@@ -332,24 +335,26 @@ export function createSourceQualityComparison(adapter) {
   }
 
   async function findMatches(migration, sources, mediaFormat, signal) {
-    const desiredTitle = normalizeTitle(migration.title);
     const matches = [];
     await mapWithConcurrency(
       sources.filter((source) => String(source.id) !== String(migration.fromManga.sourceId)),
       3,
       async (source) => {
         try {
+          let variant = null;
           for (let page = 1; page <= SOURCE_SEARCH_PAGE_LIMIT; page += 1) {
             const response = await adapter.searchSource(source, migration.title, page, signal);
             const mangas = Array.isArray(response) ? response : (response?.mangas || []);
-            const manga = mangas.find((item) => normalizeTitle(item.title) === desiredTitle);
+            const manga = mangas.find((item) => sourceTitleMatch(migration.title, item.title) === "exact");
             if (manga) {
-              matches.push({ manga: { ...manga, sourceId: manga.sourceId || source.id }, source });
-              break;
+              matches.push({ manga: { ...manga, sourceId: manga.sourceId || source.id }, source, titleMatch: "exact" });
+              return;
             }
+            if (!variant) variant = mangas.find((item) => sourceTitleMatch(migration.title, item.title) === "variant") || null;
             const hasNextPage = Array.isArray(response) ? false : Boolean(response?.hasNextPage);
             if (!hasNextPage || !mangas.length) break;
           }
+          if (variant) matches.push({ manga: { ...variant, sourceId: variant.sourceId || source.id }, source, titleMatch: "variant" });
         } catch (error) {
           if (["AbortError", "ReaderLoadCancelled"].includes(error?.name)) throw error;
         }
@@ -469,11 +474,17 @@ export function createSourceQualityComparison(adapter) {
       if (!comparison.referenceChapterCount) comparison.referenceChapterCount = current.chapterCount;
       if (activeGeneration !== generation) return;
       setProgress(35, "Current source sampled. Checking the strongest matching alternatives…");
-      const matches = (await matchesPromise).slice(0, CANDIDATE_LIMIT - 1);
-      matches.forEach(({ manga, source }) => comparison.candidates.push({
+      const discoveredMatches = (await matchesPromise).slice(0, CANDIDATE_LIMIT - 1);
+      const matches = discoveredMatches.filter(({ manga, source, titleMatch }) => (
+        titleMatch !== "variant" || window.confirm(
+          `${adapter.sourceLabel(source)} calls this title “${manga.title}”.\n\nCompare it as a possible match for “${request.migration.title}”?`,
+        )
+      ));
+      matches.forEach(({ manga, source, titleMatch }) => comparison.candidates.push({
         isCurrent: false,
         manga,
         source,
+        titleMatch,
         sourceLabel: adapter.sourceLabel(source),
         status: "searching",
         samples: [],
@@ -490,7 +501,7 @@ export function createSourceQualityComparison(adapter) {
       comparison.complete = true;
       setProgress(100, matches.length
         ? "Comparison complete. Open samples at full resolution, then migrate only if one looks better."
-        : "No exact title matches were found on the other enabled sources.");
+        : "No safe title matches were found on the other enabled sources.");
       ui.retry.hidden = false;
       render();
     } catch (error) {

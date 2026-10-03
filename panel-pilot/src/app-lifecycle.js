@@ -46,6 +46,7 @@ export function createAppLifecycleMonitor({
 } = {}) {
   let lastCheckAt = 0;
   let checkPromise = null;
+  let intervalId = 0;
 
   async function repairWorker(registration, reason) {
     onStatus(reason === "legacy"
@@ -107,11 +108,15 @@ export function createAppLifecycleMonitor({
     start() {
       document.addEventListener("visibilitychange", handleVisibility);
       window.addEventListener("pageshow", handleVisibility);
+      window.clearInterval(intervalId);
+      intervalId = window.setInterval(() => { void check({ force: true }); }, checkIntervalMs);
       void check({ force: true });
     },
     stop() {
       document.removeEventListener("visibilitychange", handleVisibility);
       window.removeEventListener("pageshow", handleVisibility);
+      window.clearInterval(intervalId);
+      intervalId = 0;
     },
   };
 }

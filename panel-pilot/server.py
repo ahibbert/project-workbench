@@ -2609,7 +2609,7 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         return "Panels"
 
     def content_security_policy(self):
-        if urlparse(self.path).path == "/login":
+        if urlparse(self.path).path in ("/login", "/api/app-recovery"):
             return "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
         return (
             "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; "
@@ -2720,6 +2720,16 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", "text/javascript; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Service-Worker-Allowed", "/")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def serve_app_recovery(self):
+        """Offer an explicit stale-worker repair without erasing reader data."""
+        body = b"""<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Repair Panels</title><style>body{box-sizing:border-box;max-width:36rem;margin:auto;padding:2rem 1rem;font:17px/1.5 system-ui;background:#f7f6f1;color:#252822}main{padding:1.2rem;border:1px solid #d9ddd8;border-radius:18px;background:white}button{width:100%;min-height:3rem;border:0;border-radius:12px;background:#236c6e;color:white;font:inherit;font-weight:750}p{color:#626861}</style><main><h1>Repair Panels</h1><p>This refreshes a stuck app shell. Downloaded chapters, book positions, library data and preferences are kept.</p><button id=\"repair\">Repair and reopen Panels</button><p id=\"status\" role=\"status\"></p></main><script>document.querySelector('#repair').addEventListener('click',async function(){this.disabled=true;document.querySelector('#status').textContent='Repairing the app shell...';if('serviceWorker'in navigator){const registrations=await navigator.serviceWorker.getRegistrations();await Promise.all(registrations.map(registration=>registration.unregister()))}if('caches'in window){const names=await caches.keys();await Promise.all(names.filter(name=>/^panel-pilot-v\\d+$/.test(name)&&name!=='panels-device-chapters-v1').map(name=>caches.delete(name)))}location.replace('/?recovered='+Date.now())})</script></html>"""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -3023,6 +3033,9 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
                 "buildId": os.environ.get("PANEL_PILOT_BUILD_ID", "unknown"),
                 "minimumLifecycleProtocol": 2,
             })
+            return
+        if parsed.path == "/api/app-recovery":
+            self.serve_app_recovery()
             return
         if not self.require_auth(parsed):
             return
