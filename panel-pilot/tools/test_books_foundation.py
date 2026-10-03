@@ -17,7 +17,7 @@ from books import (  # noqa: E402
     sanitize_epub_archive, validate_epub_archive,
 )
 from opds_client import OpdsClient, OpdsError, parse_opds_feed  # noqa: E402
-from shelfmark_client import normalize_metadata_results, normalize_releases  # noqa: E402
+from shelfmark_client import _manual_irc_query, normalize_metadata_results, normalize_releases  # noqa: E402
 from server import PanelPilotHandler  # noqa: E402
 
 
@@ -250,6 +250,12 @@ class BooksConfigurationTests(unittest.TestCase):
 
 
 class ShelfmarkNormalizationTests(unittest.TestCase):
+    def test_manual_irc_query_uses_primary_title_and_author_surname(self):
+        self.assertEqual(
+            _manual_irc_query("The Bright Sword: A Novel of King Arthur", ["Lev Grossman"]),
+            "The Bright Sword Grossman",
+        )
+
     def test_metadata_search_normalizes_documented_shape(self):
         results = normalize_metadata_results({"books": [{
             "provider": "hardcover",
@@ -264,12 +270,19 @@ class ShelfmarkNormalizationTests(unittest.TestCase):
 
     def test_releases_are_epub_only(self):
         releases = normalize_releases({"releases": [
-            {"source": "direct_download", "source_id": "epub-1", "format": "epub", "size": 1234},
+            {"source": "direct_download", "source_id": "epub-1", "format": "epub", "size": "3.5MB", "extra": {
+                "downloads": 1466, "author": "Lev Grossman", "publisher": "Viking", "year": "2024",
+                "direct_download_provider": "annas_archive",
+            }},
             {"source": "direct_download", "source_id": "pdf-1", "format": "pdf"},
         ]})
         self.assertEqual([item["id"] for item in releases], ["epub-1"])
         self.assertEqual(releases[0]["format"], "EPUB")
-        self.assertEqual(releases[0]["sizeBytes"], 1234)
+        self.assertEqual(releases[0]["sizeBytes"], 3_670_016)
+        self.assertEqual(releases[0]["downloads"], 1466)
+        self.assertEqual(releases[0]["publisher"], "Viking")
+        self.assertEqual(releases[0]["publishedYear"], "2024")
+        self.assertEqual(releases[0]["catalogSource"], "annas_archive")
 
     def test_release_tokens_keep_raw_download_urls_server_side(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -289,7 +302,7 @@ class ShelfmarkNormalizationTests(unittest.TestCase):
             class FakeShelfmark:
                 queued = None
 
-                def releases(self, provider, provider_book_id):
+                def releases(self, provider, provider_book_id, **kwargs):
                     return [{
                         "id": "release-1", "source": "direct_download", "title": "Alice EPUB",
                         "language": "en", "format": "EPUB", "sizeBytes": 2048, "seeders": None,
@@ -324,6 +337,9 @@ class ShelfmarkNormalizationTests(unittest.TestCase):
             failed = service.refresh_downloads()[0]
             self.assertEqual(failed["status"], "failed")
             self.assertEqual(failed["error"], "Shelfmark reported a download failure")
+            retried = service.releases("openlibrary", "alice")
+            self.assertEqual(retried[0]["attemptStatus"], "failed")
+            self.assertEqual(retried[0]["attemptError"], "Shelfmark reported a download failure")
             with self.assertRaisesRegex(ValueError, "expired"):
                 service.queue_download(public[0]["token"], "book-token")
 

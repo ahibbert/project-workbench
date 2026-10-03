@@ -819,6 +819,21 @@ class BookStore:
             ).fetchall()
         return [self._download_public(row) for row in rows]
 
+    def download_attempts(self, user_id: str, provider: str, provider_book_id: str) -> dict[str, dict[str, Any]]:
+        with self.lock, self.connection() as connection:
+            rows = connection.execute(
+                """SELECT task_id,status,error,updated_at FROM shelfmark_downloads
+                   WHERE requested_by_user_id=? AND provider=? AND provider_book_id=?
+                   ORDER BY updated_at DESC""",
+                (str(user_id), str(provider), str(provider_book_id)),
+            ).fetchall()
+        return {
+            str(row["task_id"]): {
+                "status": row["status"], "error": row["error"], "updatedAt": row["updated_at"],
+            }
+            for row in rows
+        }
+
     def update_download(self, task_id: str, *, status: str, progress: float | None = None, error: str = "") -> None:
         allowed = {"queued", "downloading", "importing", "ready", "failed", "cancelled"}
         if status not in allowed:
@@ -1073,8 +1088,12 @@ class BooksService:
                 })
         return public
 
-    def releases(self, provider: str, provider_book_id: str) -> list[dict[str, Any]]:
-        releases = self.shelfmark_client().releases(provider, provider_book_id)
+    def releases(
+        self, provider: str, provider_book_id: str, user_id: str = "local",
+        *, title: str = "", authors: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        releases = self.shelfmark_client().releases(provider, provider_book_id, title=title, authors=authors)
+        attempts = self.store.download_attempts(user_id, provider, provider_book_id)
         now = time.monotonic()
         public = []
         with self._release_lock:
@@ -1083,14 +1102,22 @@ class BooksService:
             }
             for release in releases:
                 token = secrets.token_urlsafe(24)
+                release_id = str(release.get("id") or "")
+                attempt = attempts.get(release_id)
                 raw = release.pop("_release")
                 self._release_tokens[token] = (now + 15 * 60, raw)
-                public.append({**{key: value for key, value in release.items() if key != "id"}, "token": token})
+                public.append({
+                    **{key: value for key, value in release.items() if key != "id"},
+                    "token": token,
+                    "attemptStatus": attempt.get("status") if attempt else "",
+                    "attemptError": attempt.get("error") if attempt else "",
+                })
             if len(self._release_tokens) > 2000:
                 oldest = sorted(self._release_tokens.items(), key=lambda item: item[1][0])
                 for token, _ in oldest[:len(self._release_tokens) - 2000]:
                     self._release_tokens.pop(token, None)
-        return public
+        priority = {"": 0, "queued": 1, "downloading": 1, "importing": 1, "ready": 1, "failed": 2, "cancelled": 2}
+        return sorted(public, key=lambda item: (priority.get(item.get("attemptStatus", ""), 1), -(item.get("downloads") or 0)))
 
     def queue_download(self, release_token: str, book_token: str, user_id: str = "local") -> dict[str, Any]:
         with self._release_lock:
@@ -1161,7 +1188,14 @@ class BooksService:
                         progress = max(0.0, min(1.0, float(progress_value) / (100 if float(progress_value) > 1 else 1)))
                     except (TypeError, ValueError):
                         progress = None
-                    error = "Shelfmark reported a download failure" if local_status == "failed" else ""
+                    status_message = str(item.get("status_message") or item.get("message") or "").strip() if isinstance(item, dict) else ""
+                    normalized_message = status_message.lower()
+                    if local_status == "failed" and normalized_message == "all download sources failed":
+                        error = "No configured Shelfmark mirror could retrieve this EPUB"
+                    elif local_status == "failed" and normalized_message in {"download failed", "failed", "error"}:
+                        error = "Shelfmark could not download this EPUB"
+                    else:
+                        error = "Shelfmark reported a download failure" if local_status == "failed" else ""
                     self.store.update_download(task_id, status=local_status, progress=progress, error=error)
         self.store.reconcile_downloads()
         self.store.fail_stale_imports()

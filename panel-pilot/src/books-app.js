@@ -39,6 +39,7 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
   let searchResults = [];
   let selectedBook = null;
   let releaseResults = [];
+  let alternativeTitle = "";
   let downloadPoll = 0;
   let readerController = null;
   let readerGeneration = 0;
@@ -411,6 +412,7 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
             const searchInput = root.querySelector(".books-search-form input");
             if (!searchInput) return;
             searchInput.value = download.title;
+            alternativeTitle = download.title;
             searchInput.form?.requestSubmit();
             searchInput.scrollIntoView({ behavior: "smooth", block: "center" });
           });
@@ -506,7 +508,16 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
           }
           results.append(result);
         });
+        if (alternativeTitle && searchResults.length) {
+          const wanted = alternativeTitle.toLocaleLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+          const exactIndex = searchResults.findIndex((book) => (
+            String(book.title || "").toLocaleLowerCase().replace(/[^a-z0-9]+/g, " ").trim() === wanted
+          ));
+          alternativeTitle = "";
+          await loadReleases(exactIndex >= 0 ? exactIndex : 0);
+        }
       } catch (error) {
+        alternativeTitle = "";
         results.replaceChildren(element("p", "books-error", error.message));
       } finally {
         submit.disabled = false;
@@ -589,27 +600,53 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
     const results = root.querySelector("#books-search-results");
     results.replaceChildren(element("p", "books-loading", `Finding EPUB releases for ${selectedBook.title}…`));
     try {
-      const payload = await request(`/api/books/releases?provider=${encodeURIComponent(selectedBook.provider)}&bookId=${encodeURIComponent(selectedBook.providerBookId)}`);
+      const releaseQuery = new URLSearchParams({
+        provider: selectedBook.provider,
+        bookId: selectedBook.providerBookId,
+        title: selectedBook.title || "",
+      });
+      (selectedBook.authors || []).slice(0, 3).forEach((author) => releaseQuery.append("author", author));
+      const payload = await request(`/api/books/releases?${releaseQuery}`);
       releaseResults = payload.releases || [];
       results.replaceChildren();
       const heading = element("div", "books-release-heading");
-      heading.append(element("strong", "", selectedBook.title), element("span", "", `${releaseResults.length} EPUB release${releaseResults.length === 1 ? "" : "s"}`));
+      const untriedCount = releaseResults.filter((release) => !release.attemptStatus).length;
+      const countCopy = `${releaseResults.length} EPUB record${releaseResults.length === 1 ? "" : "s"}`
+        + (untriedCount ? ` · ${untriedCount} untried` : releaseResults.length ? " · all previously tried" : "");
+      heading.append(element("strong", "", selectedBook.title), element("span", "", countCopy));
       results.append(heading);
       if (!releaseResults.length) {
         results.append(element("p", "books-empty-result", "Shelfmark found no EPUB releases for this edition. Try another metadata result."));
         return;
       }
+      if (!untriedCount) {
+        results.append(element(
+          "p",
+          "books-empty-result books-release-note",
+          releaseResults.length === 1
+            ? "Shelfmark currently indexes only this EPUB record, and its configured mirrors could not retrieve it. You can retry later or search for another edition."
+            : "Every indexed EPUB record has already been tried. You can retry a specific record or search for another edition.",
+        ));
+      } else if (untriedCount < releaseResults.length) {
+        results.append(element("p", "books-release-note", "Untried EPUB records are shown first. Failed records remain available for a later retry."));
+      }
       releaseResults.forEach((release, releaseIndex) => {
         const row = element("div", "book-release-row");
+        if (release.attemptStatus) row.dataset.attemptStatus = release.attemptStatus;
         const copy = element("span");
+        const edition = [release.publisher, release.publishedYear].filter(Boolean).join(", ");
+        const attempt = release.attemptStatus === "failed"
+          ? (release.attemptError || "A previous download attempt failed")
+          : release.attemptStatus ? `Already ${downloadLabel({ status: release.attemptStatus }).toLocaleLowerCase()}` : "Untried";
         copy.append(
           element("strong", "", release.title || `${selectedBook.title} EPUB`),
-          element("small", "", [release.source, release.language || "Language unknown", humanSize(release.sizeBytes), Number.isFinite(release.seeders) ? `${release.seeders} seeders` : ""].filter(Boolean).join(" · ")),
+          element("small", "", [edition, release.language || "Language unknown", humanSize(release.sizeBytes), Number.isFinite(release.downloads) ? `${release.downloads.toLocaleString()} downloads` : "", attempt].filter(Boolean).join(" · ")),
         );
-        const add = element("button", "primary-button", "Add to Library");
+        const add = element("button", release.attemptStatus ? "mini-button" : "primary-button", release.attemptStatus === "failed" ? "Retry this record" : "Add to Library");
         add.type = "button";
         add.dataset.booksAction = "queue-release";
         add.dataset.releaseIndex = releaseIndex;
+        add.disabled = ["queued", "downloading", "importing", "ready"].includes(release.attemptStatus);
         row.append(copy, add);
         results.append(row);
       });

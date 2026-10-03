@@ -33,6 +33,7 @@ async function stubApp(page, {
   progressResponder = null,
   downloads = [],
   recommendations = null,
+  releaseRecords = null,
   bookSearchQueries = [],
   preferenceResponder = null,
   preferenceWrites = [],
@@ -162,7 +163,7 @@ async function stubApp(page, {
       return;
     }
     if (url.pathname === "/api/books/releases") {
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ releases: [{
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ releases: releaseRecords ?? [{
         token: "opaque-release-token", id: "release-1", source: "direct_download",
         title: "The Mercy of Gods EPUB", language: "en", format: "EPUB", sizeBytes: 2_000_000,
       }] }) });
@@ -328,6 +329,33 @@ test("Shelfmark acquisition offers only normalized EPUB choices and queues an op
   expect(queued[0].bookToken).toBe("opaque-book-token");
   expect(JSON.stringify(queued[0])).not.toContain("download_url");
   expect(queued[0].book).toBeUndefined();
+});
+
+test("failed Shelfmark records are identified and untried alternatives are offered first", async ({ page }) => {
+  const releaseRecords = [{
+    token: "untried-token", source: "direct_download", title: "The Bright Sword",
+    language: "en", format: "EPUB", sizeBytes: 3_670_016, downloads: 98,
+    publisher: "Penguin Publishing Group", publishedYear: "2024", attemptStatus: "", attemptError: "",
+  }, {
+    token: "failed-token", source: "direct_download", title: "The Bright Sword : A Novel of King Arthur",
+    language: "en", format: "EPUB", sizeBytes: 10_000_000, downloads: 1466,
+    publisher: "Penguin Random House", publishedYear: "2024", attemptStatus: "failed",
+    attemptError: "No configured Shelfmark mirror could retrieve this EPUB",
+  }];
+  await stubApp(page, { booksEnabled: true, releaseRecords });
+  await page.goto("/", { waitUntil: "networkidle" });
+  await page.locator("#nav-browse").click();
+  await page.locator(".browse-media-switch").getByRole("button", { name: "Books" }).click();
+  await page.getByRole("searchbox", { name: "Book title or author" }).fill("The Mercy of Gods");
+  await page.locator(".books-search-form").getByRole("button", { name: "Search" }).click();
+  await page.getByRole("button", { name: /The Mercy of Gods/ }).click();
+  const rows = page.locator(".book-release-row");
+  await expect(rows).toHaveCount(2);
+  await expect(rows.first()).toContainText("3.5 MB");
+  await expect(rows.first()).toContainText("Untried");
+  await expect(rows.last()).toContainText("No configured Shelfmark mirror");
+  await expect(rows.last().getByRole("button")).toHaveText("Retry this record");
+  await expect(page.locator(".books-release-note")).toContainText("Untried EPUB records are shown first");
 });
 
 test("Books for you enters the normal Shelfmark edition and release flow", async ({ page }) => {

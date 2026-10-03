@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import re
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urljoin, urlparse
@@ -124,6 +125,30 @@ def _is_epub(item: dict[str, Any]) -> bool:
     return "epub" in joined or joined.strip() == "ebook"
 
 
+def _size_bytes(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        return max(0, int(value))
+    match = re.fullmatch(r"\s*([0-9]+(?:\.[0-9]+)?)\s*([kmgt]?i?b)?\s*", str(value), re.IGNORECASE)
+    if not match:
+        return None
+    number = float(match.group(1))
+    unit = (match.group(2) or "b").lower()
+    multipliers = {
+        "b": 1, "kb": 1024, "kib": 1024, "mb": 1024 ** 2, "mib": 1024 ** 2,
+        "gb": 1024 ** 3, "gib": 1024 ** 3, "tb": 1024 ** 4, "tib": 1024 ** 4,
+    }
+    return max(0, int(number * multipliers.get(unit, 1)))
+
+
+def _integer(value: Any) -> int | None:
+    try:
+        return max(0, int(str(value).replace(",", "")))
+    except (TypeError, ValueError):
+        return None
+
+
 def normalize_releases(payload: Any) -> list[dict[str, Any]]:
     """Return only EPUB releases while retaining the full object server-side."""
     normalized: list[dict[str, Any]] = []
@@ -134,11 +159,15 @@ def normalize_releases(payload: Any) -> list[dict[str, Any]]:
         source_id = _text(item.get("source_id") or item.get("sourceId") or item.get("id"), 500)
         if not source or not source_id:
             continue
-        size = item.get("size") or item.get("size_bytes") or item.get("sizeBytes")
-        try:
-            size_bytes = max(0, int(size)) if size is not None else None
-        except (TypeError, ValueError):
-            size_bytes = None
+        size = item.get("size_bytes") or item.get("sizeBytes") or item.get("size")
+        size_bytes = _size_bytes(size)
+        extra = item.get("extra") if isinstance(item.get("extra"), dict) else {}
+        info = extra.get("info") if isinstance(extra.get("info"), dict) else {}
+        downloads = item.get("downloads")
+        if downloads is None:
+            downloads = extra.get("downloads")
+        if downloads is None and isinstance(info.get("Downloads"), list) and info["Downloads"]:
+            downloads = info["Downloads"][0]
         normalized.append({
             "id": source_id,
             "source": source,
@@ -147,9 +176,23 @@ def normalize_releases(payload: Any) -> list[dict[str, Any]]:
             "format": "EPUB",
             "sizeBytes": size_bytes,
             "seeders": item.get("seeders") if isinstance(item.get("seeders"), int) else None,
+            "downloads": _integer(downloads),
+            "author": _text(extra.get("author") or item.get("author"), 300),
+            "publisher": _text(extra.get("publisher") or item.get("publisher"), 500),
+            "publishedYear": _text(extra.get("year") or item.get("year"), 20),
+            "catalogSource": _text(extra.get("direct_download_provider") or item.get("indexer") or source, 100),
             "_release": item,
         })
     return normalized
+
+
+def _manual_irc_query(title: str, authors: list[str] | None = None) -> str:
+    base_title = re.split(r"\s*[:\u2013\u2014]\s*", _text(title, 300), maxsplit=1)[0]
+    base_title = re.sub(r"[^\w' -]+", " ", base_title, flags=re.UNICODE)
+    base_title = re.sub(r"\s+", " ", base_title).strip()
+    author = _text((authors or [""])[0], 200)
+    surname = re.sub(r"[^\w'-]+", "", author.split()[-1], flags=re.UNICODE) if author.split() else ""
+    return " ".join(part for part in (base_title, surname) if part).strip()[:300]
 
 
 class ShelfmarkClient:
@@ -213,13 +256,33 @@ class ShelfmarkClient:
             raise ValueError("Book search query must contain at least two characters")
         return normalize_metadata_results(self._request("/api/metadata/search", query={"query": query}))
 
-    def releases(self, provider: str, provider_book_id: str) -> list[dict[str, Any]]:
-        payload = self._request("/api/releases", query={
+    def releases(self, provider: str, provider_book_id: str, *, title: str = "", authors: list[str] | None = None) -> list[dict[str, Any]]:
+        query = {
             "provider": _text(provider, 100),
             "book_id": _text(provider_book_id, 300),
             "content_type": "ebook",
-        }, timeout_seconds=345)
-        return normalize_releases(payload)
+        }
+        payload = self._request("/api/releases", query=query, timeout_seconds=345)
+        releases = normalize_releases(payload)
+
+        # Shelfmark's generic plan can make IRC queries overly exact (notably when a
+        # metadata title contains a subtitle). A short title + surname query produces
+        # genuinely independent DCC results without exposing IRC commands to the client.
+        manual_query = _manual_irc_query(title, authors)
+        if manual_query and not any(item.get("source") == "irc" for item in releases):
+            try:
+                irc_payload = self._request("/api/releases", query={
+                    **query, "source": "irc", "manual_query": manual_query,
+                }, timeout_seconds=120)
+            except ShelfmarkError:
+                irc_payload = None
+            if irc_payload is not None:
+                releases.extend(normalize_releases(irc_payload))
+
+        unique: dict[tuple[str, str], dict[str, Any]] = {}
+        for release in releases:
+            unique.setdefault((str(release.get("source") or ""), str(release.get("id") or "")), release)
+        return list(unique.values())
 
     def queue_download(self, release: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(release, dict) or not release.get("source") or not (release.get("source_id") or release.get("sourceId") or release.get("id")):

@@ -3625,10 +3625,14 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         params = parse_qs(parsed.query)
         provider = params.get("provider", [""])[0]
         provider_book_id = params.get("bookId", [""])[0]
+        title = params.get("title", [""])[0]
+        authors = [value for value in params.get("author", []) if value]
         if not provider or not provider_book_id:
             self.send_json({"error": "provider and bookId are required"}, status=400)
             return
-        self.send_json({"releases": self.books_service().releases(provider, provider_book_id)})
+        self.send_json({"releases": self.books_service().releases(
+            provider, provider_book_id, self.book_user_id(), title=title, authors=authors,
+        )})
 
     def handle_books_download_post(self):
         if not self.books_config().enabled:
