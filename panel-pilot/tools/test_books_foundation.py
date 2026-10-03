@@ -114,7 +114,7 @@ class BooksConfigurationTests(unittest.TestCase):
                     "SELECT name FROM sqlite_master WHERE type = 'table'"
                 )}
                 version = connection.execute("PRAGMA user_version").fetchone()[0]
-            self.assertEqual(version, 3)
+            self.assertEqual(version, 4)
             self.assertTrue({
                 "books", "book_progress", "book_reader_preferences",
                 "shelfmark_downloads", "book_meta",
@@ -134,7 +134,7 @@ class BooksConfigurationTests(unittest.TestCase):
             with store.connection() as migrated:
                 version = migrated.execute("PRAGMA user_version").fetchone()[0]
                 columns = {row[1] for row in migrated.execute("PRAGMA table_info(books)")}
-            self.assertEqual(version, 3)
+            self.assertEqual(version, 4)
             self.assertIn("library_status", columns)
             self.assertIn("removed_at", columns)
 
@@ -175,7 +175,7 @@ class BooksConfigurationTests(unittest.TestCase):
                 "resourceHref": "chapter-1.xhtml", "progression": 0.125, "revision": 0,
             })
             self.assertEqual(first["revision"], 1)
-            self.assertEqual(store.get_book(book_id)["libraryStatus"], "reading")
+            self.assertEqual(store.get_book_for_user("reader", book_id)["libraryStatus"], "reading")
             self.assertEqual(store.get_progress("reader", book_id)["locator"], "epubcfi(/6/2!/4/2/1:0)")
             with self.assertRaises(BookRequestError) as raised:
                 store.save_progress("reader", book_id, {
@@ -199,6 +199,24 @@ class BooksConfigurationTests(unittest.TestCase):
             store.sync_books([{**fixture, "title": "Alice Updated"}])
             self.assertEqual(store.list_books()["total"], 0)
             self.assertEqual(store.get_book(book_id, public=False, include_removed=True)["title"], "Alice Updated")
+
+    def test_shared_catalog_has_independent_household_memberships(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = BookStore(str(pathlib.Path(temporary) / "books.sqlite3"))
+            store.sync_books([{
+                "stableIdentifier": "urn:shared", "title": "A Shared Book", "authors": ["An Author"],
+                "isbn": "9780000000002", "acquisitionHref": "http://cwa/shared.epub", "coverHref": "",
+            }])
+            book_id = store.list_books()["books"][0]["id"]
+            store.add_to_library("wife", book_id)
+            store.set_library_status("wife", book_id, "reading")
+
+            self.assertEqual(store.list_books("local")["total"], 1)
+            self.assertEqual(store.list_books("wife")["total"], 1)
+            self.assertTrue(store.remove_book("local", book_id)["removed"])
+            self.assertEqual(store.list_books("local")["total"], 0)
+            self.assertEqual(store.list_books("wife")["total"], 1)
+            self.assertEqual(store.get_book_for_user("wife", book_id)["libraryStatus"], "reading")
 
     def test_reader_preferences_are_validated_and_persisted(self):
         with tempfile.TemporaryDirectory() as temporary:

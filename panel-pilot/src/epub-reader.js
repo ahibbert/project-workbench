@@ -93,7 +93,7 @@ async function jsonRequest(path, options = {}) {
   return payload;
 }
 
-export async function createEpubReader({ root, book, progress, preferences, initialHref = "", onExit }) {
+export async function createEpubReader({ root, book, progress, preferences, initialHref = "", accountId = "", onExit }) {
   let rendition = null;
   let publication = null;
   let currentProgress = progress;
@@ -109,7 +109,7 @@ export async function createEpubReader({ root, book, progress, preferences, init
   let noticeTimer = 0;
   let renditionFlow = "";
   let currentSectionProgress = null;
-  const emergencyPositionKey = `panel-pilot:book-position:${book.id}`;
+  const emergencyPositionKey = `panel-pilot:book-position:${accountId ? `${accountId}:` : ""}${book.id}`;
 
   function readEmergencyPosition() {
     try {

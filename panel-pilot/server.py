@@ -37,9 +37,16 @@ from comic_recommendations import (
 )
 from book_recommendations import (
     BookRecommendationService,
+    BookSeed,
     book_inventory_from_library,
     book_seeds_from_library,
 )
+from similar_recommendations import (
+    MANGA_FORMATS,
+    normalize_mangabaka_similar,
+    select_mangabaka_seed,
+)
+from accounts import AccountError, AccountStore
 
 
 USER_AGENT = (
@@ -51,6 +58,7 @@ REPORTS_PATH = os.environ.get("PANEL_PILOT_REPORTS_PATH", "/app/data/panel-repor
 DOWNLOAD_BUFFER_PATH = os.environ.get("PANEL_PILOT_DOWNLOAD_BUFFER_PATH", "/app/data/download-buffer.json")
 MANGABAKA_CONFIG_PATH = os.environ.get("PANEL_PILOT_MANGABAKA_CONFIG_PATH", "/app/data/mangabaka-config.json")
 DATA_ROOT = os.environ.get("PANEL_PILOT_DATA_ROOT", "/app/data")
+ACCOUNTS_PATH = os.environ.get("PANEL_PILOT_ACCOUNTS_PATH", os.path.join(DATA_ROOT, "accounts.sqlite3"))
 READING_STATS_PATH = os.environ.get(
     "PANEL_PILOT_READING_STATS_PATH",
     os.path.join(DATA_ROOT, "reading-stats.sqlite3"),
@@ -83,6 +91,9 @@ MANGABAKA_LOCK = threading.Lock()
 DOWNLOAD_BUFFER_MANAGER = None
 BOOKS_SERVICE = None
 BOOKS_SERVICE_LOCK = threading.Lock()
+ACCOUNT_STORE = None
+ACCOUNT_STORE_LOCK = threading.Lock()
+ACCOUNT_OWNER_FINGERPRINT = ""
 READING_STATS_LOCK = threading.RLock()
 MOMENTS_LOCK = threading.Lock()
 SOURCE_PROFILES_LOCK = threading.Lock()
@@ -559,7 +570,9 @@ PROTECTED_STATIC_PATHS = {
     "/dockerfile",
     "/package-lock.json",
     "/package.json",
+    "/accounts.py",
     "/comic_recommendations.py",
+    "/similar_recommendations.py",
     "/server.py",
     "/vite.config.js",
 }
@@ -657,6 +670,21 @@ def validate_runtime_security(bind_address):
     if len(decode_session_secret(configured_secret)) < 32:
         raise RuntimeError("PANEL_PILOT_SESSION_SECRET must contain at least 32 bytes of entropy")
     return username, password
+
+
+def account_store():
+    global ACCOUNT_STORE, ACCOUNT_OWNER_FINGERPRINT
+    username, password = validate_panel_auth_configuration()
+    with ACCOUNT_STORE_LOCK:
+        path = str(Path(ACCOUNTS_PATH).expanduser().resolve())
+        if ACCOUNT_STORE is None or str(ACCOUNT_STORE.path) != path:
+            ACCOUNT_STORE = AccountStore(path)
+            ACCOUNT_OWNER_FINGERPRINT = ""
+        fingerprint = hashlib.sha256(f"{username}\0{password}".encode("utf-8")).hexdigest()
+        if fingerprint != ACCOUNT_OWNER_FINGERPRINT:
+            ACCOUNT_STORE.ensure_owner(username, password)
+            ACCOUNT_OWNER_FINGERPRINT = fingerprint
+        return ACCOUNT_STORE
 
 
 class LoginAttemptLimiter:
@@ -1462,25 +1490,25 @@ class ReadingStatsStore:
         return {"schemaVersion": self.SCHEMA_VERSION, "erased": True, "reset": True, "scope": scope}
 
 
-def read_mangabaka_token():
-    configured = os.environ.get("MANGABAKA_API_KEY", "").strip()
+def read_mangabaka_token(path=MANGABAKA_CONFIG_PATH, allow_environment=True):
+    configured = os.environ.get("MANGABAKA_API_KEY", "").strip() if allow_environment else ""
     if configured:
         return configured
     try:
-        with MANGABAKA_LOCK, open(MANGABAKA_CONFIG_PATH, "r", encoding="utf-8") as handle:
+        with MANGABAKA_LOCK, open(path, "r", encoding="utf-8") as handle:
             payload = json.load(handle)
         return str(payload.get("token") or "").strip()
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return ""
 
 
-def write_mangabaka_token(token):
-    directory = os.path.dirname(MANGABAKA_CONFIG_PATH) or "."
+def write_mangabaka_token(token, path=MANGABAKA_CONFIG_PATH):
+    directory = os.path.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)
     with MANGABAKA_LOCK:
         if not token:
             try:
-                os.unlink(MANGABAKA_CONFIG_PATH)
+                os.unlink(path)
             except FileNotFoundError:
                 pass
             return
@@ -1494,7 +1522,7 @@ def write_mangabaka_token(token):
                 os.chmod(temporary_path, 0o600)
             except OSError:
                 pass
-            os.replace(temporary_path, MANGABAKA_CONFIG_PATH)
+            os.replace(temporary_path, path)
         finally:
             if temporary_path and os.path.exists(temporary_path):
                 os.unlink(temporary_path)
@@ -2523,17 +2551,15 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
     def session_secret(self):
         return self.session_secrets()[0]
 
-    def make_session_token(self, username):
-        _, password = self.auth_credentials()
-        auth_version = hmac.new(
-            self.session_secret(),
-            f"panel-pilot-auth\0{username}\0{password}".encode("utf-8"),
-            hashlib.sha256,
-        ).hexdigest()[:24]
+    def make_session_token(self, account):
+        if isinstance(account, str):
+            account = account_store().by_username(account)
+        if not account:
+            raise ValueError("Unknown Panels account")
         payload = json.dumps(
             {
-                "sub": username,
-                "ver": auth_version,
+                "sub": account["id"],
+                "ver": int(account["sessionVersion"]),
                 "iat": int(time.time()),
                 "exp": int(time.time()) + SESSION_MAX_AGE,
             },
@@ -2544,9 +2570,13 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         encoded_signature = base64.urlsafe_b64encode(signature).decode("ascii").rstrip("=")
         return f"{encoded}.{encoded_signature}"
 
-    def valid_session(self):
+    def session_account(self):
         if not self.auth_enabled():
-            return True
+            return {
+                "id": "local", "username": "local", "displayName": "Local reader",
+                "isAdmin": True, "contentTypes": ["books", "manga", "comic", "webtoon"],
+                "sessionVersion": 1, "disabled": False,
+            }
 
         cookie = SimpleCookie()
         try:
@@ -2561,31 +2591,76 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
                 )
                 for secret in self.session_secrets()
             ):
-                return False
+                return None
             payload_bytes = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
             payload = json.loads(payload_bytes.decode("utf-8"))
         except (KeyError, ValueError, TypeError, json.JSONDecodeError):
-            return False
+            return None
 
         try:
             issued_at = int(payload.get("iat", 0))
             expires_at = int(payload.get("exp", 0))
         except (TypeError, ValueError):
-            return False
-        username, password = self.auth_credentials()
-        expected_version = hmac.new(
-            self.session_secret(),
-            f"panel-pilot-auth\0{username}\0{password}".encode("utf-8"),
-            hashlib.sha256,
-        ).hexdigest()[:24]
+            return None
+        account = account_store().by_id(payload.get("sub"))
         now = int(time.time())
-        return (
-            payload.get("sub") == username
-            and hmac.compare_digest(str(payload.get("ver") or ""), expected_version)
+        valid = (
+            bool(account)
+            and not account["disabled"]
+            and hmac.compare_digest(str(payload.get("ver") or ""), str(account["sessionVersion"]))
             and issued_at <= now + 60
             and issued_at <= expires_at <= issued_at + SESSION_MAX_AGE
             and expires_at >= now
         )
+        return account if valid else None
+
+    def valid_session(self):
+        return bool(self.session_account())
+
+    def current_account(self):
+        return self.session_account()
+
+    def account_allows(self, content_type):
+        account = self.current_account() or {}
+        return content_type in (account.get("contentTypes") or ())
+
+    def account_data_path(self, legacy_path, name=None):
+        account = self.current_account() or {"id": "local", "isAdmin": True}
+        if account.get("isAdmin"):
+            return str(Path(legacy_path).expanduser().resolve())
+        account_id = str(account.get("id") or "local")
+        if not re.fullmatch(r"acct_[0-9a-f]{32}", account_id):
+            raise ValueError("Invalid account storage identity")
+        target_name = name or Path(legacy_path).name
+        return str((Path(DATA_ROOT).expanduser().resolve() / "accounts" / account_id / target_name).resolve())
+
+    def library_path(self):
+        return self.account_data_path(LIBRARY_PATH, "library.json")
+
+    def reading_stats_store(self):
+        return ReadingStatsStore(self.account_data_path(READING_STATS_PATH, "reading-stats.sqlite3"))
+
+    def mangabaka_config_path(self):
+        return self.account_data_path(MANGABAKA_CONFIG_PATH, "mangabaka-config.json")
+
+    def read_account_mangabaka_token(self):
+        account = self.current_account() or {}
+        return read_mangabaka_token(self.mangabaka_config_path(), allow_environment=bool(account.get("isAdmin")))
+
+    def authorize_account_api(self, parsed):
+        path = parsed.path
+        if path.startswith(("/api/books", "/api/book-recommendations")) and not self.account_allows("books"):
+            self.send_json({"error": "Books are not enabled for this account", "code": "content_disabled"}, status=403)
+            return False
+        visual_paths = (
+            "/api/suwayomi", "/api/library", "/api/moments", "/api/mangabaka",
+            "/api/detect/", "/api/download-buffer", "/api/source-profiles",
+            "/api/source-intelligence", "/api/comick", "/api/readcomiconline",
+        )
+        if path.startswith(visual_paths) and not any(self.account_allows(value) for value in ("manga", "comic", "webtoon")):
+            self.send_json({"error": "Manga and comics are not enabled for this account", "code": "content_disabled"}, status=403)
+            return False
+        return True
 
     def require_auth(self, parsed):
         if self.valid_session():
@@ -2760,18 +2835,15 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         form = parse_qs(self.rfile.read(length).decode("utf-8", errors="replace"))
         username = form.get("username", [""])[0]
         password = form.get("password", [""])[0]
-        expected_username, expected_password = self.auth_credentials()
-        username_valid = secrets.compare_digest(username, expected_username)
-        password_valid = secrets.compare_digest(password, expected_password)
-        valid = username_valid & password_valid
+        account = account_store().authenticate(username, password)
         next_path = self.safe_next_path(form.get("next", ["/"])[0])
-        if not valid:
+        if not account:
             LOGIN_ATTEMPTS.record_failure(client_key)
             self.redirect(f"/login?{urlencode({'error': '1', 'next': next_path})}")
             return
 
         LOGIN_ATTEMPTS.clear_client(client_key)
-        token = self.make_session_token(expected_username)
+        token = self.make_session_token(account)
         self.redirect(next_path, self.session_cookie_header(token, SESSION_MAX_AGE))
 
     def handle_logout_post(self):
@@ -2789,12 +2861,25 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             return
         if not self.require_auth(parsed):
             return
+        if not self.authorize_account_api(parsed):
+            return
         try:
             if parsed.path == "/api/suwayomi/graphql":
                 self.handle_suwayomi_graphql(parsed)
                 return
             if parsed.path == "/api/books/connections/test":
                 self.handle_books_connection_test()
+                return
+            if parsed.path == "/api/accounts":
+                self.handle_accounts_post()
+                return
+            account_password = re.fullmatch(r"/api/accounts/([^/]+)/password", parsed.path)
+            if account_password:
+                self.handle_account_password_post(account_password.group(1))
+                return
+            account_content = re.fullmatch(r"/api/accounts/([^/]+)/content", parsed.path)
+            if account_content:
+                self.handle_account_content_post(account_content.group(1))
                 return
             if parsed.path == "/api/books/sync":
                 self.handle_books_sync()
@@ -2808,6 +2893,10 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             book_library_status = re.fullmatch(r"/api/books/(\d+)/library-status", parsed.path)
             if book_library_status:
                 self.handle_book_library_status_post(int(book_library_status.group(1)))
+                return
+            book_library_add = re.fullmatch(r"/api/books/(\d+)/library", parsed.path)
+            if book_library_add:
+                self.handle_book_library_add_post(int(book_library_add.group(1)))
                 return
             book_progress = re.fullmatch(r"/api/books/(\d+)/progress", parsed.path)
             if book_progress:
@@ -2842,6 +2931,9 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
                 return
             if parsed.path == "/api/comic-recommendations/config":
                 self.handle_comic_recommendations_config_post()
+                return
+            if parsed.path == "/api/recommendations/similar":
+                self.handle_similar_recommendations()
                 return
             if parsed.path == "/api/mangabaka/library":
                 self.handle_mangabaka_library_post()
@@ -2896,6 +2988,8 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         if self.reject_cross_origin_mutation(parsed):
             return
         if not self.require_auth(parsed):
+            return
+        if not self.authorize_account_api(parsed):
             return
         try:
             book_match = re.fullmatch(r"/api/books/(\d+)", parsed.path)
@@ -3039,9 +3133,18 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             return
         if not self.require_auth(parsed):
             return
+        if not self.authorize_account_api(parsed):
+            return
         try:
             if parsed.path == "/api/books/status":
                 self.handle_books_status()
+                return
+            if parsed.path == "/api/session":
+                account = self.current_account()
+                self.send_json({"account": account})
+                return
+            if parsed.path == "/api/accounts":
+                self.handle_accounts_get()
                 return
             if parsed.path == "/api/books":
                 self.handle_books_list(parsed)
@@ -3140,7 +3243,7 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
                 return
             if parsed.path == "/api/reading-stats/export":
                 self.send_json_attachment(
-                    ReadingStatsStore().export_data(),
+                    self.reading_stats_store().export_data(),
                     f"panels-reading-stats-{datetime.now(timezone.utc).date().isoformat()}.json",
                 )
                 return
@@ -3172,7 +3275,13 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             raise ValueError("Books are disabled")
         with BOOKS_SERVICE_LOCK:
             if BOOKS_SERVICE is None or BOOKS_SERVICE.config != config:
-                BOOKS_SERVICE = BooksService(config)
+                owner = next((account for account in account_store().list_accounts() if account["isAdmin"]), None)
+                legacy_username, _ = self.auth_credentials()
+                BOOKS_SERVICE = BooksService(
+                    config,
+                    owner_user_id=(owner or {}).get("id") or "local",
+                    legacy_owner_username=legacy_username,
+                )
                 BOOKS_SERVICE.start()
             return BOOKS_SERVICE
 
@@ -3181,11 +3290,62 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         if not config.enabled:
             self.send_json(config.public_status())
             return
-        self.send_json(self.books_service().status())
+        service = self.books_service()
+        status = service.status()
+        status["books"] = service.list_books(self.book_user_id(), limit=1, offset=0)["total"]
+        self.send_json(status)
 
     def book_user_id(self):
-        username, _ = self.auth_credentials()
-        return username or "local"
+        account = self.current_account()
+        return str((account or {}).get("id") or "local")
+
+    def require_admin_account(self):
+        account = self.current_account()
+        if not account or not account.get("isAdmin"):
+            self.send_json({"error": "Administrator access is required"}, status=403)
+            return None
+        return account
+
+    def handle_accounts_get(self):
+        if not self.require_admin_account():
+            return
+        self.send_json({"accounts": account_store().list_accounts()})
+
+    def handle_accounts_post(self):
+        if not self.require_admin_account():
+            return
+        payload = self.read_json_request(16384)
+        try:
+            account = account_store().create(
+                payload.get("username"), payload.get("password"), payload.get("displayName"),
+                payload.get("contentTypes") or ("books",),
+            )
+        except AccountError as error:
+            self.send_json({"error": str(error)}, status=400)
+            return
+        self.send_json({"account": account}, status=201)
+
+    def handle_account_password_post(self, account_id):
+        if not self.require_admin_account():
+            return
+        payload = self.read_json_request(4096)
+        try:
+            account = account_store().reset_password(account_id, payload.get("password"))
+        except AccountError as error:
+            self.send_json({"error": str(error)}, status=400)
+            return
+        self.send_json({"account": account})
+
+    def handle_account_content_post(self, account_id):
+        if not self.require_admin_account():
+            return
+        payload = self.read_json_request(4096)
+        try:
+            account = account_store().update_content_types(account_id, payload.get("contentTypes"))
+        except AccountError as error:
+            self.send_json({"error": str(error)}, status=400)
+            return
+        self.send_json({"account": account})
 
     def handle_books_connection_test(self):
         config = self.books_config()
@@ -3218,7 +3378,7 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         if not self.books_config().enabled:
             self.send_json({"error": "Books are disabled", "code": "feature_disabled"}, status=404)
             return
-        book = self.books_service().get_book(book_id)
+        book = self.books_service().get_book(book_id, self.book_user_id())
         if not book:
             self.send_json({"error": "Book not found"}, status=404)
             return
@@ -3228,7 +3388,7 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         if not self.books_config().enabled:
             self.send_json({"error": "Books are disabled", "code": "feature_disabled"}, status=404)
             return
-        self.send_json(self.books_service().remove_book(book_id))
+        self.send_json(self.books_service().remove_book(self.book_user_id(), book_id))
 
     def handle_book_recommendations(self, parsed):
         if not self.books_config().enabled:
@@ -3282,8 +3442,158 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             response_cache_status = "bypass"
         self.send_json({**feed, "configured": True, "status": "ready", "cacheStatus": response_cache_status})
 
+    def handle_similar_recommendations(self):
+        payload = self.read_json_request(16384)
+        media_format = str(payload.get("mediaFormat") or "").strip().lower()
+        if media_format not in ("book", "manga", "comic", "webtoon"):
+            self.send_json({"error": "mediaFormat must be book, comic, manga, or webtoon"}, status=400)
+            return
+        if not self.account_allows("books" if media_format == "book" else media_format):
+            self.send_json({"error": f"{media_format.title()} is not enabled for this account"}, status=403)
+            return
+        try:
+            limit = max(1, min(20, int(payload.get("limit") or 12)))
+        except (TypeError, ValueError):
+            self.send_json({"error": "limit must be an integer between 1 and 20"}, status=400)
+            return
+        if media_format == "book":
+            self.handle_similar_book_recommendations(payload, limit)
+            return
+        if media_format == "comic":
+            self.handle_similar_comic_recommendations(payload, limit)
+            return
+        if media_format in MANGA_FORMATS:
+            self.handle_similar_mangabaka_recommendations(payload, media_format, limit)
+            return
+        self.send_json({"error": "mediaFormat must be book, comic, manga, or webtoon"}, status=400)
+
+    @staticmethod
+    def similar_response(*, status, provider, seed_title, results=(), configured=True):
+        return {
+            "schemaVersion": 1,
+            "configured": bool(configured),
+            "status": status,
+            "provider": provider,
+            "seedTitle": seed_title,
+            "results": list(results),
+        }
+
+    def handle_similar_book_recommendations(self, payload, limit):
+        if not self.books_config().enabled:
+            self.send_json({"error": "Books are disabled", "code": "feature_disabled"}, status=404)
+            return
+        try:
+            book_id = int(payload.get("bookId") or 0)
+        except (TypeError, ValueError):
+            book_id = 0
+        book = self.books_service().get_book(book_id, self.book_user_id()) if book_id > 0 else None
+        if not book:
+            self.send_json({"error": "Book not found"}, status=404)
+            return
+        service = build_book_recommendation_service()
+        if service is None:
+            self.send_json(self.similar_response(
+                status="unconfigured", provider="librarything", seed_title=book["title"], configured=False,
+            ))
+            return
+        library = self.books_service().list_books(self.book_user_id(), limit=200, offset=0)["books"]
+        owned = book_inventory_from_library(library)
+        seed = BookSeed(
+            book_id=book_id,
+            title=book.get("title") or "",
+            authors=tuple(book.get("authors") or ()),
+            isbn=book.get("isbn") or "",
+            series_name=book.get("seriesName") or "",
+            series_position=book.get("seriesPosition"),
+            status=book.get("libraryStatus") or "",
+            updated_at=(book.get("progress") or {}).get("updatedAt") or book.get("lastSyncedAt") or "",
+        )
+        feed = service.build_feed((seed,), owned_books=owned, limit=limit).to_public_dict()
+        status = "unavailable" if feed.get("mode") == "unavailable" else "ready"
+        self.send_json(self.similar_response(
+            status=status,
+            provider="librarything",
+            seed_title=seed.title,
+            results=feed.get("results") or (),
+        ))
+
+    def handle_similar_comic_recommendations(self, payload, limit):
+        title = str(payload.get("title") or "").replace("\x00", "").strip()[:300]
+        if not title:
+            self.send_json({"error": "A comic title is required"}, status=400)
+            return
+        service = build_comic_recommendation_service()
+        if service is None:
+            self.send_json(self.similar_response(
+                status="unconfigured", provider="librarything", seed_title=title, configured=False,
+            ))
+            return
+        creators = tuple(
+            str(value).replace("\x00", "").strip()[:200]
+            for value in payload.get("creators") or ()
+            if str(value).strip()
+        )[:12]
+        seed = ComicSeed(title=title, creators=creators)
+        feed = service.build_feed((seed,), limit=limit).to_public_dict()
+        owned_titles = {
+            re.sub(r"[^a-z0-9]+", " ", str(item.get("mangaTitle") or "").lower()).strip()
+            for item in self.read_library_items()
+            if isinstance(item, dict)
+        }
+        results = [
+            result for result in feed.get("results") or ()
+            if re.sub(r"[^a-z0-9]+", " ", str(result.get("title") or "").lower()).strip() not in owned_titles
+        ][:limit]
+        status = "unavailable" if feed.get("mode") == "unavailable" else "ready"
+        self.send_json(self.similar_response(
+            status=status, provider="librarything", seed_title=title, results=results,
+        ))
+
+    def handle_similar_mangabaka_recommendations(self, payload, media_format, limit):
+        title = str(payload.get("title") or "").replace("\x00", "").strip()[:300]
+        if not title:
+            self.send_json({"error": "A title is required"}, status=400)
+            return
+        try:
+            series_id = int(payload.get("mangabakaId") or 0)
+        except (TypeError, ValueError):
+            series_id = 0
+        if series_id <= 0:
+            query = urlencode({"q": title, "limit": 8, "schema": "full"})
+            search = self.mangabaka_json(f"/v2/series/search?{query}", token="")
+            seed = select_mangabaka_seed(search.get("data") if isinstance(search, dict) else None, title)
+            series_id = int((seed or {}).get("id") or 0)
+        if series_id <= 0:
+            self.send_json(self.similar_response(
+                status="no-match", provider="mangabaka", seed_title=title,
+            ))
+            return
+        query = urlencode({
+            "limit": limit,
+            "content_rating": ["safe", "suggestive"],
+        }, doseq=True)
+        similar = self.mangabaka_json(f"/v2/series/{series_id}/similar?{query}", token="")
+        excluded_titles = (
+            str(item.get("mangaTitle") or "")
+            for item in self.read_library_items()
+            if isinstance(item, dict)
+        )
+        results = normalize_mangabaka_similar(
+            similar,
+            seed_title=title,
+            requested_format=media_format,
+            excluded_titles=excluded_titles,
+            limit=limit,
+        )
+        self.send_json(self.similar_response(
+            status="ready", provider="mangabaka", seed_title=title, results=results,
+        ))
+
     def handle_book_cover(self, book_id):
         if not self.books_config().enabled:
+            self.send_error(404, "Not found")
+            return
+        if not self.books_service().get_book(book_id, self.book_user_id()):
             self.send_error(404, "Not found")
             return
         try:
@@ -3304,7 +3614,7 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             return
         try:
             query = parse_qs(parsed.query).get("query", [""])[0]
-            self.send_json({"books": self.books_service().search(query)})
+            self.send_json({"books": self.books_service().search(query, self.book_user_id())})
         except ValueError as error:
             self.send_json({"error": str(error)}, status=400)
 
@@ -3326,7 +3636,9 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             return
         try:
             payload = self.read_json_request(65536)
-            download = self.books_service().queue_download(payload.get("releaseToken"), payload.get("bookToken"))
+            download = self.books_service().queue_download(
+                payload.get("releaseToken"), payload.get("bookToken"), self.book_user_id()
+            )
             self.send_json({"download": download}, status=202)
         except ValueError as error:
             self.send_json({"error": str(error)}, status=400)
@@ -3335,13 +3647,13 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         if not self.books_config().enabled:
             self.send_json({"error": "Books are disabled", "code": "feature_disabled"}, status=404)
             return
-        self.send_json({"downloads": self.books_service().refresh_downloads()})
+        self.send_json({"downloads": self.books_service().refresh_downloads(self.book_user_id())})
 
     def handle_book_progress_get(self, book_id):
         if not self.books_config().enabled:
             self.send_json({"error": "Books are disabled", "code": "feature_disabled"}, status=404)
             return
-        if not self.books_service().get_book(book_id):
+        if not self.books_service().get_book(book_id, self.book_user_id()):
             self.send_json({"error": "Book not found"}, status=404)
             return
         self.send_json({"progress": self.books_service().progress(self.book_user_id(), book_id)})
@@ -3358,7 +3670,13 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             self.send_json({"error": "Books are disabled", "code": "feature_disabled"}, status=404)
             return
         payload = self.read_json_request(4096)
-        self.send_json({"book": self.books_service().set_library_status(book_id, payload.get("status"))})
+        self.send_json({"book": self.books_service().set_library_status(self.book_user_id(), book_id, payload.get("status"))})
+
+    def handle_book_library_add_post(self, book_id):
+        if not self.books_config().enabled:
+            self.send_json({"error": "Books are disabled", "code": "feature_disabled"}, status=404)
+            return
+        self.send_json({"book": self.books_service().add_to_library(self.book_user_id(), book_id)}, status=201)
 
     def handle_books_preferences_get(self):
         if not self.books_config().enabled:
@@ -3375,6 +3693,9 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
 
     def handle_book_epub(self, book_id):
         if not self.books_config().enabled:
+            self.send_error(404, "Not found")
+            return
+        if not self.books_service().get_book(book_id, self.book_user_id()):
             self.send_error(404, "Not found")
             return
         path = self.books_service().epub_path(book_id)
@@ -3399,7 +3720,7 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             "Accept": "application/json",
             "User-Agent": "Panels (+https://github.com/ahibbert/panels)",
         }
-        active_token = token if token is not None else read_mangabaka_token()
+        active_token = token if token is not None else self.read_account_mangabaka_token()
         if active_token:
             headers["x-api-key"] = active_token
         body = None
@@ -3434,22 +3755,22 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         version = payload.get("schemaVersion", 1)
         if version != ReadingStatsStore.SCHEMA_VERSION:
             raise ReadingStatsRequestError("Unsupported reading event schemaVersion", status=409)
-        self.send_json(ReadingStatsStore().ingest(payload.get("events")))
+        self.send_json(self.reading_stats_store().ingest(payload.get("events")))
 
     def handle_reading_stats_settings(self):
         payload = self.read_json_request(16384)
-        self.send_json(ReadingStatsStore().update_settings(payload))
+        self.send_json(self.reading_stats_store().update_settings(payload))
 
     def handle_reading_stats_reset(self):
         payload = self.read_json_request(16384)
         if not isinstance(payload, dict):
             raise ReadingStatsRequestError("Reset payload must be an object")
-        self.send_json(ReadingStatsStore().reset(payload.get("confirm"), payload.get("scope", "all")))
+        self.send_json(self.reading_stats_store().reset(payload.get("confirm"), payload.get("scope", "all")))
 
     def handle_reading_stats_get(self, parsed):
         params = parse_qs(parsed.query)
         range_name = params.get("range", ["30d"])[0]
-        self.send_json(ReadingStatsStore().summary(range_name))
+        self.send_json(self.reading_stats_store().summary(range_name))
 
     def handle_source_profiles_post(self):
         payload = self.read_json_request(65536)
@@ -3537,18 +3858,18 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         if payload.get("clear") is True:
             if os.environ.get("MANGABAKA_API_KEY", "").strip():
                 raise ValueError("The MangaBaka token is configured by the server environment and cannot be removed here")
-            write_mangabaka_token("")
+            write_mangabaka_token("", self.mangabaka_config_path())
             self.send_json({"configured": False})
             return
         token = str(payload.get("token") or "").strip()
         if not token.startswith("mb-") or len(token) < 12 or len(token) > 512:
             raise ValueError("Enter a valid MangaBaka Personal Access Token beginning with mb-")
         profile = self.mangabaka_json("/v1/my/profile", token=token)
-        write_mangabaka_token(token)
+        write_mangabaka_token(token, self.mangabaka_config_path())
         self.send_json({"configured": True, "profile": profile.get("data") or profile.get("profile") or {}})
 
     def handle_mangabaka_status(self):
-        token = read_mangabaka_token()
+        token = self.read_account_mangabaka_token()
         if not token:
             self.send_json({"configured": False, "connected": False})
             return
@@ -3568,7 +3889,7 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
     def handle_mangabaka_recommendations(self, parsed):
         params = parse_qs(parsed.query)
         limit = max(1, min(20, int(params.get("limit", [12])[0])))
-        token = read_mangabaka_token()
+        token = self.read_account_mangabaka_token()
         ratings = [("content_rating", "safe"), ("content_rating", "suggestive")]
         if token:
             query = urlencode([("limit", limit), *ratings])
@@ -3682,6 +4003,8 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         })
 
     def handle_comic_recommendations_config_post(self):
+        if not self.require_admin_account():
+            return
         payload = self.read_json_request(16384)
         existing = read_comic_recommendations_config()
         if payload.get("clear") is True:
@@ -3709,7 +4032,7 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         self.send_json(payload)
 
     def handle_mangabaka_library_post(self):
-        token = read_mangabaka_token()
+        token = self.read_account_mangabaka_token()
         if not token:
             self.send_json({"error": "Connect MangaBaka before syncing reading progress"}, status=409)
             return
@@ -3861,7 +4184,7 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         self.send_json({"items": stored})
 
     def moments_root(self):
-        root = Path(MOMENTS_PATH).expanduser().resolve()
+        root = Path(self.account_data_path(MOMENTS_PATH, "moments")).expanduser().resolve()
         root.mkdir(parents=True, exist_ok=True)
         return root
 
@@ -4016,9 +4339,10 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         self.send_json({"deleted": deleted, "id": moment_id}, status=200 if deleted else 404)
 
     def read_library_items(self):
+        library_path = self.library_path()
         with LIBRARY_LOCK:
             try:
-                with open(LIBRARY_PATH, "r", encoding="utf-8") as handle:
+                with open(library_path, "r", encoding="utf-8") as handle:
                     payload = json.load(handle)
             except FileNotFoundError:
                 return []
@@ -4041,23 +4365,25 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             return cleaned
 
     def _replace_library_items_locked(self, items):
-        directory = os.path.dirname(LIBRARY_PATH) or "."
+        library_path = self.library_path()
+        directory = os.path.dirname(library_path) or "."
         os.makedirs(directory, exist_ok=True)
         fd, temp_path = tempfile.mkstemp(prefix=".library-", suffix=".json", dir=directory)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 json.dump({"items": items}, handle, ensure_ascii=True, indent=2)
                 handle.write("\n")
-            os.replace(temp_path, LIBRARY_PATH)
+            os.replace(temp_path, library_path)
         finally:
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
 
     def write_library_items(self, items):
         cleaned = self.clean_library_items(items)
+        library_path = self.library_path()
         with LIBRARY_LOCK:
             try:
-                with open(LIBRARY_PATH, "r", encoding="utf-8") as handle:
+                with open(library_path, "r", encoding="utf-8") as handle:
                     existing_payload = json.load(handle)
                 existing = self.clean_library_items(
                     existing_payload.get("items", []) if isinstance(existing_payload, dict) else existing_payload
@@ -4080,8 +4406,9 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         previous_key = f"{previous_source_id}:{previous_manga_id}"
         replacement_key = f"{replacement_item.get('sourceId', 'source')}:{replacement_item.get('mangaId', '')}"
         with LIBRARY_LOCK:
+            library_path = self.library_path()
             try:
-                with open(LIBRARY_PATH, "r", encoding="utf-8") as handle:
+                with open(library_path, "r", encoding="utf-8") as handle:
                     existing_payload = json.load(handle)
                 existing = self.clean_library_items(
                     existing_payload.get("items", []) if isinstance(existing_payload, dict) else existing_payload
@@ -4396,10 +4723,11 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
 
 
 def main():
-    global DOWNLOAD_BUFFER_MANAGER, BOOKS_SERVICE
+    global DOWNLOAD_BUFFER_MANAGER, BOOKS_SERVICE, ACCOUNT_STORE
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8012
     bind_address = resolve_bind_address()
     validate_runtime_security(bind_address)
+    ACCOUNT_STORE = account_store()
     suwayomi_auth_credentials()
     normalize_suwayomi_base_url(os.environ.get("SUWAYOMI_INTERNAL_URL", "http://localhost:4567"))
     os.umask(0o077)
@@ -4408,7 +4736,13 @@ def main():
     DOWNLOAD_BUFFER_MANAGER.start()
     books_config = BooksConfig.from_environment(DATA_ROOT)
     if books_config.enabled:
-        BOOKS_SERVICE = BooksService(books_config)
+        owner = next((account for account in ACCOUNT_STORE.list_accounts() if account["isAdmin"]), None)
+        legacy_username, _ = panel_auth_credentials()
+        BOOKS_SERVICE = BooksService(
+            books_config,
+            owner_user_id=(owner or {}).get("id") or "local",
+            legacy_owner_username=legacy_username,
+        )
         BOOKS_SERVICE.start()
     handler = lambda *args, **kwargs: PanelPilotHandler(*args, directory=static_root, **kwargs)
     server = ThreadingHTTPServer((bind_address, port), handler)

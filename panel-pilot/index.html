@@ -284,6 +284,7 @@
               <div class="detail-actions">
                 <button class="primary-action" id="detail-primary" type="button">Start reading</button>
                 <button id="detail-library" type="button">Add to library</button>
+                <button id="detail-more-like" type="button">More like this</button>
                 <button id="detail-change-source" type="button" hidden>Change source</button>
               </div>
             </div>
@@ -754,6 +755,26 @@
         <section class="panel account-panel">
           <div class="panel-heading">
             <h2>Account</h2>
+            <span class="small-count" id="current-account-name">Signed in</span>
+          </div>
+          <p class="note" id="current-account-access"></p>
+          <div id="account-administration" hidden>
+            <h3>Household accounts</h3>
+            <div id="account-list" class="account-list"></div>
+            <form id="create-account-form" class="account-create-form">
+              <label class="field"><span>Name</span><input name="displayName" type="text" autocomplete="off" maxlength="80" required></label>
+              <label class="field"><span>Username</span><input name="username" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" minlength="2" maxlength="40" required></label>
+              <label class="field"><span>Temporary password</span><input name="password" type="password" autocomplete="new-password" minlength="12" required></label>
+              <fieldset class="account-content-types">
+                <legend>Enabled content</legend>
+                <label><input name="contentTypes" type="checkbox" value="books" checked> Books</label>
+                <label title="Requires a dedicated Suwayomi service"><input name="contentTypes" type="checkbox" value="manga" disabled> Manga</label>
+                <label title="Requires a dedicated Suwayomi service"><input name="contentTypes" type="checkbox" value="comic" disabled> Comics</label>
+                <label title="Requires a dedicated Suwayomi service"><input name="contentTypes" type="checkbox" value="webtoon" disabled> Webtoons</label>
+              </fieldset>
+              <button class="wide-button" type="submit">Create account</button>
+            </form>
+            <p class="note" id="account-management-note" role="status" aria-live="polite"></p>
           </div>
           <form action="/logout" method="post">
             <button class="wide-button danger-button" type="submit">Sign out</button>

@@ -318,6 +318,19 @@ async function installPolishFixture(page, { holdStoredChapters = false, detailCh
       return;
     }
 
+    if (url.pathname === "/api/recommendations/similar") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        schemaVersion: 1, configured: true, status: "ready", provider: "mangabaka",
+        seedTitle: "Second Focus Card",
+        results: [{
+          id: 9901, type: "manga", mediaFormat: "manga",
+          titles: [{ language: "en", is_primary: true, title: "Related Fixture" }],
+          reason: { reason_type: "similar_to", reason_seeds: [{ title: "Second Focus Card" }], top_tags: [{ name: "Adventure" }] },
+        }],
+      }) });
+      return;
+    }
+
     await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
   });
 
@@ -455,6 +468,21 @@ test("closing manga detail restores focus to the exact initiating Browse card", 
   await page.locator("#close-manga-detail").click();
   await expect(page.locator("#manga-detail")).toBeHidden();
   await expect(initiatingCard).toBeFocused();
+});
+
+test("manga details can find a related title and reuse source search", async ({ page }) => {
+  await installPolishFixture(page);
+  await openReadyBrowse(page);
+  await page.locator("#search-query").fill("Focus cards");
+  await page.locator("#search-query").press("Enter");
+  await page.locator("#manga-results .manga-cover-button").nth(1).click();
+  await page.getByRole("button", { name: "More like this" }).click();
+  const dialog = page.getByRole("dialog", { name: /More like Second Focus Card/ });
+  await expect(dialog).toContainText("Related Fixture");
+  await dialog.getByRole("button", { name: "Find a source" }).click();
+  await expect(page.locator("#recommendation-context-title")).toHaveText("Choose a source for Related Fixture");
+  await expect(page.locator("#search-query")).toHaveValue("Related Fixture");
+  await expect(page.locator("#manga-results")).toContainText("Related Fixture result");
 });
 
 test("library filters expose truthful pressed-button semantics and work from the keyboard", async ({ page }) => {

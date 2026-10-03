@@ -12,7 +12,9 @@ const iconSetBudgetBytes = 300_000;
 // the feature-flagged Books bootstrap, unified Library/chapter controls, and
 // paginated multi-source Browse results, and source-provided series metadata
 // (the EPUB reader, book contents parser, and lifecycle stay lazy).
-const installShellBudgetBytes = 810_000;
+// Household account management and the shared More-like-this dialog remain in
+// the eagerly loaded shell so access rules and title actions are consistent.
+const installShellBudgetBytes = 825_000;
 
 function readSource(path) {
   return readFileSync(join(projectRoot, path), "utf8");
@@ -336,6 +338,8 @@ test("the Docker runtime stage contains only the server, generated frontend, and
   assert.match(runtimeStage, /^COPY --chown=panels:panels server\.py \.\/server\.py$/m);
   assert.match(runtimeStage, /^COPY --chown=panels:panels books\.py shelfmark_client\.py opds_client\.py \.\/$/m);
   assert.match(runtimeStage, /^COPY --chown=panels:panels book_recommendations\.py \.\/book_recommendations\.py$/m);
+  assert.match(runtimeStage, /^COPY --chown=panels:panels similar_recommendations\.py \.\/similar_recommendations\.py$/m);
+  assert.match(runtimeStage, /^COPY --chown=panels:panels accounts\.py \.\/accounts\.py$/m);
   assert.match(runtimeStage, /^COPY --chown=panels:panels LICENSE THIRD_PARTY_NOTICES\.md \.\/$/m);
   assert.match(runtimeStage, /^COPY --chown=panels:panels --from=frontend-builder \/build\/dist \.\/web$/m);
   assert.match(runtimeStage, /^USER 10001:10001$/m);

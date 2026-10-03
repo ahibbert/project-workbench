@@ -3,6 +3,7 @@ import {
   deviceChapterIsIncomplete,
   deviceChapterPageUrls,
   deviceChapterStoredBytes,
+  configureDeviceChapterAccount,
   downloadDeviceChapter,
   getDeviceChapterStorageSnapshot,
   initializeDeviceChapters,
@@ -16,7 +17,7 @@ import {
   retryIncompleteDeviceChapter,
 } from "./device-chapters.js";
 import { reconcileReadingProgress } from "./progress-reconciliation.js";
-import { createReadingStatsClient } from "./reading-stats.js";
+import { createIndexedDbReadingStatsStore, createReadingStatsClient } from "./reading-stats.js";
 import { createReadingSession, restoreReadingSession } from "./reading-session.js";
 import { choosePanelDetectionFallback } from "./detection-policy.js";
 import {
@@ -41,17 +42,29 @@ import {
   SessionExpiredError,
 } from "./auth-boundary.js";
 
-const storeKey = "panel-pilot-settings";
-const panelModeStoreKey = "panel-pilot-panel-mode";
-const libraryStoreKey = "panel-pilot-library";
-const sourceIndexStoreKey = "panel-pilot-source-index";
+installAuthenticationBoundary();
+let currentAccount = {
+  id: "local", username: "local", displayName: "Local reader", isAdmin: true,
+  contentTypes: ["books", "manga", "comic", "webtoon"],
+};
+try {
+  const sessionResponse = await fetch("/api/session", { cache: "no-store", headers: { Accept: "application/json" } });
+  if (sessionResponse.ok) currentAccount = (await sessionResponse.json()).account || currentAccount;
+} catch {
+  // Authentication recovery handles an expired session; local development keeps its default identity.
+}
+const accountStorageSuffix = currentAccount.id && currentAccount.id !== "local" ? `:${currentAccount.id}` : "";
+const accountStorageKey = (key) => `${key}${accountStorageSuffix}`;
+const storeKey = accountStorageKey("panel-pilot-settings");
+const panelModeStoreKey = accountStorageKey("panel-pilot-panel-mode");
+const libraryStoreKey = accountStorageKey("panel-pilot-library");
+const sourceIndexStoreKey = accountStorageKey("panel-pilot-source-index");
 const sourceIndexTtlMs = 24 * 60 * 60 * 1000;
 const sourceIndexPageLimit = 6;
 const sourceIndexRequestTimeoutMs = 12000;
 const packageAppVersion = typeof __APP_VERSION__ === "string" ? __APP_VERSION__ : "";
 const appVersion = packageAppVersion ? `v${packageAppVersion}` : "source";
 const buildId = typeof __BUILD_ID__ === "string" ? __BUILD_ID__ : "source";
-installAuthenticationBoundary();
 const detectorVersion = "detector v19-ml-manga-comic";
 const pageImageRetryDelaysMs = [0, 350];
 const chapterFetchRetryDelaysMs = [0, 400];
@@ -63,12 +76,12 @@ const highZoomEnhancementMaxCanvasPixels = 4_200_000;
 const highZoomEnhancementTrigger = 1.12;
 const downloadAheadChapterCount = 10;
 const planBufferRetryDelaysMs = [1000, 4000, 15000];
-const progressOutboxStoreKey = "panel-pilot-progress-outbox";
-const mangabakaOutboxStoreKey = "panel-pilot-mangabaka-outbox";
-const tapHintStoreKey = "panel-pilot-tap-hint-seen";
-const readingSessionStoreKey = "panel-pilot-reading-session-v1";
-const momentRediscoveryStoreKey = "panel-pilot-moment-rediscovery-v1";
-const panelCalibrationStoreKey = "panel-pilot-panel-calibration-v1";
+const progressOutboxStoreKey = accountStorageKey("panel-pilot-progress-outbox");
+const mangabakaOutboxStoreKey = accountStorageKey("panel-pilot-mangabaka-outbox");
+const tapHintStoreKey = accountStorageKey("panel-pilot-tap-hint-seen");
+const readingSessionStoreKey = accountStorageKey("panel-pilot-reading-session-v1");
+const momentRediscoveryStoreKey = accountStorageKey("panel-pilot-moment-rediscovery-v1");
+const panelCalibrationStoreKey = accountStorageKey("panel-pilot-panel-calibration-v1");
 const readingSessionTickMs = 15 * 1000;
 const readingSessionMaxActiveGapMs = 30 * 1000;
 const reconnectIntervalMs = 45 * 1000;
@@ -427,6 +440,7 @@ const el = {
   detailDescription: document.querySelector("#detail-description"),
   detailPrimary: document.querySelector("#detail-primary"),
   detailLibrary: document.querySelector("#detail-library"),
+  detailMoreLike: document.querySelector("#detail-more-like"),
   detailChangeSource: document.querySelector("#detail-change-source"),
   detailLibraryStatus: document.querySelector("#detail-library-status"),
   mangaId: document.querySelector("#manga-id"),
@@ -533,6 +547,8 @@ const readerIsolationPrevious = new Map();
 const downloadSheetIsolationPrevious = new Map();
 
 const state = {
+  account: currentAccount,
+  visualContentEnabled: ["manga", "comic", "webtoon"].some((value) => currentAccount.contentTypes?.includes(value)),
   baseUrl: defaultSuwayomiUrl,
   sources: [],
   visibleSources: [],
@@ -747,7 +763,11 @@ const state = {
   readingSessionTimer: 0,
 };
 
-const readingStatsClient = createReadingStatsClient();
+const readingStatsClient = createReadingStatsClient({
+  store: createIndexedDbReadingStatsStore({
+    databaseName: accountStorageSuffix ? `panels-reading-stats-${currentAccount.id}` : "panels-reading-stats",
+  }),
+});
 
 function readingSessionTitleKey() {
   return String(state.currentManga?.id || state.currentManga?.mangaId || "demo");
@@ -4454,6 +4474,10 @@ function updateMangaDetailActions() {
   if (el.detailLibrary) {
     el.detailLibrary.textContent = migrationTarget ? "Switch to this source" : item ? "In library" : "Add to library";
     el.detailLibrary.disabled = migrationTarget ? false : Boolean(item);
+  }
+  if (el.detailMoreLike) {
+    el.detailMoreLike.hidden = !state.currentManga || migrationTarget;
+    el.detailMoreLike.disabled = !navigator.onLine;
   }
   if (el.detailChangeSource) {
     el.detailChangeSource.hidden = !item || migrationTarget;
@@ -14644,6 +14668,10 @@ function wireEvents() {
         openReaderFromNav(button);
         return;
       }
+      if (targetView === "browse" && !state.visualContentEnabled && state.account.contentTypes?.includes("books")) {
+        navigateBookRoute("books-search");
+        return;
+      }
       if (targetView === "browse" && el.mangaDetail && !el.mangaDetail.hidden) {
         closeMangaDetail({ history: false });
         setActiveView("browse");
@@ -14772,6 +14800,35 @@ function wireEvents() {
     else void addCurrentMangaToLibrary();
   });
   el.detailChangeSource?.addEventListener("click", beginSourceMigration);
+  el.detailMoreLike?.addEventListener("click", async () => {
+    if (!state.currentManga) return;
+    const button = el.detailMoreLike;
+    button.disabled = true;
+    try {
+      const item = currentMangaLibraryItem();
+      const mediaFormat = inferredMediaFormat(item || state.currentManga);
+      const title = item?.mangaTitle || state.currentManga.title || "";
+      const { openMoreLikeThis } = await import("./more-like-this.js");
+      await openMoreLikeThis({
+        seed: {
+          mediaFormat,
+          title,
+          mangabakaId: Number(item?.mangabakaId || state.currentManga.mangabakaId || 0),
+          creators: [item?.author, item?.artist, state.currentManga.author, state.currentManga.artist].filter(Boolean),
+        },
+        onSelect: (recommendation) => {
+          const selected = mediaFormat === "comic"
+            ? comicRecommendationSearchItem(recommendation)
+            : recommendation;
+          void findMangaBakaSource(selected);
+        },
+      });
+    } catch (error) {
+      showToast(`Could not load related titles: ${friendlySourceErrorMessage(error)}`, "bad");
+    } finally {
+      button.disabled = !navigator.onLine;
+    }
+  });
   el.detailCompareSource?.addEventListener("click", (event) => { void openSourceQualityComparison(event.currentTarget); });
   el.detailLibraryStatus?.addEventListener("change", (event) => {
     const item = currentMangaLibraryItem();
@@ -15120,6 +15177,18 @@ window.PanelPilot = {
 };
 
 if (el.stage) {
+  document.body.dataset.accountId = state.account.id;
+  document.body.dataset.accountNamespace = accountStorageSuffix ? state.account.id : "";
+  document.body.dataset.visualContent = state.visualContentEnabled ? "true" : "false";
+  document.body.dataset.booksContent = state.account.contentTypes?.includes("books") ? "true" : "false";
+  if (!state.visualContentEnabled) {
+    [
+      "#nav-moments", "#device-storage-panel", ".suwayomi-panel", ".panels-panel",
+      ".source-intelligence-panel", ".sync-panel", ".mangabaka-panel",
+      ".comic-recommendations-settings-panel", "#download-status-button",
+    ].forEach((selector) => document.querySelectorAll(selector).forEach((node) => { node.hidden = true; }));
+  }
+  configureDeviceChapterAccount(accountStorageSuffix ? state.account.id : "");
   el.stage.dataset.readerBuild = appVersion;
   renderVersionNote();
   initializeInstallExperience();
@@ -15128,8 +15197,8 @@ if (el.stage) {
   restoreLocalReadingSession();
   resetReaderVisibilityController();
   renderWakeLockState();
-  const deviceChapterInitialization = initializeDeviceChapterState();
-  void deviceChapterInitialization.then(() => refreshDeviceStorage()).catch(() => null);
+  const deviceChapterInitialization = state.visualContentEnabled ? initializeDeviceChapterState() : Promise.resolve();
+  if (state.visualContentEnabled) void deviceChapterInitialization.then(() => refreshDeviceStorage()).catch(() => null);
   state.initialRoute = routeFromLocation();
   if (state.initialRoute.detail && state.initialRoute.manga) {
     state.currentManga = { ...state.initialRoute.manga };
@@ -15138,10 +15207,12 @@ if (el.stage) {
   if (state.initialRoute.view && state.initialRoute.view !== "reader") {
     state.activeView = state.initialRoute.view;
   }
-  loadSuwayomiProgressOutbox();
-  loadMangaBakaOutbox();
-  loadLibraryItems();
-  state.sourceProfilesPromise = loadSourceProfiles();
+  if (state.visualContentEnabled) {
+    loadSuwayomiProgressOutbox();
+    loadMangaBakaOutbox();
+    loadLibraryItems();
+    state.sourceProfilesPromise = loadSourceProfiles();
+  }
   wireEvents();
   void import("./app-lifecycle.js").then(({ initializeAppLifecycle }) => initializeAppLifecycle({
     clientBuildId: buildId,
@@ -15150,6 +15221,7 @@ if (el.stage) {
   })).catch(() => null);
   window.addEventListener("panelpilot:session-expired", preserveReaderStateForUpdate, { once: true });
   void initializeBooksFeature();
+  void import("./account-management.js").then(({ initializeAccountManagement }) => initializeAccountManagement({ account: state.account })).catch(() => null);
   startBackgroundHealthChecks();
   setActiveView(state.activeView, { history: false });
   void initializeReadingStats();
@@ -15162,7 +15234,7 @@ if (el.stage) {
   } else {
     recordNavigationState("replace", Boolean(state.initialRoute.detail));
   }
-  if (navigator.onLine) {
+  if (navigator.onLine && state.visualContentEnabled) {
     void refreshMangaBakaStatus();
     void refreshComicRecommendationsConfig();
     void loadMangaBakaRecommendations();
@@ -15176,8 +15248,10 @@ if (el.stage) {
         void deviceChapterInitialization.then(() => restoreInitialRoute());
       });
     }, 250);
-  } else {
+  } else if (state.visualContentEnabled) {
     handleBrowserOffline();
     void deviceChapterInitialization.then(() => restoreInitialRouteOffline());
+  } else {
+    void initializeBooksFeature().then(() => navigateBookRoute("library"));
   }
 }

@@ -208,7 +208,7 @@ class BooksServiceIntegrationTests(unittest.TestCase):
 
             synced = service.sync_library()
             self.assertEqual(synced["status"], "complete")
-            library = service.list_books("fixture-user")
+            library = service.list_books("local")
             self.assertEqual(library["total"], 2)
             alice = next(book for book in library["books"] if book["title"] == "Alice")
 

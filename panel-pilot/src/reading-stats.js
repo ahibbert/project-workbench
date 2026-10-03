@@ -41,14 +41,14 @@ function mergeEvent(existing, incoming) {
   };
 }
 
-export function createIndexedDbReadingStatsStore({ indexedDB = globalThis.indexedDB } = {}) {
+export function createIndexedDbReadingStatsStore({ indexedDB = globalThis.indexedDB, databaseName = READING_STATS_DB_NAME } = {}) {
   if (!indexedDB) throw new Error("IndexedDB is not available in this browser.");
   let databasePromise;
 
   function database() {
     if (databasePromise) return databasePromise;
     databasePromise = new Promise((resolve, reject) => {
-      const request = indexedDB.open(READING_STATS_DB_NAME, READING_STATS_DB_VERSION);
+      const request = indexedDB.open(databaseName, READING_STATS_DB_VERSION);
       request.addEventListener("upgradeneeded", () => {
         const db = request.result;
         if (!db.objectStoreNames.contains(META_STORE)) db.createObjectStore(META_STORE, { keyPath: "key" });

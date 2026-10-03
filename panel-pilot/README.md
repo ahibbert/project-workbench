@@ -4,6 +4,13 @@ Optional EPUB support through Shelfmark and Calibre-Web Automated is documented
 in [docs/books.md](docs/books.md). It is disabled by default and isolated from
 the Suwayomi-backed manga and comics library.
 
+Panels also supports household accounts. One shared CWA catalogue can back
+independent book libraries, reading positions, preferences, recommendations,
+stats, and moments. The original configured login is migrated as the owner;
+additional accounts can be created under **Settings → Account**. See
+[docs/ACCOUNTS.md](docs/ACCOUNTS.md) for the current books-only secondary-account
+boundary and the recommended future Suwayomi-per-reader setup.
+
 Panels is a self-hosted, mobile-first PWA for reading a Suwayomi library with
 panel-by-panel guidance, device-local chapters, offline launch, and resumable
 progress.

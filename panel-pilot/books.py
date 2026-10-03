@@ -23,7 +23,7 @@ from opds_client import OpdsClient, OpdsConfig, OpdsError
 from shelfmark_client import ShelfmarkClient, ShelfmarkConfig, ShelfmarkError
 
 
-BOOKS_SCHEMA_VERSION = 3
+BOOKS_SCHEMA_VERSION = 4
 BOOK_IMPORT_TIMEOUT_SECONDS = 60 * 60
 BOOK_LIBRARY_STATUSES = {
     "reading", "plan_to_read", "paused", "completed", "dropped", "rereading", "considering",
@@ -311,6 +311,50 @@ class BookStore:
                         "ALTER TABLE books ADD COLUMN removed_at TEXT NOT NULL DEFAULT ''"
                     )
                 connection.execute("PRAGMA user_version = 3")
+                version = 3
+            if version < 4:
+                connection.executescript("""
+                    CREATE TABLE book_library_membership (
+                        user_id TEXT NOT NULL,
+                        book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+                        library_status TEXT NOT NULL DEFAULT 'plan_to_read',
+                        date_added TEXT NOT NULL,
+                        removed_at TEXT NOT NULL DEFAULT '',
+                        PRIMARY KEY(user_id, book_id)
+                    );
+                    CREATE INDEX book_membership_user_idx
+                    ON book_library_membership(user_id, removed_at, library_status);
+                """)
+                download_columns = {row[1] for row in connection.execute("PRAGMA table_info(shelfmark_downloads)")}
+                if download_columns and "requested_by_user_id" not in download_columns:
+                    connection.execute(
+                        "ALTER TABLE shelfmark_downloads ADD COLUMN requested_by_user_id TEXT NOT NULL DEFAULT ''"
+                    )
+                connection.execute("PRAGMA user_version = 4")
+
+    def ensure_owner_membership(self, owner_user_id: str, legacy_username: str = "") -> None:
+        owner_user_id = str(owner_user_id or "local")
+        now = utc_now()
+        with self.lock, self.connection() as connection:
+            connection.execute("""
+                INSERT OR IGNORE INTO book_library_membership(user_id,book_id,library_status,date_added,removed_at)
+                SELECT ?,id,library_status,date_added,'' FROM books WHERE removed_at=''
+            """, (owner_user_id,))
+            if legacy_username and legacy_username != owner_user_id:
+                connection.execute(
+                    "UPDATE OR IGNORE book_progress SET user_id=? WHERE user_id=?",
+                    (owner_user_id, legacy_username),
+                )
+                connection.execute("DELETE FROM book_progress WHERE user_id=?", (legacy_username,))
+                connection.execute(
+                    "UPDATE OR IGNORE book_reader_preferences SET user_id=? WHERE user_id=?",
+                    (owner_user_id, legacy_username),
+                )
+                connection.execute("DELETE FROM book_reader_preferences WHERE user_id=?", (legacy_username,))
+            connection.execute(
+                "UPDATE shelfmark_downloads SET requested_by_user_id=? WHERE requested_by_user_id=''",
+                (owner_user_id,),
+            )
 
     def counts(self) -> dict[str, int]:
         with self.lock, self.connection() as connection:
@@ -352,7 +396,7 @@ class BookStore:
             "coverUrl": f"/api/books/{book_id}/cover" if row["cover_href"] else "",
             "epubUrl": f"/api/books/{book_id}/epub" if row["acquisition_href"] else "",
             "hasEpub": bool(row["acquisition_href"]),
-            "libraryStatus": row["library_status"],
+            "libraryStatus": row["membership_status"] if "membership_status" in row.keys() else row["library_status"],
             "dateAdded": row["date_added"],
             "lastSyncedAt": row["last_synced_at"],
         }
@@ -396,6 +440,28 @@ class BookStore:
                 matches.append(int(candidate["id"]))
         return matches[0] if len(matches) == 1 else None
 
+    def catalog_match(self, book: dict[str, Any]) -> int | None:
+        with self.lock, self.connection() as connection:
+            isbn = str(book.get("isbn") or "").strip()
+            if isbn:
+                matches = connection.execute("SELECT id FROM books WHERE isbn=? LIMIT 2", (isbn,)).fetchall()
+                if len(matches) == 1:
+                    return int(matches[0]["id"])
+            title_key = self._normalized_title(book.get("title"))
+            authors = self._authors(book.get("authors"))
+            if not title_key or not authors:
+                return None
+            author_key = self._normalized_title(authors[0])
+            matches = []
+            for row in connection.execute("SELECT id,title,authors_json FROM books").fetchall():
+                try:
+                    row_authors = json.loads(row["authors_json"] or "[]")
+                except json.JSONDecodeError:
+                    row_authors = []
+                if self._normalized_title(row["title"]) == title_key and row_authors and self._normalized_title(row_authors[0]) == author_key:
+                    matches.append(int(row["id"]))
+            return matches[0] if len(matches) == 1 else None
+
     def sync_books(self, books: list[dict[str, Any]]) -> dict[str, int]:
         now = utc_now()
         added = 0
@@ -438,20 +504,23 @@ class BookStore:
             )
         return {"seen": len(books), "added": added, "updated": updated}
 
-    def list_books(self, query: str = "", limit: int = 100, offset: int = 0) -> dict[str, Any]:
+    def list_books(self, user_id: str = "local", query: str = "", limit: int = 100, offset: int = 0) -> dict[str, Any]:
+        if user_id == "local":
+            self.ensure_owner_membership("local")
         limit = max(1, min(200, int(limit)))
         offset = max(0, int(offset))
         query = str(query or "").strip()[:300]
-        where = "WHERE removed_at = ''"
-        parameters: list[Any] = []
+        where = "WHERE b.removed_at = '' AND m.user_id = ? AND m.removed_at = ''"
+        parameters: list[Any] = [str(user_id)]
         if query:
-            where += " AND (title LIKE ? ESCAPE '\\' OR authors_json LIKE ? ESCAPE '\\')"
+            where += " AND (b.title LIKE ? ESCAPE '\\' OR b.authors_json LIKE ? ESCAPE '\\')"
             escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             parameters.extend([f"%{escaped}%", f"%{escaped}%"])
         with self.lock, self.connection() as connection:
-            total = int(connection.execute(f"SELECT COUNT(*) FROM books {where}", parameters).fetchone()[0])
+            joins = "FROM books b JOIN book_library_membership m ON m.book_id=b.id"
+            total = int(connection.execute(f"SELECT COUNT(*) {joins} {where}", parameters).fetchone()[0])
             rows = connection.execute(
-                f"SELECT * FROM books {where} ORDER BY title COLLATE NOCASE, id LIMIT ? OFFSET ?",
+                f"SELECT b.*,m.library_status AS membership_status {joins} {where} ORDER BY b.title COLLATE NOCASE,b.id LIMIT ? OFFSET ?",
                 (*parameters, limit, offset),
             ).fetchall()
         return {"books": [self._row_public(row) for row in rows], "total": total, "limit": limit, "offset": offset}
@@ -509,8 +578,17 @@ class BookStore:
             raise BookRequestError("Progress revision is invalid") from None
         now = utc_now()
         with self.lock, self.connection() as connection:
-            if not connection.execute("SELECT 1 FROM books WHERE id = ? AND removed_at = ''", (int(book_id),)).fetchone():
-                raise BookRequestError("Book not found", status=404, code="not_found")
+            if not connection.execute(
+                "SELECT 1 FROM book_library_membership WHERE user_id=? AND book_id=? AND removed_at=''",
+                (str(user_id), int(book_id)),
+            ).fetchone():
+                if connection.execute("SELECT 1 FROM books WHERE id=? AND removed_at=''", (int(book_id),)).fetchone():
+                    connection.execute(
+                        "INSERT OR IGNORE INTO book_library_membership(user_id,book_id,library_status,date_added,removed_at) VALUES(?,?,'plan_to_read',?,'')",
+                        (str(user_id), int(book_id), utc_now()),
+                    )
+                else:
+                    raise BookRequestError("Book not found", status=404, code="not_found")
             current = connection.execute(
                 "SELECT * FROM book_progress WHERE user_id = ? AND book_id = ?",
                 (str(user_id), int(book_id)),
@@ -542,28 +620,45 @@ class BookStore:
             ))
             if progression is not None and progression >= 0.995:
                 connection.execute(
-                    "UPDATE books SET library_status = 'completed' WHERE id = ? AND library_status IN ('reading', 'rereading', 'plan_to_read', 'considering')",
-                    (int(book_id),),
+                    "UPDATE book_library_membership SET library_status='completed' WHERE user_id=? AND book_id=? AND library_status IN ('reading','rereading','plan_to_read','considering')",
+                    (str(user_id), int(book_id)),
                 )
             else:
                 connection.execute(
-                    "UPDATE books SET library_status = 'reading' WHERE id = ? AND library_status IN ('plan_to_read', 'considering')",
-                    (int(book_id),),
+                    "UPDATE book_library_membership SET library_status='reading' WHERE user_id=? AND book_id=? AND library_status IN ('plan_to_read','considering')",
+                    (str(user_id), int(book_id)),
                 )
         return self.get_progress(user_id, book_id)
 
-    def set_library_status(self, book_id: int, status: str) -> dict[str, Any]:
+    def set_library_status(self, user_id: str | int, book_id: int | str, status: str | None = None) -> dict[str, Any]:
+        if status is None:
+            user_id, book_id, status = "local", user_id, book_id
         status = str(status or "").strip()
         if status not in BOOK_LIBRARY_STATUSES:
             raise BookRequestError("Invalid book library group")
         with self.lock, self.connection() as connection:
             result = connection.execute(
-                "UPDATE books SET library_status = ? WHERE id = ? AND removed_at = ''",
-                (status, int(book_id)),
+                "UPDATE book_library_membership SET library_status=? WHERE user_id=? AND book_id=? AND removed_at=''",
+                (status, str(user_id), int(book_id)),
             )
             if result.rowcount != 1:
                 raise BookRequestError("Book not found", status=404, code="not_found")
-        return self.get_book(book_id)
+        return self.get_book_for_user(user_id, book_id)
+
+    def add_to_library(self, user_id: str, book_id: int, status: str = "plan_to_read") -> dict[str, Any]:
+        if status not in BOOK_LIBRARY_STATUSES:
+            raise BookRequestError("Invalid book library group")
+        now = utc_now()
+        with self.lock, self.connection() as connection:
+            if not connection.execute("SELECT 1 FROM books WHERE id=?", (int(book_id),)).fetchone():
+                raise BookRequestError("Book not found", status=404, code="not_found")
+            connection.execute("""
+                INSERT INTO book_library_membership(user_id,book_id,library_status,date_added,removed_at)
+                VALUES(?,?,?,?, '')
+                ON CONFLICT(user_id,book_id) DO UPDATE SET
+                    library_status=excluded.library_status,removed_at='',date_added=excluded.date_added
+            """, (str(user_id), int(book_id), status, now))
+        return self.get_book_for_user(user_id, book_id)
 
     @staticmethod
     def default_preferences() -> dict[str, Any]:
@@ -632,17 +727,31 @@ class BookStore:
             return self._row_public(row)
         return dict(row)
 
-    def remove_book(self, book_id: int) -> dict[str, Any]:
+    def get_book_for_user(self, user_id: str, book_id: int) -> dict[str, Any] | None:
+        with self.lock, self.connection() as connection:
+            row = connection.execute("""
+                SELECT b.*,m.library_status AS membership_status
+                FROM books b JOIN book_library_membership m ON m.book_id=b.id
+                WHERE b.id=? AND m.user_id=? AND m.removed_at=''
+            """, (int(book_id), str(user_id))).fetchone()
+        return self._row_public(row) if row else None
+
+    def remove_book(self, user_id: str | int, book_id: int | None = None) -> dict[str, Any]:
+        legacy_global_remove = book_id is None
+        if book_id is None:
+            user_id, book_id = "local", user_id
         now = utc_now()
         with self.lock, self.connection() as connection:
             row = connection.execute(
-                "SELECT id, title FROM books WHERE id = ? AND removed_at = ''",
-                (int(book_id),),
+                "SELECT b.id,b.title FROM books b JOIN book_library_membership m ON m.book_id=b.id WHERE b.id=? AND m.user_id=? AND m.removed_at=''",
+                (int(book_id), str(user_id)),
             ).fetchone()
             if not row:
                 raise BookRequestError("Book not found", status=404, code="not_found")
-            connection.execute("DELETE FROM book_progress WHERE book_id = ?", (int(book_id),))
-            connection.execute("UPDATE books SET removed_at = ? WHERE id = ?", (now, int(book_id)))
+            connection.execute("DELETE FROM book_progress WHERE user_id=? AND book_id=?", (str(user_id), int(book_id)))
+            connection.execute("UPDATE book_library_membership SET removed_at=? WHERE user_id=? AND book_id=?", (now, str(user_id), int(book_id)))
+            if legacy_global_remove:
+                connection.execute("UPDATE books SET removed_at=? WHERE id=?", (now, int(book_id)))
         return {"id": int(row["id"]), "title": row["title"], "removed": True}
 
     def update_content_hash(self, book_id: int, content_hash: str) -> None:
@@ -660,14 +769,14 @@ class BookStore:
             result = {}
         return {**result, "at": row["updated_at"]}
 
-    def save_download(self, *, task_id: str, provider: str, provider_book_id: str, title: str, isbn: str, authors: list[str]) -> dict[str, Any]:
+    def save_download(self, *, task_id: str, provider: str, provider_book_id: str, title: str, isbn: str, authors: list[str], user_id: str = "local") -> dict[str, Any]:
         now = utc_now()
         with self.lock, self.connection() as connection:
             connection.execute("""
                 INSERT INTO shelfmark_downloads (
                     task_id, provider, provider_book_id, title, status, progress, error,
-                    expected_isbn, expected_authors_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, 'queued', 0, '', ?, ?, ?, ?)
+                    expected_isbn, expected_authors_json, created_at, updated_at, requested_by_user_id
+                ) VALUES (?, ?, ?, ?, 'queued', 0, '', ?, ?, ?, ?, ?)
                 ON CONFLICT(task_id) DO UPDATE SET
                     provider = excluded.provider,
                     provider_book_id = excluded.provider_book_id,
@@ -675,10 +784,11 @@ class BookStore:
                     status = 'queued', progress = 0, error = '',
                     expected_isbn = excluded.expected_isbn,
                     expected_authors_json = excluded.expected_authors_json,
-                    book_id = NULL, updated_at = excluded.updated_at
+                    book_id = NULL, updated_at = excluded.updated_at,
+                    requested_by_user_id = excluded.requested_by_user_id
             """, (
                 str(task_id)[:1000], str(provider)[:100], str(provider_book_id)[:300], str(title)[:1000],
-                str(isbn or "")[:40], json.dumps(self._authors(authors), ensure_ascii=True), now, now,
+                str(isbn or "")[:40], json.dumps(self._authors(authors), ensure_ascii=True), now, now, str(user_id),
             ))
         return self.get_download(task_id)
 
@@ -701,11 +811,11 @@ class BookStore:
             row = connection.execute("SELECT * FROM shelfmark_downloads WHERE task_id = ?", (str(task_id),)).fetchone()
         return self._download_public(row) if row else None
 
-    def list_downloads(self, limit: int = 100) -> list[dict[str, Any]]:
+    def list_downloads(self, user_id: str = "local", limit: int = 100) -> list[dict[str, Any]]:
         with self.lock, self.connection() as connection:
             rows = connection.execute(
-                "SELECT * FROM shelfmark_downloads ORDER BY updated_at DESC LIMIT ?",
-                (max(1, min(500, int(limit))),),
+                "SELECT * FROM shelfmark_downloads WHERE requested_by_user_id=? ORDER BY updated_at DESC LIMIT ?",
+                (str(user_id), max(1, min(500, int(limit)))),
             ).fetchall()
         return [self._download_public(row) for row in rows]
 
@@ -750,10 +860,16 @@ class BookStore:
                             continue
                         candidates.append(book)
                 if len(candidates) == 1:
+                    book_id = int(candidates[0]["id"])
                     connection.execute(
                         "UPDATE shelfmark_downloads SET status = 'ready', progress = 1, error = '', book_id = ?, updated_at = ? WHERE task_id = ?",
-                        (int(candidates[0]["id"]), now, download["task_id"]),
+                        (book_id, now, download["task_id"]),
                     )
+                    connection.execute("""
+                        INSERT INTO book_library_membership(user_id,book_id,library_status,date_added,removed_at)
+                        VALUES(?,?,'plan_to_read',?,'')
+                        ON CONFLICT(user_id,book_id) DO UPDATE SET removed_at=''
+                    """, (download["requested_by_user_id"], book_id, now))
                     ready += 1
         return ready
 
@@ -779,11 +895,13 @@ class BookStore:
 
 
 class BooksService:
-    def __init__(self, config: BooksConfig):
+    def __init__(self, config: BooksConfig, *, owner_user_id: str = "local", legacy_owner_username: str = ""):
         if not config.enabled:
             raise ValueError("BooksService cannot be created while books are disabled")
         self.config = config
         self.store = BookStore(config.database_path)
+        self.owner_user_id = str(owner_user_id or "local")
+        self.store.ensure_owner_membership(self.owner_user_id, legacy_owner_username)
         self._sync_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._worker: threading.Thread | None = None
@@ -828,6 +946,8 @@ class BooksService:
         try:
             books = self.opds_client().catalog()
             result = self.store.sync_books(books)
+            if self.owner_user_id == "local":
+                self.store.ensure_owner_membership("local")
             result["downloadsReady"] = self.store.reconcile_downloads()
             self._last_error = ""
             return {"status": "complete", **result}
@@ -854,14 +974,17 @@ class BooksService:
             delay = self.config.sync_interval_seconds
 
     def list_books(self, user_id: str, query: str = "", limit: int = 100, offset: int = 0) -> dict[str, Any]:
-        result = self.store.list_books(query, limit, offset)
+        result = self.store.list_books(user_id, query, limit, offset)
         progress = self.store.progress_for_books(user_id, [book["id"] for book in result["books"]])
         for book in result["books"]:
             book["progress"] = progress.get(book["id"])
         return result
 
-    def get_book(self, book_id: int) -> dict[str, Any] | None:
-        return self.store.get_book(book_id)
+    def get_book(self, book_id: int, user_id: str | None = None) -> dict[str, Any] | None:
+        return self.store.get_book_for_user(user_id, book_id) if user_id else self.store.get_book(book_id)
+
+    def add_to_library(self, user_id: str, book_id: int) -> dict[str, Any]:
+        return self.store.add_to_library(user_id, book_id)
 
     def progress(self, user_id: str, book_id: int) -> dict[str, Any] | None:
         return self.store.get_progress(user_id, book_id)
@@ -869,15 +992,11 @@ class BooksService:
     def save_progress(self, user_id: str, book_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         return self.store.save_progress(user_id, book_id, payload)
 
-    def set_library_status(self, book_id: int, status: str) -> dict[str, Any]:
-        return self.store.set_library_status(book_id, status)
+    def set_library_status(self, user_id: str, book_id: int, status: str) -> dict[str, Any]:
+        return self.store.set_library_status(user_id, book_id, status)
 
-    def remove_book(self, book_id: int) -> dict[str, Any]:
-        removed = self.store.remove_book(book_id)
-        target = Path(self.config.cache_path).expanduser().resolve() / f"{int(book_id)}.epub"
-        if target.exists() and target.is_file():
-            target.unlink()
-        return removed
+    def remove_book(self, user_id: str, book_id: int) -> dict[str, Any]:
+        return self.store.remove_book(user_id, book_id)
 
     def preferences(self, user_id: str) -> dict[str, Any]:
         return self.store.get_preferences(user_id)
@@ -934,7 +1053,7 @@ class BooksService:
             raise KeyError("Book has no cover")
         return self.opds_client().cover(book["cover_href"])
 
-    def search(self, query: str) -> list[dict[str, Any]]:
+    def search(self, query: str, user_id: str = "") -> list[dict[str, Any]]:
         results = self.shelfmark_client().search(query)
         now = time.monotonic()
         public = []
@@ -943,7 +1062,15 @@ class BooksService:
             for result in results:
                 token = secrets.token_urlsafe(24)
                 self._book_tokens[token] = (now + 30 * 60, dict(result))
-                public.append({**result, "coverUrl": "", "token": token})
+                catalog_id = self.store.catalog_match(result)
+                in_library = bool(catalog_id and self.store.get_book_for_user(user_id, catalog_id))
+                public.append({
+                    **result,
+                    "coverUrl": "",
+                    "token": token,
+                    "catalogBookId": catalog_id,
+                    "inLibrary": in_library,
+                })
         return public
 
     def releases(self, provider: str, provider_book_id: str) -> list[dict[str, Any]]:
@@ -965,7 +1092,7 @@ class BooksService:
                     self._release_tokens.pop(token, None)
         return public
 
-    def queue_download(self, release_token: str, book_token: str) -> dict[str, Any]:
+    def queue_download(self, release_token: str, book_token: str, user_id: str = "local") -> dict[str, Any]:
         with self._release_lock:
             cached = self._release_tokens.pop(str(release_token or ""), None)
             cached_book = self._book_tokens.get(str(book_token or ""))
@@ -997,17 +1124,18 @@ class BooksService:
             title=title,
             isbn=str(book.get("isbn") or ""),
             authors=self.store._authors(book.get("authors")),
+            user_id=user_id,
         )
         self.store.reconcile_downloads()
         return self.store.get_download(task_id) or download
 
-    def refresh_downloads(self) -> list[dict[str, Any]]:
-        tracked = {item["taskId"]: item for item in self.store.list_downloads()}
+    def refresh_downloads(self, user_id: str = "local") -> list[dict[str, Any]]:
+        tracked = {item["taskId"]: item for item in self.store.list_downloads(user_id)}
         if not tracked:
             return list(tracked.values())
         if not self.config.shelfmark_configured:
             self.store.fail_stale_imports()
-            return self.store.list_downloads()
+            return self.store.list_downloads(user_id)
         payload = self.shelfmark_client().download_status()
         if isinstance(payload, dict):
             mappings = {
@@ -1037,7 +1165,7 @@ class BooksService:
                     self.store.update_download(task_id, status=local_status, progress=progress, error=error)
         self.store.reconcile_downloads()
         self.store.fail_stale_imports()
-        return self.store.list_downloads()
+        return self.store.list_downloads(user_id)
 
 
 def utc_now() -> str:

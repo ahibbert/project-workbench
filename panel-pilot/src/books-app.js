@@ -229,8 +229,25 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
           remove.reportValidity();
         }
       });
+      const moreLike = element("button", "", "More like this");
+      moreLike.type = "button";
+      moreLike.addEventListener("click", async () => {
+        moreLike.disabled = true;
+        try {
+          const { openMoreLikeThis } = await import("./more-like-this.js");
+          await openMoreLikeThis({
+            seed: { mediaFormat: "book", bookId: book.id, title: book.title },
+            onSelect: (recommendation) => navigate("books-search", {
+              query: recommendation.title,
+              isbn: recommendation.identifiers?.isbn?.[0] || "",
+            }),
+          });
+        } finally {
+          moreLike.disabled = false;
+        }
+      });
       const actions = element("div", "book-detail-actions detail-actions");
-      actions.append(read, remove);
+      actions.append(read, moreLike, remove);
       copy.append(actions);
       detail.append(cover, copy);
 
@@ -300,6 +317,7 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
         progress,
         preferences,
         initialHref,
+        accountId: document.body.dataset.accountNamespace || "",
         onExit: () => navigate("book-detail", { id: book.id }),
       });
       if (generation !== readerGeneration) {
@@ -408,7 +426,7 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
     }
   }
 
-  function renderSearch() {
+  function renderSearch(bookQuery = "") {
     const content = root.querySelector("#books-content");
     const mediaSwitch = element("div", "browse-media-switch");
     mediaSwitch.setAttribute("role", "group");
@@ -465,11 +483,27 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
         searchResults.forEach((book, index) => {
           const result = element("button", "book-search-result");
           result.type = "button";
-          result.dataset.booksAction = "select-book";
-          result.dataset.resultIndex = index;
           const copy = element("span");
           copy.append(element("strong", "", book.title), element("small", "", [bookByline(book), book.publishedDate, book.language].filter(Boolean).join(" · ")));
-          result.append(copy, element("span", "", "Choose ›"));
+          const existing = Number(book.catalogBookId || 0);
+          result.append(copy, element("span", "", book.inLibrary ? "In library" : existing ? "Add ›" : "Choose ›"));
+          result.disabled = Boolean(book.inLibrary);
+          if (existing && !book.inLibrary) {
+            result.addEventListener("click", async () => {
+              result.disabled = true;
+              try {
+                const added = await request(`/api/books/${encodeURIComponent(existing)}/library`, { method: "POST", body: "{}" });
+                await Promise.resolve(onLibraryChange());
+                navigate("book-detail", { id: added.book.id });
+              } catch (error) {
+                result.disabled = false;
+                results.prepend(element("p", "books-error", error.message));
+              }
+            });
+          } else if (!book.inLibrary) {
+            result.dataset.booksAction = "select-book";
+            result.dataset.resultIndex = index;
+          }
           results.append(result);
         });
       } catch (error) {
@@ -531,6 +565,13 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
       recommendationRail.replaceChildren(element("p", "books-error", error.message));
     });
     input.focus({ preventScroll: true });
+    const initial = new URLSearchParams(bookQuery);
+    const initialQuery = initial.get("query")?.trim() || "";
+    if (initialQuery) {
+      input.value = initialQuery;
+      recommendedQuery = initial.get("isbn")?.trim() || initialQuery;
+      queueMicrotask(() => form.requestSubmit());
+    }
   }
 
   function scheduleDownloadPoll() {
@@ -630,7 +671,7 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
       const initialHref = new URLSearchParams(route.bookQuery || "").get("href") || "";
       if (route.bookRoute === "book-detail" && id) return renderDetail(id);
       if (route.bookRoute === "books-search") {
-        renderSearch();
+        renderSearch(route.bookQuery || "");
         scheduleDownloadPoll();
         return;
       }

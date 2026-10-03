@@ -36,6 +36,7 @@ async function stubApp(page, {
   bookSearchQueries = [],
   preferenceResponder = null,
   preferenceWrites = [],
+  account = null,
 }) {
   let currentBook = { ...book, libraryStatus: progressState.current ? "reading" : book.libraryStatus };
   let currentPreferences = {
@@ -44,6 +45,17 @@ async function stubApp(page, {
   };
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
+    if (url.pathname === "/api/session") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ account: account ?? {
+          id: "local", username: "local", displayName: "Local reader", isAdmin: true,
+          contentTypes: ["books", "manga", "comic", "webtoon"],
+        } }),
+      });
+      return;
+    }
     if (url.pathname === "/api/books/status") {
       await route.fulfill({
         status: 200,
@@ -133,6 +145,21 @@ async function stubApp(page, {
       }) });
       return;
     }
+    if (url.pathname === "/api/recommendations/similar") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        schemaVersion: 1,
+        configured: true,
+        status: "ready",
+        provider: "librarything",
+        seedTitle: "Alice's Adventures in Wonderland",
+        results: [{
+          id: "librarything-looking-glass", title: "Through the Looking-Glass", authors: ["Lewis Carroll"],
+          coverUrl: "", identifiers: { isbn: ["9780141439648"] },
+          reason: { type: "because_you_read", seedTitles: ["Alice's Adventures in Wonderland"] },
+        }],
+      }) });
+      return;
+    }
     if (url.pathname === "/api/books/releases") {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ releases: [{
         token: "opaque-release-token", id: "release-1", source: "direct_download",
@@ -181,6 +208,27 @@ test("books navigation disappears completely while the feature is disabled", asy
   await page.goto("/", { waitUntil: "networkidle" });
   await expect(page.locator("#nav-books")).toBeHidden();
   await expect(page.locator("body")).not.toHaveClass(/books-enabled/);
+});
+
+test("a books-only household account gets a private book-first shell", async ({ page }) => {
+  await stubApp(page, {
+    booksEnabled: true,
+    account: {
+      id: "acct_11111111111111111111111111111111", username: "reader2",
+      displayName: "Reader Two", isAdmin: false, contentTypes: ["books"],
+    },
+  });
+  await page.goto("/", { waitUntil: "networkidle" });
+  await expect(page.locator("body")).toHaveAttribute("data-account-id", "acct_11111111111111111111111111111111");
+  await expect(page.locator("body")).toHaveAttribute("data-visual-content", "false");
+  await expect(page.locator("#nav-moments")).toBeHidden();
+  await page.locator("#nav-settings").click();
+  await expect(page.locator("#current-account-name")).toHaveText("Reader Two");
+  await expect(page.locator("#account-administration")).toBeHidden();
+  await expect(page.locator(".suwayomi-panel")).toBeHidden();
+  await page.locator("#nav-browse").click();
+  await expect(page).toHaveURL(/#books-search$/);
+  await expect(page.getByRole("heading", { name: "Browse books" })).toBeVisible();
 });
 
 test("enabled books join the main library and open an isolated detail view", async ({ page }) => {
@@ -283,6 +331,22 @@ test("Books for you enters the normal Shelfmark edition and release flow", async
   await expect(page.getByRole("searchbox", { name: "Book title or author" })).toHaveValue("The Mercy of Gods");
   await expect.poll(() => bookSearchQueries.at(-1)).toBe("9780356517759");
   await expect(page.getByRole("button", { name: /The Mercy of Gods/ })).toBeVisible();
+});
+
+test("book details can find related titles and enter the normal acquisition flow", async ({ page }) => {
+  const bookSearchQueries = [];
+  await stubApp(page, { booksEnabled: true, bookSearchQueries });
+  await page.goto("/", { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: /^Books$/ }).first().click();
+  await page.getByRole("button", { name: /^Plan/ }).click();
+  await page.locator(".book-library-card").getByRole("button", { name: /Alice's Adventures/ }).click();
+  await page.getByRole("button", { name: "More like this" }).click();
+  const dialog = page.getByRole("dialog", { name: /More like Alice/ });
+  await expect(dialog).toContainText("Through the Looking-Glass");
+  await dialog.getByRole("button", { name: "Find this book" }).click();
+  await expect(page).toHaveURL(/#books-search\?/);
+  await expect(page.getByRole("searchbox", { name: "Book title or author" })).toHaveValue("Through the Looking-Glass");
+  await expect.poll(() => bookSearchQueries.at(-1)).toBe("9780141439648");
 });
 
 test("book Browse keeps recommendations separate and shows only useful acquisition activity", async ({ page }) => {

@@ -4135,6 +4135,92 @@ body.reader-focus .download-status-button {
   font-weight: 820;
 }
 
+.account-panel h3 {
+  margin: 1.2rem 0 0.7rem;
+}
+
+.account-list,
+.account-create-form,
+.account-card {
+  display: grid;
+  gap: 0.7rem;
+  min-width: 0;
+}
+
+.account-card {
+  margin-bottom: 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 0.8rem;
+  background: var(--surface);
+}
+
+.account-card-heading span {
+  display: grid;
+  gap: 0.08rem;
+}
+
+.account-card-heading small {
+  color: var(--muted);
+}
+
+.account-content-types {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.8rem;
+  margin: 0;
+  border: 0;
+  padding: 0;
+  min-inline-size: 0;
+  max-width: 100%;
+}
+
+.account-content-types legend {
+  width: 100%;
+  margin-bottom: 0.3rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 750;
+}
+
+.account-content-types label {
+  white-space: nowrap;
+}
+
+.account-content-types input[type="checkbox"] {
+  width: 1.05rem;
+  min-width: 1.05rem;
+  min-height: 0;
+  height: 1.05rem;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+.account-password-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.45rem;
+}
+
+.account-password-row input,
+.account-password-row button {
+  min-height: 2.75rem;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.account-create-form input {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+@media (max-width: 430px) {
+  .account-password-row {
+    grid-template-columns: 1fr;
+  }
+}
+
 body.reader-active .reader-controls {
   right: max(0.7rem, env(safe-area-inset-right));
   bottom: max(0.7rem, env(safe-area-inset-bottom));

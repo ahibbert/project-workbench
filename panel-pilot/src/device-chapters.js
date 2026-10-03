@@ -15,6 +15,11 @@ let operationChannel = null;
 const activeDownloads = new Set();
 const activeOperations = new Map();
 const ownerId = createOperationId("tab");
+let activeAccountId = "";
+
+export function configureDeviceChapterAccount(accountId = "") {
+  activeAccountId = String(accountId || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 80);
+}
 
 function requireBrowserApi(name) {
   const value = globalThis[name];
@@ -79,6 +84,7 @@ function normalizeIdentifier(value, label) {
 
 export function deviceChapterKey(serverUrl, chapterId) {
   return JSON.stringify([
+    ...(activeAccountId ? [activeAccountId] : []),
     normalizeServerUrl(serverUrl),
     normalizeIdentifier(chapterId, "chapterId"),
   ]);
@@ -308,7 +314,7 @@ function descriptorMetadata(descriptor) {
   }) : [];
   if (!pageUrls.length) throw new TypeError("The chapter descriptor must include at least one page URL.");
   return {
-    key: deviceChapterKey(serverUrl, chapterIdKey), serverUrl,
+    key: deviceChapterKey(serverUrl, chapterIdKey), serverUrl, accountId: activeAccountId,
     chapterId: serializableValue(descriptor.chapterId), mangaId: serializableValue(descriptor.mangaId),
     title: String(descriptor.title ?? descriptor.mangaTitle ?? ""), sourceId: serializableValue(descriptor.sourceId),
     sourceLabel: String(descriptor.sourceLabel ?? ""), thumbnailUrl: String(descriptor.thumbnailUrl ?? ""),
@@ -1097,7 +1103,9 @@ export function initializeDeviceChapters({ reconcile = false } = {}) {
 
 export async function listDeviceChapters() {
   await initializeDeviceChapters();
-  return sortRecords((await getAllRecords()).map(publicMetadata));
+  return sortRecords((await getAllRecords())
+    .filter((record) => String(record?.accountId || "") === activeAccountId)
+    .map(publicMetadata));
 }
 
 export async function getDeviceChapter(serverUrl, chapterId) {
@@ -1128,7 +1136,7 @@ export async function listDeviceChaptersForManga(serverUrl, mangaId) {
   await initializeDeviceChapters();
   const normalizedServerUrl = normalizeServerUrl(serverUrl);
   const normalizedMangaId = normalizeIdentifier(mangaId, "mangaId");
-  const records = (await getAllRecords()).filter((record) => record.serverUrl === normalizedServerUrl && String(record.mangaId) === normalizedMangaId);
+  const records = (await getAllRecords()).filter((record) => String(record?.accountId || "") === activeAccountId && record.serverUrl === normalizedServerUrl && String(record.mangaId) === normalizedMangaId);
   return sortRecords(records.map(publicMetadata));
 }
 
