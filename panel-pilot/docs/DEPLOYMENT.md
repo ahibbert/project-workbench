@@ -153,6 +153,24 @@ Follow the tested build, backup, rollout, and rollback sequence in
 the current worker until the reader chooses **Update ready → Apply update**;
 this preserves the active reading position and queued progress first.
 
+## Automated backup and recovery checks
+
+Run the supplied scripts on the Docker host from a systemd timer or cron job.
+The backup briefly stops only Panel Pilot, preserves the shared CWA catalogue
+and configuration alongside Panels data, and writes a SHA-256 checksum:
+
+```sh
+chmod 700 deploy/backup-panels.sh deploy/verify-panels-backup.sh
+./deploy/backup-panels.sh /opt/manga-stack
+./deploy/verify-panels-backup.sh /opt/manga-stack/backups/panels-data-<timestamp>.tar.gz
+```
+
+Verification is non-destructive: it checks the archive checksum and confirms
+it contains Panels plus the CWA configuration and library. Test actual restores
+into a separate stack; never extract an archive over a running instance. The
+Settings **Security & recovery** panel exposes only safe configuration facts,
+not credentials, upstream URLs, or backup contents.
+
 ## Optional detector distribution
 
 Enabling the `manga-detector` profile builds an image that downloads and embeds

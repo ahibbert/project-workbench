@@ -3153,6 +3153,9 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
                 account = self.current_account()
                 self.send_json({"account": account})
                 return
+            if parsed.path == "/api/security-status":
+                self.handle_security_status()
+                return
             if parsed.path == "/api/accounts":
                 self.handle_accounts_get()
                 return
@@ -3324,6 +3327,29 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         if not self.require_admin_account():
             return
         self.send_json({"accounts": account_store().list_accounts()})
+
+    def handle_security_status(self):
+        """Return only operator-safe configuration facts; never values or URLs."""
+        if not self.require_admin_account():
+            return
+        configured_secret = os.environ.get("PANEL_PILOT_SESSION_SECRET", "")
+        books = self.books_config()
+        self.send_json({
+            "authEnabled": self.auth_enabled(),
+            "sessionMaxAgeDays": round(SESSION_MAX_AGE / 86400, 1),
+            "sessionSecretConfigured": bool(configured_secret),
+            "sessionSecretStrong": bool(configured_secret) and len(decode_session_secret(configured_secret)) >= 32,
+            "accounts": len(account_store().list_accounts()),
+            "suwayomiConfigured": bool(os.environ.get("SUWAYOMI_INTERNAL_URL", "").strip()),
+            "booksEnabled": books.enabled,
+            "shelfmarkConfigured": bool(books.shelfmark_base_url and books.shelfmark_api_key),
+            "cwaConfigured": bool(books.cwa_opds_url and books.cwa_username and books.cwa_password),
+            "advice": [
+                "Back up the Panels data directory and CWA library before upgrades.",
+                "Rotate any credential that has been pasted into a browser or support conversation.",
+                "Use the app repair action only for a stuck web-app update; downloaded chapters and books are kept.",
+            ],
+        })
 
     def handle_accounts_post(self):
         if not self.require_admin_account():

@@ -294,6 +294,10 @@ const el = {
   navReaderImage: document.querySelector("#nav-reader-image"),
   navReaderLabel: document.querySelector("#nav-reader-label"),
   navReaderTitle: document.querySelector("#nav-reader-title"),
+  securityRecoveryPanel: document.querySelector("#security-recovery-panel"),
+  securityRecoveryState: document.querySelector("#security-recovery-state"),
+  securityRecoveryList: document.querySelector("#security-recovery-list"),
+  refreshSecurityRecovery: document.querySelector("#refresh-security-recovery"),
   smartHome: document.querySelector("#smart-home"),
   smartHomeRail: document.querySelector("#smart-home-rail"),
   smartHomeRefresh: document.querySelector("#smart-home-refresh"),
@@ -1713,6 +1717,7 @@ function setActiveView(view, options = {}) {
   if (view === "reader") setDownloadStatusSheet(false);
   if (view === "settings") {
     void refreshDeviceStorage();
+    void refreshSecurityRecovery();
     if (state.connected || state.sourceIntelligence) void refreshSourceIntelligence();
   }
   if (view === "browse" && (!state.comicRecommendationsLoaded || (!state.comicRecommendations.length && state.libraryItems.some((item) => inferredMediaFormat(item) === "comic" && !isNsfwLibraryItem(item))))) {
@@ -5569,6 +5574,27 @@ function renderSmartHome() {
   cards.push(smartHomeCard({ kind: "recommendation", icon: "✦", eyebrow: "Try next", title: recommendation?.title || "Find your next read", detail: recommendation ? "From your recommendations" : "Open personalized recommendations", action: () => setActiveView("browse") }));
   el.smartHomeRail.replaceChildren(...cards);
   el.smartHome.hidden = cards.length === 0;
+}
+
+async function refreshSecurityRecovery() {
+  if (!el.securityRecoveryPanel) return;
+  try {
+    const response = await fetch("/api/security-status", { headers: { Accept: "application/json" }, cache: "no-store" });
+    if (!response.ok) throw new Error("Security status is unavailable");
+    const status = await response.json();
+    el.securityRecoveryPanel.hidden = false;
+    el.securityRecoveryState.textContent = status.sessionSecretStrong && status.authEnabled ? "Protected" : "Needs attention";
+    const rows = [
+      ["Sign-in", status.authEnabled ? "Enabled" : "Not configured"],
+      ["Session signing", status.sessionSecretStrong ? `Strong · ${status.sessionMaxAgeDays} days` : "Review session secret"],
+      ["Household accounts", `${status.accounts} account${status.accounts === 1 ? "" : "s"}`],
+      ["Suwayomi", status.suwayomiConfigured ? "Configured" : "Not configured"],
+      ["Book services", status.booksEnabled ? (status.shelfmarkConfigured && status.cwaConfigured ? "Configured" : "Needs connection setup") : "Disabled"],
+    ];
+    el.securityRecoveryList.replaceChildren(...rows.map(([label, value]) => { const row = document.createElement("p"); row.className = "note"; const strong = document.createElement("strong"); strong.textContent = `${label}: `; row.append(strong, value); return row; }), ...status.advice.map((advice) => { const row = document.createElement("p"); row.className = "note"; row.textContent = advice; return row; }));
+  } catch {
+    el.securityRecoveryPanel.hidden = true;
+  }
 }
 
 function renderLibrary({ preserveInteractions = true } = {}) {
@@ -15174,6 +15200,7 @@ function wireEvents() {
   el.redetect.addEventListener("click", redetectCurrentPage);
   el.saveMoment?.addEventListener("click", () => { void saveCurrentMoment(); });
   el.momentRediscoveryNext?.addEventListener("click", showAnotherMoment);
+  el.refreshSecurityRecovery?.addEventListener("click", () => { void refreshSecurityRecovery(); });
   el.momentsSearch?.addEventListener("input", (event) => { state.momentsQuery = event.target.value; renderMoments(); });
   el.momentsTitleFilter?.addEventListener("change", (event) => { state.momentsTitleFilter = event.target.value; renderMoments(); });
   el.momentsTypeFilters?.forEach((button) => button.addEventListener("click", () => { state.momentsTypeFilter = button.dataset.momentType || "all"; renderMoments(); }));
