@@ -39,6 +39,8 @@ async function stubApp(page, {
   preferenceWrites = [],
   account = null,
   suwayomiRequests = [],
+  moments = [],
+  momentWrites = [],
 }) {
   let currentBook = { ...book, libraryStatus: progressState.current ? "reading" : book.libraryStatus };
   let currentPreferences = {
@@ -99,6 +101,25 @@ async function stubApp(page, {
     }
     if (url.pathname === "/api/books/1/epub") {
       await route.fulfill({ status: 200, contentType: "application/epub+zip", body: epubFixture });
+      return;
+    }
+    if (url.pathname === "/api/moments" && route.request().method() === "POST") {
+      const incoming = route.request().postDataJSON();
+      momentWrites.push(incoming);
+      const moment = {
+        ...incoming,
+        id: `1760000000000-${String(momentWrites.length).padStart(16, "0")}`,
+        mediaFormat: "book",
+        isNsfw: false,
+        createdAt: new Date().toISOString(),
+        byteSize: String(incoming.quote || "").length,
+      };
+      moments.unshift(moment);
+      await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ moment }) });
+      return;
+    }
+    if (url.pathname === "/api/moments") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ moments }) });
       return;
     }
     if (url.pathname === "/api/books/preferences") {
@@ -226,7 +247,7 @@ test("a books-only household account gets a private book-first shell", async ({ 
   await page.goto("/", { waitUntil: "networkidle" });
   await expect(page.locator("body")).toHaveAttribute("data-account-id", "acct_11111111111111111111111111111111");
   await expect(page.locator("body")).toHaveAttribute("data-visual-content", "false");
-  await expect(page.locator("#nav-moments")).toBeHidden();
+  await expect(page.locator("#nav-moments")).toBeVisible();
   await page.locator("#nav-settings").click();
   await expect(page.locator("#current-account-name")).toHaveText("Reader Two");
   await expect(page.locator("#account-administration")).toBeHidden();
@@ -261,6 +282,42 @@ test("enabled books join the main library and open an isolated detail view", asy
   await page.locator("#nav-settings").click();
   await expect(page.locator("#book-services-panel")).toBeVisible();
   await expect(page.locator("#book-services-note")).toContainText("Shelfmark ready");
+});
+
+test("a selected book passage saves to Moments and reopens at its exact EPUB location", async ({ page }) => {
+  const moments = [];
+  const momentWrites = [];
+  await stubApp(page, { booksEnabled: true, moments, momentWrites });
+  await openEpubReader(page);
+
+  const paragraph = page.frameLocator(".epub-viewport iframe").locator("p").filter({ hasText: "Alice was beginning" }).first();
+  await paragraph.evaluate((element) => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const selection = document.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  await expect(page.getByRole("button", { name: "Save highlight" })).toBeVisible();
+  await page.getByRole("button", { name: "Save highlight" }).click();
+  await expect(page.locator(".epub-reader-notice")).toContainText("Highlight saved to Moments");
+  expect(momentWrites).toHaveLength(1);
+  expect(momentWrites[0]).toMatchObject({
+    momentType: "text",
+    bookId: 1,
+    title: "Alice's Adventures in Wonderland",
+  });
+  expect(momentWrites[0].quote).toContain("Alice was beginning");
+  expect(momentWrites[0].locator).toMatch(/^epubcfi\(/);
+
+  await page.locator(".epub-back").click();
+  await page.locator("#nav-moments").click();
+  await expect(page.locator("#moments-grid .moment-card-text")).toContainText("Alice was beginning");
+  await expect(page.locator("#moments-grid").getByRole("button", { name: "Read from here" })).toBeVisible();
+  await page.locator("#moments-grid").getByRole("button", { name: "Read from here" }).click();
+  await expect(page).toHaveURL(/#book-read\?id=1&href=epubcfi/);
+  await expect(page.frameLocator(".epub-viewport iframe").locator("body")).toContainText("Alice was beginning");
 });
 
 test("books join the main Library filters without entering manga storage", async ({ page }) => {

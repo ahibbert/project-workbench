@@ -2652,8 +2652,14 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         if path.startswith(("/api/books", "/api/book-recommendations")) and not self.account_allows("books"):
             self.send_json({"error": "Books are not enabled for this account", "code": "content_disabled"}, status=403)
             return False
+        if path.startswith("/api/moments") and not (
+            self.account_allows("books")
+            or any(self.account_allows(value) for value in ("manga", "comic", "webtoon"))
+        ):
+            self.send_json({"error": "Moments are not enabled for this account", "code": "content_disabled"}, status=403)
+            return False
         visual_paths = (
-            "/api/suwayomi", "/api/library", "/api/moments", "/api/mangabaka",
+            "/api/suwayomi", "/api/library", "/api/mangabaka",
             "/api/detect/", "/api/download-buffer", "/api/source-profiles",
             "/api/source-intelligence", "/api/comick", "/api/readcomiconline",
         )
@@ -4212,6 +4218,7 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         if media_format not in ("manga", "comic", "webtoon"):
             media_format = "manga"
         return {
+            "momentType": "image",
             "id": moment_id,
             "title": self.clean_moment_text(payload.get("title"), 300) or "Untitled",
             "chapterTitle": self.clean_moment_text(payload.get("chapterTitle"), 300),
@@ -4228,11 +4235,59 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             "imageUrl": f"/api/moments/{moment_id}/image",
         }
 
+    def clean_text_moment_metadata(self, payload, moment_id, created_at):
+        quote = self.clean_moment_text(payload.get("quote"), 8000)
+        locator = self.clean_moment_text(payload.get("locator"), 8192)
+        if not quote:
+            raise ValueError("Book moment must contain highlighted text")
+        if not locator.startswith("epubcfi(") or not locator.endswith(")"):
+            raise ValueError("Book moment must contain a valid EPUB location")
+        try:
+            book_id = int(payload.get("bookId"))
+        except (TypeError, ValueError):
+            raise ValueError("Book moment must identify a book") from None
+        if book_id < 1 or not self.books_service().get_book(book_id, self.book_user_id()):
+            raise ValueError("Book moment refers to a book outside this library")
+        try:
+            progression = float(payload.get("progression"))
+            progression = max(0.0, min(1.0, progression))
+        except (TypeError, ValueError):
+            progression = None
+        return {
+            "momentType": "text",
+            "id": moment_id,
+            "title": self.clean_moment_text(payload.get("title"), 300) or "Untitled",
+            "chapterTitle": self.clean_moment_text(payload.get("chapterTitle"), 300),
+            "sourceLabel": self.clean_moment_text(payload.get("sourceLabel"), 200),
+            "isNsfw": False,
+            "mediaFormat": "book",
+            "bookId": book_id,
+            "quote": quote,
+            "locator": locator,
+            "resourceHref": self.clean_moment_text(payload.get("resourceHref"), 2000),
+            "progression": progression,
+            "createdAt": created_at,
+            "byteSize": len(quote.encode("utf-8")),
+        }
+
     def handle_moments_post(self):
         length = int(self.headers.get("Content-Length", "0"))
         if length < 1 or length > 24000000:
             raise ValueError("Moment payload is empty or too large")
         payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+        moment_id = f"{int(time.time() * 1000):013d}-{secrets.token_hex(8)}"
+        created_at = datetime.now(timezone.utc).isoformat()
+        if payload.get("momentType") == "text":
+            metadata = self.clean_text_moment_metadata(payload, moment_id, created_at)
+            root = self.moments_root()
+            with MOMENTS_LOCK:
+                metadata_path = root / f"{moment_id}.json"
+                with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=root, prefix=".moment-", delete=False) as temporary:
+                    json.dump(metadata, temporary, ensure_ascii=False, separators=(",", ":"))
+                    temporary_metadata_path = Path(temporary.name)
+                os.replace(temporary_metadata_path, metadata_path)
+            self.send_json({"moment": metadata}, status=201)
+            return
         encoded = payload.get("imageDataUrl", "")
         match = re.fullmatch(r"data:(image/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=\r\n]+)", str(encoded))
         if not match:
@@ -4252,9 +4307,7 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         if not signatures.get(mime_type):
             raise ValueError("Moment image contents do not match its media type")
         extension = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}[mime_type]
-        moment_id = f"{int(time.time() * 1000):013d}-{secrets.token_hex(8)}"
         image_name = f"{moment_id}.{extension}"
-        created_at = datetime.now(timezone.utc).isoformat()
         metadata = self.clean_moment_metadata(payload, moment_id, image_name, len(image_bytes), created_at)
         root = self.moments_root()
         with MOMENTS_LOCK:
@@ -4281,6 +4334,19 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
                     if not isinstance(metadata, dict):
                         continue
                     moment_id = self.valid_moment_id(metadata.get("id"))
+                    if metadata.get("momentType") == "text":
+                        quote = self.clean_moment_text(metadata.get("quote"), 8000)
+                        locator = self.clean_moment_text(metadata.get("locator"), 8192)
+                        try:
+                            book_id = int(metadata.get("bookId"))
+                        except (TypeError, ValueError):
+                            continue
+                        if not quote or book_id < 1 or not locator.startswith("epubcfi(") or not locator.endswith(")"):
+                            continue
+                        metadata.pop("imageUrl", None)
+                        metadata.pop("imageName", None)
+                        moments.append(metadata)
+                        continue
                     image_name = str(metadata.get("imageName", ""))
                     if image_name != Path(image_name).name or not (root / image_name).is_file():
                         continue
@@ -4302,6 +4368,8 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
                 with open(metadata_path, "r", encoding="utf-8") as handle:
                     metadata = json.load(handle)
                 if not isinstance(metadata, dict):
+                    raise FileNotFoundError
+                if metadata.get("momentType") == "text":
                     raise FileNotFoundError
                 image_name = str(metadata.get("imageName", ""))
                 if image_name != Path(image_name).name:

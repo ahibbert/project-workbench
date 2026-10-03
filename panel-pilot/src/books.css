@@ -835,6 +835,47 @@ body.book-reader-active .books-content {
   box-shadow: 0 12px 34px rgba(35, 42, 37, 0.2);
 }
 
+.epub-selection-bar {
+  position: fixed;
+  left: 50%;
+  bottom: max(1rem, env(safe-area-inset-bottom));
+  z-index: 75;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.55rem;
+  width: min(44rem, calc(100vw - 1.5rem));
+  padding: 0.65rem;
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: 18px;
+  background: var(--epub-reader-background);
+  color: var(--epub-reader-color);
+  box-shadow: 0 16px 44px rgba(35, 42, 37, 0.24);
+  transform: translateX(-50%);
+}
+
+.epub-selection-bar[hidden] { display: none; }
+
+.epub-selection-copy {
+  overflow: hidden;
+  padding-inline: 0.35rem;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 0.9rem;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.epub-selection-bar button { min-height: 2.75rem; }
+
+@media (max-width: 620px) {
+  .epub-selection-bar {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .epub-selection-copy { grid-column: 1 / -1; }
+}
+
 .epub-external-link {
   width: min(28rem, calc(100vw - 2rem));
   padding: 1rem;

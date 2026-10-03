@@ -107,8 +107,12 @@ export async function createEpubReader({ root, book, progress, preferences, init
   let gestureStart = null;
   let preferenceRequest = 0;
   let noticeTimer = 0;
+  let selectionTimer = 0;
   let renditionFlow = "";
   let currentSectionProgress = null;
+  let selectionSnapshot = null;
+  let bookMoments = [];
+  const renderedMomentLocators = new Set();
   const emergencyPositionKey = `panel-pilot:book-position:${accountId ? `${accountId}:` : ""}${book.id}`;
 
   function readEmergencyPosition() {
@@ -234,7 +238,17 @@ export async function createEpubReader({ root, book, progress, preferences, init
   notice.hidden = true;
   notice.setAttribute("role", "status");
   notice.setAttribute("aria-live", "polite");
-  reader.append(toolbar, stage, footer, toc, externalDialog, notice);
+  const selectionBar = node("div", "epub-selection-bar");
+  selectionBar.hidden = true;
+  selectionBar.setAttribute("role", "toolbar");
+  selectionBar.setAttribute("aria-label", "Selected passage");
+  const selectionCopy = node("span", "epub-selection-copy", "Save this passage to Moments?");
+  const saveHighlight = node("button", "primary-button", "Save highlight");
+  saveHighlight.type = "button";
+  const cancelHighlight = node("button", "epub-tool", "Cancel");
+  cancelHighlight.type = "button";
+  selectionBar.append(selectionCopy, saveHighlight, cancelHighlight);
+  reader.append(toolbar, stage, footer, toc, externalDialog, notice, selectionBar);
   root.append(reader);
 
   const nativeFullscreenAvailable = typeof reader.requestFullscreen === "function"
@@ -371,6 +385,106 @@ export async function createEpubReader({ root, book, progress, preferences, init
     noticeTimer = window.setTimeout(() => { notice.hidden = true; }, 4500);
   }
 
+  function clearSelectionSnapshot({ collapse = false } = {}) {
+    selectionSnapshot = null;
+    selectionBar.hidden = true;
+    saveHighlight.disabled = false;
+    saveHighlight.textContent = "Save highlight";
+    if (collapse) {
+      rendition?.getContents?.().forEach((contents) => {
+        try { contents.document?.getSelection?.()?.removeAllRanges?.(); } catch { /* Ignore inaccessible selection state. */ }
+      });
+    }
+  }
+
+  function addMomentHighlight(moment) {
+    const locator = String(moment?.locator || "");
+    if (!rendition || !locator.startsWith("epubcfi(") || renderedMomentLocators.has(locator)) return;
+    try {
+      rendition.annotations.highlight(locator, { momentId: moment.id }, null, "book-moment-highlight", {
+        "background-color": "rgba(239, 190, 73, 0.42)",
+        "mix-blend-mode": preferences.theme === "dark" ? "screen" : "multiply",
+      });
+      renderedMomentLocators.add(locator);
+    } catch {
+      // A malformed locator should not prevent the book itself from opening.
+    }
+  }
+
+  async function loadBookMomentHighlights() {
+    try {
+      const payload = await jsonRequest("/api/moments");
+      bookMoments = (Array.isArray(payload.moments) ? payload.moments : []).filter((moment) => (
+        moment.momentType === "text" && Number(moment.bookId) === Number(book.id)
+      ));
+      bookMoments.forEach(addMomentHighlight);
+    } catch {
+      // Reading remains available if Moments cannot be loaded.
+    }
+  }
+
+  function captureTextSelection(contents) {
+    window.clearTimeout(selectionTimer);
+    selectionTimer = window.setTimeout(() => {
+      try {
+        const selection = contents.document?.getSelection?.();
+        if (!selection || selection.isCollapsed || selection.rangeCount < 1) return;
+        const quote = selection.toString().replace(/\s+/g, " ").trim().slice(0, 8000);
+        if (!quote) return;
+        const locator = contents.cfiFromRange(selection.getRangeAt(0));
+        if (!String(locator || "").startsWith("epubcfi(")) return;
+        let progression = safeProgression(pendingPosition?.progression ?? currentProgress?.progression);
+        if (locationsReady) {
+          try { progression = safeProgression(publication.locations.percentageFromCfi(locator)); } catch { /* Use page progression. */ }
+        }
+        const resourceHref = contents.section?.href || pendingPosition?.href || "";
+        selectionSnapshot = {
+          quote,
+          locator,
+          resourceHref,
+          progression,
+          chapterTitle: navigationEntryForHref(resourceHref)?.label?.trim() || chapterTitle.textContent || "",
+        };
+        selectionCopy.textContent = quote.length > 90 ? `${quote.slice(0, 87)}…` : quote;
+        selectionBar.hidden = false;
+      } catch {
+        // Some malformed EPUB ranges cannot be converted to a CFI; leave them selectable for copy.
+      }
+    }, 80);
+  }
+
+  async function saveSelectedHighlight() {
+    if (!selectionSnapshot) return;
+    saveHighlight.disabled = true;
+    saveHighlight.textContent = "Saving…";
+    try {
+      const payload = await jsonRequest("/api/moments", {
+        method: "POST",
+        body: JSON.stringify({
+          momentType: "text",
+          bookId: book.id,
+          title: book.title,
+          chapterTitle: selectionSnapshot.chapterTitle,
+          sourceLabel: Array.isArray(book.authors) ? book.authors.join(", ") : String(book.authors || ""),
+          quote: selectionSnapshot.quote,
+          locator: selectionSnapshot.locator,
+          resourceHref: selectionSnapshot.resourceHref,
+          progression: selectionSnapshot.progression,
+        }),
+      });
+      if (payload.moment) {
+        bookMoments = [payload.moment, ...bookMoments.filter((moment) => moment.id !== payload.moment.id)];
+        addMomentHighlight(payload.moment);
+      }
+      clearSelectionSnapshot({ collapse: true });
+      showNotice("Highlight saved to Moments.");
+    } catch (error) {
+      saveHighlight.disabled = false;
+      saveHighlight.textContent = "Save highlight";
+      showNotice(error.message || "This highlight could not be saved.");
+    }
+  }
+
   function setControlsVisible(visible, linger = true) {
     window.clearTimeout(controlsTimer);
     if (!visible && settings.open) settings.open = false;
@@ -479,6 +593,8 @@ export async function createEpubReader({ root, book, progress, preferences, init
       bindRendition();
       applyPreferences();
       await rendition.display(locator || undefined);
+      renderedMomentLocators.clear();
+      bookMoments.forEach(addMomentHighlight);
     } else {
       applyPreferences();
       const locator = pendingPosition?.cfi || currentProgress?.locator;
@@ -636,6 +752,7 @@ export async function createEpubReader({ root, book, progress, preferences, init
     };
     const clearGesture = () => { contentGesture = null; contentTouch = null; };
     const captureOptions = { passive: true, capture: true };
+    document.addEventListener("selectionchange", () => captureTextSelection(contents), { passive: true });
     contents.window.addEventListener("pointerdown", (event) => { contentGesture = { x: event.clientX, y: event.clientY, at: Date.now() }; }, captureOptions);
     contents.window.addEventListener("pointerup", (event) => {
       finishGesture(contentGesture, event.clientX, event.clientY, event.target);
@@ -704,6 +821,7 @@ export async function createEpubReader({ root, book, progress, preferences, init
   function bindRendition() {
     rendition.hooks.content.register(bindContentInteractions);
     rendition.on("relocated", (relocation) => {
+      clearSelectionSnapshot();
       const start = relocation?.start || {};
       const navigationItem = navigationEntryForHref(start.href);
       currentSectionProgress = Number(start.displayed?.total) > 0 ? {
@@ -765,6 +883,8 @@ export async function createEpubReader({ root, book, progress, preferences, init
       renderEpubToc(navigation.toc || [], tocList, (href) => { toc.close(); void rendition.display(href); });
       if (!tocList.children.length) tocList.append(node("p", "epub-toc-empty", "This EPUB does not include a table of contents."));
       await rendition.display(initialHref || emergencyPosition?.locator || currentProgress?.locator || undefined);
+      renderedMomentLocators.clear();
+      await loadBookMomentHighlights();
       loading.hidden = true;
       setControlsVisible(true, false);
       void generateLocations();
@@ -837,6 +957,8 @@ export async function createEpubReader({ root, book, progress, preferences, init
     if (href) window.open(href, "_blank", "noopener,noreferrer");
   });
   externalDialog.addEventListener("click", (event) => { if (event.target === externalDialog) externalDialog.close(); });
+  saveHighlight.addEventListener("click", () => { void saveSelectedHighlight(); });
+  cancelHighlight.addEventListener("click", () => clearSelectionSnapshot({ collapse: true }));
   scrubber.addEventListener("input", () => { location.textContent = `${Math.round(Number(scrubber.value) / 10)}%`; });
   scrubber.addEventListener("change", () => {
     if (!locationsReady) return;
@@ -924,6 +1046,7 @@ export async function createEpubReader({ root, book, progress, preferences, init
       window.clearTimeout(resizeTimer);
       window.clearTimeout(controlsTimer);
       window.clearTimeout(noticeTimer);
+      window.clearTimeout(selectionTimer);
       window.removeEventListener("keydown", keyHandler);
       window.removeEventListener("resize", resizeHandler);
       window.removeEventListener("orientationchange", resizeHandler);

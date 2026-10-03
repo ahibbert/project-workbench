@@ -13,6 +13,9 @@ from urllib.request import Request, urlopen
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from books import BookStore  # noqa: E402
 JPEG = b"\xff\xd8\xff\xe0" + b"moment-image"
 
 
@@ -28,6 +31,16 @@ class MomentsHttpContractTests(unittest.TestCase):
         cls.temporary_directory = tempfile.TemporaryDirectory()
         temporary_root = pathlib.Path(cls.temporary_directory.name)
         cls.moments_root = temporary_root / "moments"
+        cls.books_path = temporary_root / "books.sqlite3"
+        book_store = BookStore(str(cls.books_path))
+        book_store.sync_books([{
+            "stableIdentifier": "urn:test:alice",
+            "title": "Alice's Adventures in Wonderland",
+            "authors": ["Lewis Carroll"],
+            "acquisitionHref": "download/alice.epub",
+        }])
+        book_store.ensure_owner_membership("local")
+        cls.book_id = book_store.list_books("local")["books"][0]["id"]
         cls.port = free_port()
         cls.base_url = f"http://127.0.0.1:{cls.port}"
         environment = os.environ.copy()
@@ -37,7 +50,9 @@ class MomentsHttpContractTests(unittest.TestCase):
             "PANEL_PILOT_BIND_ADDRESS": "127.0.0.1",
             "PANEL_PILOT_STATIC_ROOT": str(ROOT / "dist"),
             "PANEL_PILOT_MOMENTS_PATH": str(cls.moments_root),
+            "PANEL_PILOT_BOOKS_DB_PATH": str(cls.books_path),
             "PANEL_PILOT_READING_STATS_PATH": str(temporary_root / "reading-stats.sqlite3"),
+            "BOOKS_ENABLED": "true",
             "SUWAYOMI_INTERNAL_URL": "http://127.0.0.1:4567",
         })
         cls.process = subprocess.Popen(
@@ -115,6 +130,48 @@ class MomentsHttpContractTests(unittest.TestCase):
                 "width": 10,
                 "height": 10,
                 "imageDataUrl": "data:image/png;base64," + base64.b64encode(JPEG).decode("ascii"),
+            })
+        self.assertEqual(caught.exception.code, 400)
+
+    def test_create_reopen_and_delete_a_book_text_moment(self):
+        locator = "epubcfi(/6/4[chapter]!/4/2/2,/1:0,/1:24)"
+        status, created = self.request_json("/api/moments", "POST", {
+            "momentType": "text",
+            "bookId": self.book_id,
+            "title": "Alice's Adventures in Wonderland",
+            "chapterTitle": "Down the Rabbit-Hole",
+            "sourceLabel": "Lewis Carroll",
+            "quote": "Alice was beginning to get very tired.",
+            "locator": locator,
+            "resourceHref": "chapter1.xhtml",
+            "progression": 0.05,
+        })
+        self.assertEqual(status, 201)
+        moment = created["moment"]
+        self.assertEqual(moment["momentType"], "text")
+        self.assertEqual(moment["mediaFormat"], "book")
+        self.assertEqual(moment["bookId"], self.book_id)
+        self.assertEqual(moment["locator"], locator)
+        self.assertNotIn("imageUrl", moment)
+
+        _, listed = self.request_json("/api/moments")
+        listed_moment = next(item for item in listed["moments"] if item["id"] == moment["id"])
+        self.assertEqual(listed_moment["quote"], "Alice was beginning to get very tired.")
+        with self.assertRaises(HTTPError) as caught:
+            urlopen(f"{self.base_url}/api/moments/{moment['id']}/image", timeout=5)
+        self.assertEqual(caught.exception.code, 404)
+
+        status, deleted = self.request_json(f"/api/moments/{moment['id']}", "DELETE")
+        self.assertEqual(status, 200)
+        self.assertTrue(deleted["deleted"])
+
+    def test_rejects_book_moment_outside_the_current_library(self):
+        with self.assertRaises(HTTPError) as caught:
+            self.request_json("/api/moments", "POST", {
+                "momentType": "text",
+                "bookId": 999999,
+                "quote": "Not this reader's book",
+                "locator": "epubcfi(/6/4!/4/2/1:0)",
             })
         self.assertEqual(caught.exception.code, 400)
 

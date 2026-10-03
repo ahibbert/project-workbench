@@ -13726,7 +13726,7 @@ function renderMoments() {
     renderMomentRediscovery([]);
     el.momentsGrid.append(createMomentsEmptyState(
       "No saved moments yet",
-      "While reading, open the reader controls and choose “Save this moment.” Panels keeps a high-resolution crop here."
+      "Save a panel from manga and comics, or highlight a passage in a book. Your favourite moments will collect here."
     ));
     return;
   }
@@ -13739,44 +13739,64 @@ function renderMoments() {
 }
 
 function createMomentCard(moment, { featured = false } = {}) {
+  const textMoment = moment.momentType === "text";
   const card = document.createElement("article");
-  card.className = featured ? "moment-card moment-card-featured" : "moment-card";
-  const imageLink = document.createElement("a");
-  imageLink.className = "moment-image-link";
-  imageLink.href = appUrl(moment.imageUrl);
-  imageLink.target = "_blank";
-  imageLink.rel = "noopener";
-  imageLink.setAttribute("aria-label", `Open ${moment.title || "saved moment"} image`);
-  const image = document.createElement("img");
-  image.src = appUrl(moment.imageUrl);
-  image.alt = `Saved panel from ${moment.title || "Untitled"}`;
-  image.loading = featured ? "eager" : "lazy";
-  image.decoding = "async";
-  imageLink.append(image);
+  card.className = `${featured ? "moment-card moment-card-featured" : "moment-card"}${textMoment ? " moment-card-text" : ""}`;
+  let media;
+  if (textMoment) {
+    const mark = document.createElement("div");
+    mark.className = "moment-book-mark";
+    mark.setAttribute("aria-hidden", "true");
+    mark.textContent = "❝";
+    media = document.createElement("blockquote");
+    media.className = "moment-quote";
+    media.textContent = moment.quote || "Saved passage";
+    card.append(mark);
+  } else {
+    media = document.createElement("a");
+    media.className = "moment-image-link";
+    media.href = appUrl(moment.imageUrl);
+    media.target = "_blank";
+    media.rel = "noopener";
+    media.setAttribute("aria-label", `Open ${moment.title || "saved moment"} image`);
+    const image = document.createElement("img");
+    image.src = appUrl(moment.imageUrl);
+    image.alt = `Saved panel from ${moment.title || "Untitled"}`;
+    image.loading = featured ? "eager" : "lazy";
+    image.decoding = "async";
+    media.append(image);
+  }
   const copy = document.createElement("div");
   copy.className = "moment-copy";
   const title = document.createElement("strong");
   title.textContent = moment.title || "Untitled";
   const chapter = document.createElement("span");
-  chapter.textContent = moment.chapterTitle || `Page ${Number(moment.pageIndex || 0) + 1}`;
+  chapter.textContent = moment.chapterTitle || (textMoment ? "Saved passage" : `Page ${Number(moment.pageIndex || 0) + 1}`);
   const details = document.createElement("small");
   const savedAt = moment.createdAt ? new Date(moment.createdAt).toLocaleDateString() : "Saved";
-  details.textContent = `${savedAt} · ${moment.width || 0}×${moment.height || 0} · ${formatStorageBytes(moment.byteSize, "Image")}`;
+  details.textContent = textMoment
+    ? `${savedAt}${moment.progression != null && Number.isFinite(Number(moment.progression)) ? ` · ${Math.round(Number(moment.progression) * 100)}%` : ""}${moment.sourceLabel ? ` · ${moment.sourceLabel}` : ""}`
+    : `${savedAt} · ${moment.width || 0}×${moment.height || 0} · ${formatStorageBytes(moment.byteSize, "Image")}`;
   const actions = document.createElement("div");
   actions.className = "moment-actions";
-  const download = document.createElement("a");
-  download.className = "text-button moment-download";
-  download.href = appUrl(moment.imageUrl);
-  download.download = `${String(moment.title || "panels-moment").replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").slice(0, 80) || "panels-moment"}.jpg`;
-  download.textContent = "Download";
+  const primary = document.createElement(textMoment ? "button" : "a");
+  primary.className = textMoment ? "text-button moment-reopen" : "text-button moment-download";
+  primary.textContent = textMoment ? "Read from here" : "Download";
+  if (textMoment) {
+    primary.type = "button";
+    primary.addEventListener("click", () => navigateBookRoute("book-read", { id: moment.bookId, href: moment.locator }));
+  } else {
+    primary.href = appUrl(moment.imageUrl);
+    primary.download = `${String(moment.title || "panels-moment").replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").slice(0, 80) || "panels-moment"}.jpg`;
+  }
   const remove = document.createElement("button");
   remove.className = "text-button danger-button";
   remove.type = "button";
   remove.textContent = "Remove";
   remove.addEventListener("click", () => { void removeMoment(moment, remove); });
-  actions.append(download, remove);
+  actions.append(primary, remove);
   copy.append(title, chapter, details, actions);
-  card.append(imageLink, copy);
+  card.append(media, copy);
   return card;
 }
 
@@ -15230,10 +15250,13 @@ if (el.stage) {
   document.body.dataset.booksContent = state.account.contentTypes?.includes("books") ? "true" : "false";
   if (!state.visualContentEnabled) {
     [
-      "#nav-moments", "#device-storage-panel", ".suwayomi-panel", ".panels-panel",
+      "#device-storage-panel", ".suwayomi-panel", ".panels-panel",
       ".source-intelligence-panel", ".sync-panel", ".mangabaka-panel",
       ".comic-recommendations-settings-panel", "#download-status-button",
     ].forEach((selector) => document.querySelectorAll(selector).forEach((node) => { node.hidden = true; }));
+  }
+  if (!state.visualContentEnabled && !state.account.contentTypes?.includes("books")) {
+    document.querySelectorAll("#nav-moments").forEach((node) => { node.hidden = true; });
   }
   configureDeviceChapterAccount(accountStorageSuffix ? state.account.id : "");
   el.stage.dataset.readerBuild = appVersion;
