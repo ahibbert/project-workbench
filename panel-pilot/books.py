@@ -23,7 +23,7 @@ from opds_client import OpdsClient, OpdsConfig, OpdsError
 from shelfmark_client import ShelfmarkClient, ShelfmarkConfig, ShelfmarkError
 
 
-BOOKS_SCHEMA_VERSION = 4
+BOOKS_SCHEMA_VERSION = 5
 BOOK_IMPORT_TIMEOUT_SECONDS = 60 * 60
 BOOK_LIBRARY_STATUSES = {
     "reading", "plan_to_read", "paused", "completed", "dropped", "rereading", "considering",
@@ -331,6 +331,18 @@ class BookStore:
                         "ALTER TABLE shelfmark_downloads ADD COLUMN requested_by_user_id TEXT NOT NULL DEFAULT ''"
                     )
                 connection.execute("PRAGMA user_version = 4")
+                version = 4
+            if version < 5:
+                connection.executescript("""
+                    CREATE TABLE book_reader_profiles (
+                        user_id TEXT NOT NULL,
+                        scope_key TEXT NOT NULL,
+                        preferences_json TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        PRIMARY KEY(user_id, scope_key)
+                    );
+                    PRAGMA user_version = 5;
+                """)
 
     def ensure_owner_membership(self, owner_user_id: str, legacy_username: str = "") -> None:
         owner_user_id = str(owner_user_id or "local")
@@ -680,26 +692,7 @@ class BookStore:
         }
 
     def save_preferences(self, user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        if not isinstance(payload, dict):
-            raise BookRequestError("Reader preferences must be an object")
-        unknown = set(payload) - set(self.default_preferences())
-        if unknown:
-            raise BookRequestError(f"Unknown reader preferences: {', '.join(sorted(unknown))}")
-        values = {**self.get_preferences(user_id), **payload}
-        if values["theme"] not in ("light", "dark", "sepia"):
-            raise BookRequestError("Invalid book theme")
-        if values["fontFamily"] not in ("publisher", "serif", "sans"):
-            raise BookRequestError("Invalid font family")
-        if values["readingFlow"] not in ("paginated", "scrolled"):
-            raise BookRequestError("Invalid reading flow")
-        if values["textAlignment"] not in ("start", "left", "justify"):
-            raise BookRequestError("Invalid text alignment")
-        try:
-            values["fontSize"] = max(75, min(180, int(values["fontSize"])))
-            values["lineHeight"] = max(1.1, min(2.2, float(values["lineHeight"])))
-            values["contentWidth"] = max(480, min(1200, int(values["contentWidth"])))
-        except (TypeError, ValueError):
-            raise BookRequestError("Reader preference values are invalid") from None
+        values = self._validated_preferences(self.get_preferences(user_id), payload)
         with self.lock, self.connection() as connection:
             connection.execute("""
                 INSERT INTO book_reader_preferences (
@@ -716,6 +709,71 @@ class BookStore:
                 values["contentWidth"], values["readingFlow"], values["textAlignment"], utc_now(),
             ))
         return self.get_preferences(user_id)
+
+    def _validated_preferences(self, base: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise BookRequestError("Reader preferences must be an object")
+        unknown = set(payload) - set(self.default_preferences())
+        if unknown:
+            raise BookRequestError(f"Unknown reader preferences: {', '.join(sorted(unknown))}")
+        values = {**base, **payload}
+        if values["theme"] not in ("light", "dark", "sepia"):
+            raise BookRequestError("Invalid book theme")
+        if values["fontFamily"] not in ("publisher", "serif", "sans"):
+            raise BookRequestError("Invalid font family")
+        if values["readingFlow"] not in ("paginated", "scrolled"):
+            raise BookRequestError("Invalid reading flow")
+        if values["textAlignment"] not in ("start", "left", "justify"):
+            raise BookRequestError("Invalid text alignment")
+        try:
+            values["fontSize"] = max(75, min(180, int(values["fontSize"])))
+            values["lineHeight"] = max(1.1, min(2.2, float(values["lineHeight"])))
+            values["contentWidth"] = max(480, min(1200, int(values["contentWidth"])))
+        except (TypeError, ValueError):
+            raise BookRequestError("Reader preference values are invalid") from None
+        return values
+
+    def _reader_scope(self, user_id: str, book_id: int) -> tuple[str, dict[str, Any]]:
+        book = self.get_book_for_user(user_id, book_id)
+        if not book:
+            raise BookRequestError("Book not found", status=404, code="not_found")
+        series = self._normalized_title(book.get("seriesName"))
+        return (f"series:{series}" if series else f"book:{int(book_id)}"), book
+
+    def get_scoped_preferences(self, user_id: str, book_id: int) -> dict[str, Any]:
+        scope_key, book = self._reader_scope(user_id, book_id)
+        preferences = self.get_preferences(user_id)
+        with self.lock, self.connection() as connection:
+            row = connection.execute(
+                "SELECT preferences_json FROM book_reader_profiles WHERE user_id=? AND scope_key=?",
+                (str(user_id), scope_key),
+            ).fetchone()
+        if row:
+            try:
+                overrides = json.loads(row["preferences_json"])
+                if isinstance(overrides, dict):
+                    preferences = self._validated_preferences(preferences, overrides)
+            except (json.JSONDecodeError, BookRequestError):
+                pass
+        return {
+            "preferences": preferences,
+            "scope": "series" if scope_key.startswith("series:") else "book",
+            "scopeLabel": book.get("seriesName") or book.get("title") or "This book",
+        }
+
+    def save_scoped_preferences(self, user_id: str, book_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        scope_key, _ = self._reader_scope(user_id, book_id)
+        current = self.get_scoped_preferences(user_id, book_id)["preferences"]
+        values = self._validated_preferences(current, payload)
+        defaults = self.get_preferences(user_id)
+        overrides = {key: value for key, value in values.items() if value != defaults.get(key)}
+        with self.lock, self.connection() as connection:
+            connection.execute("""
+                INSERT INTO book_reader_profiles(user_id,scope_key,preferences_json,updated_at)
+                VALUES(?,?,?,?) ON CONFLICT(user_id,scope_key) DO UPDATE SET
+                    preferences_json=excluded.preferences_json,updated_at=excluded.updated_at
+            """, (str(user_id), scope_key, json.dumps(overrides, separators=(",", ":")), utc_now()))
+        return self.get_scoped_preferences(user_id, book_id)
 
     def get_book(self, book_id: int, *, public: bool = True, include_removed: bool = False) -> dict[str, Any] | None:
         with self.lock, self.connection() as connection:
@@ -735,6 +793,50 @@ class BookStore:
                 WHERE b.id=? AND m.user_id=? AND m.removed_at=''
             """, (int(book_id), str(user_id))).fetchone()
         return self._row_public(row) if row else None
+
+    def series_context(self, user_id: str, book_id: int) -> dict[str, Any] | None:
+        current = self.get_book_for_user(user_id, book_id)
+        series_name = str((current or {}).get("seriesName") or "").strip()
+        if not current or not series_name:
+            return None
+        with self.lock, self.connection() as connection:
+            rows = connection.execute("""
+                SELECT b.*,m.library_status AS membership_status,m.removed_at AS membership_removed,
+                       p.progression AS reader_progression
+                FROM books b
+                LEFT JOIN book_library_membership m ON m.book_id=b.id AND m.user_id=?
+                LEFT JOIN book_progress p ON p.book_id=b.id AND p.user_id=?
+                WHERE b.removed_at='' AND b.series_name=? COLLATE NOCASE
+                ORDER BY CASE WHEN b.series_position IS NULL THEN 1 ELSE 0 END,
+                         b.series_position,b.published_date,b.id
+            """, (str(user_id), str(user_id), series_name)).fetchall()
+        items = []
+        for row in rows:
+            item = self._row_public(row)
+            item["inLibrary"] = bool(row["membership_status"] and not row["membership_removed"])
+            item["progression"] = row["reader_progression"]
+            if not item["inLibrary"]:
+                item["libraryStatus"] = ""
+                item["coverUrl"] = ""
+                item["epubUrl"] = ""
+            items.append(item)
+        current_index = next((index for index, item in enumerate(items) if item["id"] == int(book_id)), 0)
+        next_item = items[current_index + 1] if current_index + 1 < len(items) else None
+        numbered = sorted({
+            int(item["seriesPosition"])
+            for item in items
+            if isinstance(item.get("seriesPosition"), (int, float)) and float(item["seriesPosition"]).is_integer()
+            and int(item["seriesPosition"]) > 0
+        })
+        missing_positions = list(range(numbered[0], numbered[-1] + 1)) if len(numbered) > 1 else []
+        missing_positions = [position for position in missing_positions if position not in numbered]
+        return {
+            "name": series_name,
+            "currentBookId": int(book_id),
+            "items": items,
+            "nextBook": next_item,
+            "missingPositions": missing_positions[:50],
+        }
 
     def remove_book(self, user_id: str | int, book_id: int | None = None) -> dict[str, Any]:
         legacy_global_remove = book_id is None
@@ -998,6 +1100,9 @@ class BooksService:
     def get_book(self, book_id: int, user_id: str | None = None) -> dict[str, Any] | None:
         return self.store.get_book_for_user(user_id, book_id) if user_id else self.store.get_book(book_id)
 
+    def series_context(self, user_id: str, book_id: int) -> dict[str, Any] | None:
+        return self.store.series_context(user_id, book_id)
+
     def add_to_library(self, user_id: str, book_id: int) -> dict[str, Any]:
         return self.store.add_to_library(user_id, book_id)
 
@@ -1018,6 +1123,12 @@ class BooksService:
 
     def save_preferences(self, user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         return self.store.save_preferences(user_id, payload)
+
+    def scoped_preferences(self, user_id: str, book_id: int) -> dict[str, Any]:
+        return self.store.get_scoped_preferences(user_id, book_id)
+
+    def save_scoped_preferences(self, user_id: str, book_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.store.save_scoped_preferences(user_id, book_id, payload)
 
     def epub_path(self, book_id: int) -> Path:
         book = self.store.get_book(book_id, public=False)

@@ -2896,6 +2896,10 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/books/preferences":
                 self.handle_books_preferences_post()
                 return
+            book_preferences = re.fullmatch(r"/api/books/(\d+)/preferences", parsed.path)
+            if book_preferences:
+                self.handle_book_preferences_post(int(book_preferences.group(1)))
+                return
             book_library_status = re.fullmatch(r"/api/books/(\d+)/library-status", parsed.path)
             if book_library_status:
                 self.handle_book_library_status_post(int(book_library_status.group(1)))
@@ -3167,6 +3171,10 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             if parsed.path == "/api/books/preferences":
                 self.handle_books_preferences_get()
                 return
+            book_preferences = re.fullmatch(r"/api/books/(\d+)/preferences", parsed.path)
+            if book_preferences:
+                self.handle_book_preferences_get(int(book_preferences.group(1)))
+                return
             if parsed.path == "/api/book-recommendations":
                 self.handle_book_recommendations(parsed)
                 return
@@ -3388,7 +3396,11 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
         if not book:
             self.send_json({"error": "Book not found"}, status=404)
             return
-        self.send_json({"book": book, "progress": self.books_service().progress(self.book_user_id(), book_id)})
+        self.send_json({
+            "book": book,
+            "progress": self.books_service().progress(self.book_user_id(), book_id),
+            "series": self.books_service().series_context(self.book_user_id(), book_id),
+        })
 
     def handle_book_delete(self, book_id):
         if not self.books_config().enabled:
@@ -3700,6 +3712,19 @@ class PanelPilotHandler(SimpleHTTPRequestHandler):
             return
         payload = self.read_json_request(16384)
         self.send_json({"preferences": self.books_service().save_preferences(self.book_user_id(), payload)})
+
+    def handle_book_preferences_get(self, book_id):
+        if not self.books_config().enabled:
+            self.send_json({"error": "Books are disabled", "code": "feature_disabled"}, status=404)
+            return
+        self.send_json(self.books_service().scoped_preferences(self.book_user_id(), book_id))
+
+    def handle_book_preferences_post(self, book_id):
+        if not self.books_config().enabled:
+            self.send_json({"error": "Books are disabled", "code": "feature_disabled"}, status=404)
+            return
+        payload = self.read_json_request(16384)
+        self.send_json(self.books_service().save_scoped_preferences(self.book_user_id(), book_id, payload))
 
     def handle_book_epub(self, book_id):
         if not self.books_config().enabled:

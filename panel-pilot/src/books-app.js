@@ -160,7 +160,7 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
     const content = root.querySelector("#books-content");
     content.replaceChildren(element("p", "books-loading", "Loading book…"));
     try {
-      const { book, progress } = await request(`/api/books/${encodeURIComponent(id)}`);
+      const { book, progress, series } = await request(`/api/books/${encodeURIComponent(id)}`);
       const back = element("button", "text-button books-back", "‹ Library");
       back.type = "button";
       back.dataset.booksAction = "back";
@@ -267,6 +267,47 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
       const controls = element("div", "chapter-controls book-detail-controls");
       controls.append(group);
 
+      let seriesPanel = null;
+      if (series?.items?.length > 1 || series?.missingPositions?.length) {
+        seriesPanel = element("section", "book-series-panel");
+        const heading = element("div", "book-series-heading");
+        heading.append(
+          element("h3", "", series.name),
+          element("span", "", `${series.items.length} known volume${series.items.length === 1 ? "" : "s"}`),
+        );
+        seriesPanel.append(heading);
+        if (series.missingPositions?.length) {
+          seriesPanel.append(element("p", "book-series-gaps", `Missing from the shared catalogue: volume ${series.missingPositions.join(", ")}`));
+        }
+        const list = element("div", "book-series-list");
+        series.items.forEach((item) => {
+          const row = element("div", `book-series-item${item.id === book.id ? " current" : ""}`);
+          const label = element("div");
+          label.append(
+            element("strong", "", `${item.seriesPosition == null ? "" : `${item.seriesPosition}. `}${item.title}`),
+            element("small", "", item.id === book.id ? "Current book" : item.inLibrary ? BOOK_LIBRARY_GROUP_LABELS[item.libraryStatus] || "In library" : "In the household catalogue"),
+          );
+          const action = element("button", "mini-button", item.id === book.id ? "Current" : item.inLibrary ? "Open" : "Add");
+          action.type = "button";
+          action.disabled = item.id === book.id;
+          action.addEventListener("click", async () => {
+            action.disabled = true;
+            try {
+              if (!item.inLibrary) await request(`/api/books/${encodeURIComponent(item.id)}/library`, { method: "POST", body: "{}" });
+              await Promise.resolve(onLibraryChange());
+              navigate("book-detail", { id: item.id });
+            } catch (error) {
+              action.disabled = false;
+              action.setCustomValidity(error.message);
+              action.reportValidity();
+            }
+          });
+          row.append(label, action);
+          list.append(row);
+        });
+        seriesPanel.append(list);
+      }
+
       const contents = element("section", "book-contents");
       const contentsHeading = element("div", "book-contents-heading");
       contentsHeading.append(
@@ -277,7 +318,7 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
       contentsList.setAttribute("aria-label", `Contents of ${book.title}`);
       contentsList.append(element("p", "books-loading", "Loading book contents…"));
       contents.append(contentsHeading, contentsList);
-      content.replaceChildren(back, detail, about, controls, contents);
+      content.replaceChildren(back, detail, about, controls, ...(seriesPanel ? [seriesPanel] : []), contents);
       if (!book.description && !metadata.length) about.hidden = true;
       if (!book.hasEpub) {
         contentsList.replaceChildren(element("p", "books-empty-result", "This book does not currently have a readable EPUB."));
@@ -305,9 +346,9 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
     const content = root.querySelector("#books-content");
     content.replaceChildren(element("div", "epub-reader-state books-reader-loading", "Preparing reader…"));
     try {
-      const [{ book, progress }, { preferences }, module] = await Promise.all([
+      const [{ book, progress }, preferenceProfile, module] = await Promise.all([
         request(`/api/books/${encodeURIComponent(id)}`),
-        request("/api/books/preferences"),
+        request(`/api/books/${encodeURIComponent(id)}/preferences`),
         import("./epub-reader.js"),
       ]);
       if (generation !== readerGeneration) return;
@@ -316,7 +357,8 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
         root: content,
         book,
         progress,
-        preferences,
+        preferences: preferenceProfile.preferences,
+        preferenceScope: preferenceProfile,
         initialHref,
         accountId: document.body.dataset.accountNamespace || "",
         onExit: () => navigate("book-detail", { id: book.id }),

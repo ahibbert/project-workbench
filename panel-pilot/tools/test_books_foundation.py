@@ -114,9 +114,9 @@ class BooksConfigurationTests(unittest.TestCase):
                     "SELECT name FROM sqlite_master WHERE type = 'table'"
                 )}
                 version = connection.execute("PRAGMA user_version").fetchone()[0]
-            self.assertEqual(version, 4)
+            self.assertEqual(version, 5)
             self.assertTrue({
-                "books", "book_progress", "book_reader_preferences",
+                "books", "book_progress", "book_reader_preferences", "book_reader_profiles",
                 "shelfmark_downloads", "book_meta",
             }.issubset(tables))
 
@@ -134,7 +134,7 @@ class BooksConfigurationTests(unittest.TestCase):
             with store.connection() as migrated:
                 version = migrated.execute("PRAGMA user_version").fetchone()[0]
                 columns = {row[1] for row in migrated.execute("PRAGMA table_info(books)")}
-            self.assertEqual(version, 4)
+            self.assertEqual(version, 5)
             self.assertIn("library_status", columns)
             self.assertIn("removed_at", columns)
 
@@ -218,6 +218,23 @@ class BooksConfigurationTests(unittest.TestCase):
             self.assertEqual(store.list_books("wife")["total"], 1)
             self.assertEqual(store.get_book_for_user("wife", book_id)["libraryStatus"], "reading")
 
+    def test_series_context_orders_catalogue_books_and_finds_gaps(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = BookStore(str(pathlib.Path(temporary) / "books.sqlite3"))
+            store.sync_books([
+                {"stableIdentifier": "urn:s:1", "title": "First", "authors": ["Author"], "seriesName": "Saga", "seriesPosition": 1, "acquisitionHref": "one.epub"},
+                {"stableIdentifier": "urn:s:2", "title": "Second", "authors": ["Author"], "seriesName": "Saga", "seriesPosition": 2, "acquisitionHref": "two.epub"},
+                {"stableIdentifier": "urn:s:4", "title": "Fourth", "authors": ["Author"], "seriesName": "Saga", "seriesPosition": 4, "acquisitionHref": "four.epub"},
+            ])
+            books = sorted(store.list_books("local")["books"], key=lambda item: item["seriesPosition"])
+            store.add_to_library("wife", books[0]["id"])
+            context = store.series_context("wife", books[0]["id"])
+            self.assertEqual([item["seriesPosition"] for item in context["items"]], [1.0, 2.0, 4.0])
+            self.assertEqual(context["missingPositions"], [3])
+            self.assertEqual(context["nextBook"]["title"], "Second")
+            self.assertFalse(context["nextBook"]["inLibrary"])
+            self.assertEqual(context["nextBook"]["epubUrl"], "")
+
     def test_reader_preferences_are_validated_and_persisted(self):
         with tempfile.TemporaryDirectory() as temporary:
             store = BookStore(str(pathlib.Path(temporary) / "books.sqlite3"))
@@ -229,6 +246,42 @@ class BooksConfigurationTests(unittest.TestCase):
             self.assertEqual(saved["readingFlow"], "scrolled")
             with self.assertRaisesRegex(BookRequestError, "Invalid book theme"):
                 store.save_preferences("reader", {"theme": "neon"})
+
+    def test_reader_preferences_inherit_defaults_and_follow_a_series(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = BookStore(str(pathlib.Path(temporary) / "books.sqlite3"))
+            store.sync_books([
+                {
+                    "stableIdentifier": "urn:series:1", "title": "Volume One", "authors": ["A. Writer"],
+                    "seriesName": "A Great Series", "seriesPosition": 1,
+                    "acquisitionHref": "http://cwa/one.epub", "coverHref": "",
+                },
+                {
+                    "stableIdentifier": "urn:series:2", "title": "Volume Two", "authors": ["A. Writer"],
+                    "seriesName": "A Great Series", "seriesPosition": 2,
+                    "acquisitionHref": "http://cwa/two.epub", "coverHref": "",
+                },
+            ])
+            books = store.list_books("local")["books"]
+            first, second = sorted(books, key=lambda item: item["seriesPosition"])
+            store.save_preferences("local", {"theme": "dark", "fontSize": 110})
+            profile = store.save_scoped_preferences("local", first["id"], {"theme": "sepia", "fontSize": 130})
+            self.assertEqual(profile["scope"], "series")
+            self.assertEqual(profile["scopeLabel"], "A Great Series")
+            inherited = store.get_scoped_preferences("local", second["id"])
+            self.assertEqual(inherited["preferences"]["theme"], "sepia")
+            self.assertEqual(inherited["preferences"]["fontSize"], 130)
+            self.assertEqual(inherited["preferences"]["readingFlow"], "paginated")
+
+            unrelated = store.sync_books([{
+                "stableIdentifier": "urn:standalone", "title": "Standalone", "authors": ["B. Writer"],
+                "acquisitionHref": "http://cwa/standalone.epub", "coverHref": "",
+            }])
+            self.assertEqual(unrelated["added"], 1)
+            standalone = next(item for item in store.list_books("local")["books"] if item["title"] == "Standalone")
+            standalone_profile = store.get_scoped_preferences("local", standalone["id"])
+            self.assertEqual(standalone_profile["scope"], "book")
+            self.assertEqual(standalone_profile["preferences"]["theme"], "dark")
 
     def test_cwa_import_timeout_becomes_a_manageable_failure(self):
         with tempfile.TemporaryDirectory() as temporary:

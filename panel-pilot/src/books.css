@@ -219,6 +219,36 @@
   margin-bottom: 0.75rem;
 }
 
+.book-series-panel {
+  display: grid;
+  gap: 0.65rem;
+  margin-bottom: 0.9rem;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: #fff;
+}
+
+.book-series-heading,
+.book-series-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.book-series-heading h3,
+.book-series-heading span,
+.book-series-gaps { margin: 0; }
+.book-series-heading span,
+.book-series-item small,
+.book-series-gaps { color: var(--muted); }
+.book-series-list { display: grid; }
+.book-series-item { min-height: 3.5rem; border-top: 1px solid var(--line); }
+.book-series-item > div { display: grid; gap: 0.15rem; min-width: 0; }
+.book-series-item.current { color: var(--accent-2); }
+.book-series-item button { min-width: 4.5rem; }
+
 .book-contents {
   display: grid;
   gap: 0.65rem;

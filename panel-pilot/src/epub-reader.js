@@ -93,7 +93,7 @@ async function jsonRequest(path, options = {}) {
   return payload;
 }
 
-export async function createEpubReader({ root, book, progress, preferences, initialHref = "", accountId = "", onExit }) {
+export async function createEpubReader({ root, book, progress, preferences, preferenceScope = {}, initialHref = "", accountId = "", onExit }) {
   let rendition = null;
   let publication = null;
   let currentProgress = progress;
@@ -285,7 +285,11 @@ export async function createEpubReader({ root, book, progress, preferences, init
   select("Page width", "contentWidth", [["560", "Narrow"], ["720", "Default"], ["900", "Wide"], ["1200", "Full"]]);
   select("Reading flow", "readingFlow", [["paginated", "Pages"], ["scrolled", "Continuous scroll"]]);
   select("Alignment", "textAlignment", [["start", "Publisher"], ["left", "Left"], ["justify", "Justified"]]);
-  settingsPanel.append(node("p", "epub-settings-note", "Panels keeps the screen awake while this reader is open when your browser permits it."));
+  settingsPanel.append(node(
+    "p",
+    "epub-settings-note",
+    `Appearance changes are remembered for ${preferenceScope.scope === "series" ? `the ${preferenceScope.scopeLabel} series` : "this book"}. Panels also keeps the screen awake when permitted.`,
+  ));
 
   function themePalette(theme) {
     const palettes = {
@@ -607,7 +611,7 @@ export async function createEpubReader({ root, book, progress, preferences, init
     const request = ++preferenceRequest;
     const payload = { ...preferences };
     try {
-      const response = await jsonRequest("/api/books/preferences", { method: "POST", body: JSON.stringify(payload) });
+      const response = await jsonRequest(`/api/books/${book.id}/preferences`, { method: "POST", body: JSON.stringify(payload) });
       if (destroyed || request !== preferenceRequest) return;
       Object.assign(preferences, response.preferences);
       await refreshPreferences(changedKey);

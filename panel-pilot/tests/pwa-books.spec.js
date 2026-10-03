@@ -41,6 +41,7 @@ async function stubApp(page, {
   suwayomiRequests = [],
   moments = [],
   momentWrites = [],
+  seriesContext = null,
 }) {
   let currentBook = { ...book, libraryStatus: progressState.current ? "reading" : book.libraryStatus };
   let currentPreferences = {
@@ -122,7 +123,7 @@ async function stubApp(page, {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ moments }) });
       return;
     }
-    if (url.pathname === "/api/books/preferences") {
+    if (url.pathname === "/api/books/preferences" || url.pathname === "/api/books/1/preferences") {
       if (route.request().method() === "POST") {
         const incoming = route.request().postDataJSON();
         preferenceWrites.push(incoming);
@@ -138,7 +139,10 @@ async function stubApp(page, {
           currentPreferences = { ...currentPreferences, ...incoming };
         }
       }
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ preferences: currentPreferences }) });
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+        preferences: currentPreferences,
+        ...(url.pathname.includes("/1/") ? { scope: "book", scopeLabel: currentBook.title } : {}),
+      }) });
       return;
     }
     if (url.pathname === "/api/books/1" && route.request().method() === "DELETE") {
@@ -147,7 +151,11 @@ async function stubApp(page, {
       return;
     }
     if (url.pathname === "/api/books/1") {
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ book: currentBook, progress: progressState.current }) });
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ book: currentBook, progress: progressState.current, series: seriesContext }) });
+      return;
+    }
+    if (url.pathname === "/api/books/2/library" && route.request().method() === "POST") {
+      await route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ book: { id: 2, title: "Through the Looking-Glass", libraryStatus: "plan_to_read" } }) });
       return;
     }
     if (url.pathname === "/api/books/search") {
@@ -282,6 +290,29 @@ test("enabled books join the main library and open an isolated detail view", asy
   await page.locator("#nav-settings").click();
   await expect(page.locator("#book-services-panel")).toBeVisible();
   await expect(page.locator("#book-services-note")).toContainText("Shelfmark ready");
+});
+
+test("book details show reading order and add the next shared-catalogue volume instantly", async ({ page }) => {
+  await stubApp(page, {
+    booksEnabled: true,
+    seriesContext: {
+      name: "Alice",
+      currentBookId: 1,
+      missingPositions: [3],
+      items: [
+        { ...book, seriesName: "Alice", seriesPosition: 1, inLibrary: true },
+        { id: 2, title: "Through the Looking-Glass", seriesName: "Alice", seriesPosition: 2, inLibrary: false, libraryStatus: "", hasEpub: true },
+      ],
+    },
+  });
+  await page.goto("/", { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: /^Books$/ }).first().click();
+  await page.getByRole("button", { name: /^Plan/ }).click();
+  await page.locator(".book-library-card").getByRole("button", { name: /Alice's Adventures/ }).click();
+  await expect(page.locator(".book-series-panel")).toContainText("Missing from the shared catalogue: volume 3");
+  await expect(page.locator(".book-series-panel")).toContainText("Through the Looking-Glass");
+  await page.locator(".book-series-item").filter({ hasText: "Through the Looking-Glass" }).getByRole("button", { name: "Add" }).click();
+  await expect(page).toHaveURL(/#book-detail\?id=2$/);
 });
 
 test("a selected book passage saves to Moments and reopens at its exact EPUB location", async ({ page }) => {
