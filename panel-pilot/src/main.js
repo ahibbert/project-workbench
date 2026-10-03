@@ -382,6 +382,7 @@ const el = {
   hideReaderControls: document.querySelector("#hide-reader-controls"),
   toggleReaderMode: document.querySelector("#toggle-reader-mode"),
   readerOptions: document.querySelector(".reader-options"),
+  closeReaderOptions: document.querySelector("#close-reader-options"),
   redetect: document.querySelector("#redetect"),
   redetectChapter: document.querySelector("#redetect-chapter"),
   reportBadPanels: document.querySelector("#report-bad-panels"),
@@ -1049,6 +1050,7 @@ function loadSettings() {
   updatePanelModeControls();
   applyReaderMotion();
   setReadingDirection(state.readingDirection);
+  normalizeBooksOnlyState();
   if (savedSuwayomiUrlError) {
     setConnection(false, savedSuwayomiUrlError, "bad");
   }
@@ -1238,6 +1240,28 @@ function formatStatsSince(value) {
 }
 
 function renderReadingStats() {
+  if (isBooksOnlyAccount()) {
+    if (el.statsWelcome) el.statsWelcome.hidden = true;
+    if (el.statsDashboard) el.statsDashboard.hidden = false;
+    if (el.statsSince) el.statsSince.textContent = "Your shelf";
+    if (el.statsSummaryGrid) el.statsSummaryGrid.hidden = true;
+    if (el.statsRhythm) el.statsRhythm.hidden = true;
+    if (el.statsAchievementsPanel) el.statsAchievementsPanel.hidden = true;
+    el.statsRangeSelect?.closest(".stats-range")?.setAttribute("hidden", "");
+    const heading = document.querySelector("#stats-view h1");
+    const subtitle = document.querySelector("#stats-view .view-subtitle");
+    if (heading) heading.textContent = "Your bookshelf";
+    if (subtitle) subtitle.textContent = "Progress from the books in your library";
+    if (state.booksIntegration) {
+      state.booksIntegration.renderBookStats({
+        panel: el.bookStatsPanel,
+        count: el.bookStatsCount,
+        summary: el.bookStatsSummary,
+      }, state.bookLibraryItems);
+    }
+    return;
+  }
+  el.statsRangeSelect?.closest(".stats-range")?.removeAttribute("hidden");
   const settings = { ...defaultReadingStatsSettings(), ...(state.readingStatsSettings || {}) };
   const summary = normalizedReadingStatsSummary(state.readingStatsSummary || {});
   const since = summary.since || settings.since || settings.startedAt || null;
@@ -1624,6 +1648,8 @@ async function initializeBooksFeature() {
         onLibraryChange: refreshIntegratedBookLibrary,
       });
       await refreshIntegratedBookLibrary({ render: true });
+      renderReadingStats();
+      renderMoments();
       if (state.activeView === "books") void showBooksRoute();
     }
   } catch {
@@ -1642,6 +1668,8 @@ async function initializeBooksFeature() {
     if (state.booksEnabled) {
       state.booksIntegration ||= await import("./books-integration.js");
       renderLibrary({ preserveInteractions: false });
+      renderReadingStats();
+      renderMoments();
       if (state.activeView === "books") void showBooksRoute();
     }
   }
@@ -2021,6 +2049,17 @@ function hideNetworkStatus() {
   networkStatusHideTimer = 0;
   if (el.networkStatusBanner) el.networkStatusBanner.hidden = true;
   document.body.classList.remove("has-network-status");
+  syncStatusOverlayOffset();
+}
+
+function syncStatusOverlayOffset() {
+  const banner = el.networkStatusBanner;
+  const update = el.appUpdate;
+  if (!update) return;
+  const bannerBottom = banner && !banner.hidden ? banner.getBoundingClientRect().bottom : 0;
+  const viewportTop = Math.max(12, window.visualViewport?.offsetTop || 0);
+  const top = Math.max(viewportTop, Math.ceil(bannerBottom + 12));
+  document.documentElement.style.setProperty("--app-update-top", `${top}px`);
 }
 
 function setNetworkStatus(status, title, note, { retry = false, hideAfterMs = 0 } = {}) {
@@ -2034,6 +2073,7 @@ function setNetworkStatus(status, title, note, { retry = false, hideAfterMs = 0 
   el.retryNetwork.disabled = status === "reconnecting";
   el.networkStatusBanner.hidden = false;
   document.body.classList.add("has-network-status");
+  requestAnimationFrame(syncStatusOverlayOffset);
   if (hideAfterMs > 0) {
     networkStatusHideTimer = window.setTimeout(hideNetworkStatus, hideAfterMs);
   }
@@ -2183,6 +2223,55 @@ function handleBrowserOffline() {
   if (state.visualContentEnabled) {
     setConnection(false, "Device offline. Suwayomi will reconnect when the network returns.", "bad");
   }
+}
+
+function openDiscovery() {
+  if (isBooksOnlyAccount()) {
+    if (state.booksEnabled) navigateBookRoute("books-search");
+    else showBooksUnavailable();
+    return;
+  }
+  setActiveView("browse");
+}
+
+function showBooksUnavailable() {
+  setActiveView("books", { history: false });
+  if (!el.booksRoot) return;
+  const panel = document.createElement("section");
+  panel.className = "panel books-unavailable";
+  const title = document.createElement("h2");
+  title.textContent = "Books are temporarily unavailable";
+  const copy = document.createElement("p");
+  copy.textContent = "Your book service could not be reached. Your account and library stay private; try again in a moment.";
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.className = "primary-button";
+  retry.textContent = "Try again";
+  retry.addEventListener("click", async () => {
+    retry.disabled = true;
+    await initializeBooksFeature();
+    retry.disabled = false;
+    if (state.booksEnabled) navigateBookRoute("books-search");
+  });
+  panel.append(title, copy, retry);
+  el.booksRoot.replaceChildren(panel);
+}
+
+function isBooksOnlyAccount() {
+  return !state.visualContentEnabled && state.account.contentTypes?.includes("books");
+}
+
+function isBooksOnlyExperience() {
+  return state.booksEnabled && isBooksOnlyAccount();
+}
+
+function normalizeBooksOnlyState() {
+  if (!isBooksOnlyAccount()) return;
+  state.libraryFormatFilter = "book";
+  // New books begin in Plan, so a Reading-only default makes a newly added
+  // personal shelf appear empty with no visual-content filter available.
+  if (state.libraryFilter === "reading") state.libraryFilter = "all";
+  state.momentsTypeFilter = "text";
 }
 
 async function reconnectPanelPilot() {
@@ -2699,6 +2788,13 @@ function comicRecommendationSearchItem(recommendation) {
 }
 
 function applyComicRecommendationsConfigStatus(payload = {}) {
+  const booksOnly = isBooksOnlyAccount();
+  const panel = document.querySelector(".comic-recommendations-settings-panel");
+  if (panel && booksOnly) {
+    panel.querySelector("h2").textContent = "Book recommendations";
+    const description = panel.querySelector(".note");
+    if (description) description.textContent = "Optional: add a LibraryThing developer key for your book recommendations. The key is stored only on this Panels server and is never returned to the browser.";
+  }
   state.comicRecommendationsConfigured = Boolean(payload.configured);
   state.comicRecommendationsManagedByEnvironment = Boolean(payload.managedByEnvironment);
   if (el.comicRecommendationsConfigState) {
@@ -2720,7 +2816,7 @@ function applyComicRecommendationsConfigStatus(payload = {}) {
       ? "Configured by the server environment. The key is not available to this browser."
       : state.comicRecommendationsConfigured
         ? "Configured. The key is stored on this server and is not returned to the browser."
-        : "The comic and book feeds remain off until a key is configured.";
+        : booksOnly ? "Book recommendations are off until a key is configured." : "The comic and book feeds remain off until a key is configured.";
   }
 }
 
@@ -2747,7 +2843,7 @@ async function saveComicRecommendationsConfig() {
     if (el.openLibraryContact) el.openLibraryContact.value = "";
     applyComicRecommendationsConfigStatus(payload);
     state.comicRecommendationsLoaded = false;
-    await loadComicRecommendations({ force: true });
+    if (state.visualContentEnabled) await loadComicRecommendations({ force: true });
     showToast("LibraryThing key saved on your Panels server.", "good");
   } catch (error) {
     showToast(`Could not save the LibraryThing key: ${friendlySourceErrorMessage(error)}`, "bad");
@@ -3335,6 +3431,7 @@ function setReaderFocus(active) {
   if (!state.readerFocus) state.readerChromeVisible = true;
   document.body.classList.toggle("reader-focus", state.readerFocus);
   document.body.classList.toggle("reader-chrome-hidden", state.readerFocus && !state.readerChromeVisible);
+  updateReaderFocusRecoveryAction();
   if (el.toggleReaderMode) el.toggleReaderMode.textContent = state.activeView === "reader" ? "Back" : "Reader";
   requestAnimationFrame(fitStage);
 }
@@ -3350,7 +3447,35 @@ function toggleReaderFocus() {
 function setReaderChromeVisible(visible, { refit = true } = {}) {
   state.readerChromeVisible = Boolean(visible);
   document.body.classList.toggle("reader-chrome-hidden", state.readerFocus && !state.readerChromeVisible);
+  updateReaderFocusRecoveryAction();
   if (refit) requestAnimationFrame(fitStage);
+}
+
+function updateReaderFocusRecoveryAction() {
+  if (!el.stage) return;
+  const hidden = state.readerFocus && !state.readerChromeVisible;
+  // The stage must remain a reading surface: turning it into a button causes
+  // the shared keyboard and press-and-hold readers to treat every page as a
+  // control. Reuse the existing overview hint as the compact named recovery.
+  el.stage.setAttribute("role", "region");
+  el.stage.setAttribute("aria-label", "Panel reading stage");
+  const hint = el.readerOverviewHint;
+  if (!hint) return;
+  const recovery = hidden && !state.readerOverview;
+  if (recovery) {
+    hint.dataset.recovery = "true";
+    hint.textContent = "•••";
+    hint.setAttribute("role", "button");
+    hint.setAttribute("aria-label", "Show reader controls");
+    hint.tabIndex = 0;
+    hint.hidden = false;
+  } else if (hint.dataset.recovery === "true") {
+    delete hint.dataset.recovery;
+    hint.removeAttribute("role");
+    hint.removeAttribute("aria-label");
+    hint.removeAttribute("tabindex");
+    hint.hidden = true;
+  }
 }
 
 function isInteractiveTarget(target) {
@@ -5571,7 +5696,15 @@ function renderSmartHome() {
   const rediscovered = visibleMoments.length ? chooseMomentForRediscovery(visibleMoments, { state: state.momentRediscoveryState })?.moment : null;
   if (rediscovered) cards.push(smartHomeCard({ kind: "moment", icon: "★", eyebrow: "Rediscover", title: rediscovered.title || "Saved moment", detail: rediscovered.momentType === "text" ? String(rediscovered.quote || "Saved highlight").slice(0, 80) : rediscovered.chapterTitle || "Saved panel", action: () => { state.momentRediscoveryMomentId = rediscovered.id; setActiveView("moments"); } }));
   const recommendation = state.mangabakaRecommendations[0] || state.comicRecommendations[0];
-  cards.push(smartHomeCard({ kind: "recommendation", icon: "✦", eyebrow: "Try next", title: recommendation?.title || "Find your next read", detail: recommendation ? "From your recommendations" : "Open personalized recommendations", action: () => setActiveView("browse") }));
+  const booksOnly = isBooksOnlyAccount();
+  cards.push(smartHomeCard({
+    kind: "recommendation",
+    icon: "✦",
+    eyebrow: "Try next",
+    title: recommendation?.title || (booksOnly ? "Find your next book" : "Find your next read"),
+    detail: recommendation ? "From your recommendations" : booksOnly ? "Browse book recommendations" : "Open personalized recommendations",
+    action: openDiscovery,
+  }));
   el.smartHomeRail.replaceChildren(...cards);
   el.smartHome.hidden = cards.length === 0;
 }
@@ -5695,7 +5828,7 @@ function renderLibrary({ preserveInteractions = true } = {}) {
         renderLibrary({ preserveInteractions: false });
       } else if (showHiddenAction) setShowHiddenLibrary(true);
       else if (state.libraryFormatFilter === "book") navigateBookRoute("books-search");
-      else setActiveView("browse");
+      else openDiscovery();
     });
     empty.append(art, heading, copy, action);
     el.libraryList.replaceChildren(empty);
@@ -12707,6 +12840,7 @@ function beginReaderOverview(kind = "hold") {
     progress: 0,
   };
   document.body.classList.add("reader-overview-active");
+  updateReaderFocusRecoveryAction();
   if (el.readerOverviewHint) {
     el.readerOverviewHint.textContent = kind === "pinch"
       ? "Release both fingers to return to the panel"
@@ -12723,6 +12857,7 @@ function endReaderOverview({ cancelled = false } = {}) {
   state.readerOverview = null;
   document.body.classList.remove("reader-overview-active");
   if (el.readerOverviewHint) el.readerOverviewHint.hidden = true;
+  updateReaderFocusRecoveryAction();
   const sameCrop = (
     overview.element?.isConnected
     && overview.pageIndex === state.pageIndex
@@ -13817,7 +13952,8 @@ async function saveCurrentMoment() {
       pageIndex: currentSuwayomiPageIndex(),
       panelIndex: state.panelIndex,
     });
-    state.moments = [payload.moment, ...state.moments.filter((moment) => moment.id !== payload.moment.id)];
+    const savedMoment = normalizeMoment(payload.moment);
+    state.moments = [savedMoment, ...state.moments.filter((moment) => moment.id !== savedMoment.id)];
     state.momentsLoaded = true;
     renderMoments();
     showToast("Moment saved in high resolution.", "good");
@@ -13832,7 +13968,9 @@ async function loadMoments() {
   if (!el.momentsGrid) return;
   try {
     const payload = await localJson("/api/moments");
-    state.moments = Array.isArray(payload.moments) ? payload.moments : [];
+    state.moments = Array.isArray(payload.moments)
+      ? payload.moments.map(normalizeMoment)
+      : [];
     state.momentsLoaded = true;
     renderMoments();
     renderSmartHome();
@@ -13878,9 +14016,13 @@ function renderMoments() {
   el.momentsGrid.replaceChildren();
   if (!visibleMoments.length) {
     renderMomentRediscovery([]);
+    const booksOnly = isBooksOnlyAccount();
+    const noSavedMoments = allVisibleMoments.length === 0;
     el.momentsGrid.append(createMomentsEmptyState(
-      "No saved moments yet",
-      "Save a panel from manga and comics, or highlight a passage in a book. Your favourite moments will collect here."
+      noSavedMoments ? (booksOnly ? "No saved highlights yet" : "No saved moments yet") : (booksOnly ? "No matching highlights" : "No matching moments"),
+      noSavedMoments
+        ? (booksOnly ? "Highlight a passage in a book and it will collect here." : "Save a panel from manga and comics, or highlight a passage in a book. Your favourite moments will collect here.")
+        : "Try changing your search or filters."
     ));
     return;
   }
@@ -13912,6 +14054,13 @@ function renderMoments() {
     fragment.append(collection);
   });
   el.momentsGrid.append(fragment);
+}
+
+function normalizeMoment(moment) {
+  // Moments saved before book highlights existed have no explicit type. They are
+  // panel images, so preserve them in the upgraded grouped library rather than
+  // silently dropping them from the image collection.
+  return { ...moment, momentType: moment?.momentType === "text" ? "text" : "image" };
 }
 
 function createMomentCard(moment, { featured = false } = {}) {
@@ -14353,6 +14502,7 @@ function showAppUpdate() {
     el.appUpdate.hidden = false;
     el.appUpdate.disabled = false;
     el.appUpdate.textContent = "Update ready · Restart app";
+    requestAnimationFrame(syncStatusOverlayOffset);
   }
   if (el.applyAppUpdate) {
     el.applyAppUpdate.hidden = false;
@@ -14974,7 +15124,7 @@ function wireEvents() {
         return;
       }
       if (targetView === "browse" && !state.visualContentEnabled && state.account.contentTypes?.includes("books")) {
-        navigateBookRoute("books-search");
+        openDiscovery();
         return;
       }
       if (targetView === "browse" && el.mangaDetail && !el.mangaDetail.hidden) {
@@ -15223,6 +15373,7 @@ function wireEvents() {
   el.rtlOrder.addEventListener("click", () => resortAndDetect("rtl"));
   el.ltrOrder.addEventListener("click", () => resortAndDetect("ltr"));
   window.addEventListener("resize", () => {
+    syncStatusOverlayOffset();
     if (state.readerFocus && !isReaderFocusAvailable()) setReaderFocus(false);
     if (state.panelMode === "webtoon" && state.pages.length) {
       state.pages.forEach((page, index) => {
@@ -15245,8 +15396,14 @@ function wireEvents() {
     }
     scheduleViewportFit();
   });
-  window.visualViewport?.addEventListener("resize", scheduleViewportFit);
-  window.visualViewport?.addEventListener("scroll", scheduleViewportFit);
+  window.visualViewport?.addEventListener("resize", () => {
+    syncStatusOverlayOffset();
+    scheduleViewportFit();
+  });
+  window.visualViewport?.addEventListener("scroll", () => {
+    syncStatusOverlayOffset();
+    scheduleViewportFit();
+  });
   window.addEventListener("orientationchange", scheduleViewportFit);
   window.addEventListener("popstate", applyNavigationHistory);
   window.addEventListener("online", () => {
@@ -15308,6 +15465,23 @@ function wireEvents() {
     requestAnimationFrame(() => {
       el.readerOptions.querySelector(".reader-options-sheet input, .reader-options-sheet button")?.focus();
     });
+  });
+  el.closeReaderOptions?.addEventListener("click", () => {
+    if (!el.readerOptions) return;
+    el.readerOptions.open = false;
+    el.readerOptions.querySelector("summary")?.focus({ preventScroll: true });
+  });
+  el.readerOverviewHint?.addEventListener("click", (event) => {
+    if (el.readerOverviewHint.dataset.recovery !== "true") return;
+    event.preventDefault();
+    event.stopPropagation();
+    setReaderChromeVisible(true);
+  });
+  el.readerOverviewHint?.addEventListener("keydown", (event) => {
+    if (el.readerOverviewHint.dataset.recovery === "true" && (event.key === "Enter" || event.key === " ")) {
+      event.preventDefault();
+      setReaderChromeVisible(true);
+    }
   });
   bindOptionsSwipe();
 
@@ -15503,8 +15677,27 @@ if (el.stage) {
     [
       "#device-storage-panel", ".suwayomi-panel", ".panels-panel",
       ".source-intelligence-panel", ".sync-panel", ".mangabaka-panel",
-      ".comic-recommendations-settings-panel", "#download-status-button",
+      "#download-status-button",
     ].forEach((selector) => document.querySelectorAll(selector).forEach((node) => { node.hidden = true; }));
+    const recommendationPanel = document.querySelector(".comic-recommendations-settings-panel");
+    if (recommendationPanel && state.account.contentTypes?.includes("books")) {
+      recommendationPanel.querySelector("h2").textContent = "Book recommendations";
+      const notes = recommendationPanel.querySelectorAll(".note");
+      if (notes[0]) notes[0].textContent = "Optional: add a LibraryThing developer key for your book recommendations. The key is stored only on this Panels server and is never returned to the browser.";
+      if (notes[1]) notes[1].textContent = "Book recommendations are off until a key is configured.";
+    }
+    document.querySelectorAll(".stats-controls").forEach((node) => { node.hidden = true; });
+    if (state.account.contentTypes?.includes("books")) {
+      state.libraryFormatFilter = "book";
+      document.querySelector("#library-format-filters")?.setAttribute("hidden", "");
+      document.querySelectorAll("[data-moment-type='all'], [data-moment-type='image']").forEach((node) => { node.hidden = true; });
+      state.momentsTypeFilter = "text";
+      document.querySelector("[data-moment-type='text']")?.classList.add("active");
+      const momentsSubtitle = document.querySelector("#moments-view .view-subtitle");
+      const momentsEmptyCopy = document.querySelector("#moments-empty p");
+      if (momentsSubtitle) momentsSubtitle.textContent = "Passages worth keeping";
+      if (momentsEmptyCopy) momentsEmptyCopy.textContent = "Highlight a passage in a book and it will collect here.";
+    }
   }
   if (!state.visualContentEnabled && !state.account.contentTypes?.includes("books")) {
     document.querySelectorAll("#nav-moments").forEach((node) => { node.hidden = true; });
@@ -15555,9 +15748,11 @@ if (el.stage) {
   } else {
     recordNavigationState("replace", Boolean(state.initialRoute.detail));
   }
+  if (navigator.onLine && (state.visualContentEnabled || isBooksOnlyAccount())) {
+    void refreshComicRecommendationsConfig();
+  }
   if (navigator.onLine && state.visualContentEnabled) {
     void refreshMangaBakaStatus();
-    void refreshComicRecommendationsConfig();
     void loadMangaBakaRecommendations();
     setTimeout(() => {
       initializeSuwayomi().then(async () => {

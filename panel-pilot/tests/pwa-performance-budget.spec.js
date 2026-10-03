@@ -7,22 +7,22 @@ const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const distRoot = join(projectRoot, "dist");
 const budgets = {
   // Includes the feature-flagged Books host plus the unified Library search/sort
-  // and long-series chapter controls (a reviewed two-KiB interaction envelope).
-  indexHtml: 56 * 1024,
+  // and long-series chapter controls, plus account-scoped book recovery and
+  // accessible reader controls (a reviewed six-KiB interaction envelope).
+  indexHtml: 60 * 1024,
   // Includes offline milestones, source intelligence, the Detection Lab,
-  // per-series calibration, spread handling, enhanced-reader controls,
-  // paginated source search, feature-flag/books navigation hooks, and
-  // source-provided manga credits, genres, and descriptions on detail views.
-  mainJavaScript: 408 * 1024,
-  mainCss: 74 * 1024,
+  // per-series calibration, cross-format reader recovery, account-aware
+  // navigation, and the grouped text/image Moments experience.
+  mainJavaScript: 428 * 1024,
+  mainCss: 80 * 1024,
   // Includes the integrated Books controls, cross-format resume, authentication
   // boundary, unified Library/chapter-list polish, paginated source search, and
   // source-provided series metadata rendered in the main application shell.
-  criticalPath: 556 * 1024,
-  // The installable shell precaches the authentication lifecycle and unified
-  // Library, metadata-rich detail, and paginated Browse controls so recovery
-  // and offline management work.
-  installShell: 810 * 1024,
+  criticalPath: 582 * 1024,
+  // The installable shell precaches authentication, account-aware recovery,
+  // unified Library, metadata-rich detail, and paginated Browse controls so
+  // offline management remains reliable.
+  installShell: 824 * 1024,
   domContentLoadedMs: 1_500,
   loadMs: 2_000,
   applicationReadyMs: 2_500,

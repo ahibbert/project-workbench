@@ -14,8 +14,9 @@ const iconSetBudgetBytes = 300_000;
 // (the EPUB reader, book contents parser, and lifecycle stay lazy).
 // Household account management and the shared More-like-this dialog remain in
 // the eagerly loaded shell so access rules and title actions are consistent.
-// Includes the lazily split EPUB search/offline tooling so saved books remain usable after a cold offline launch.
-const installShellBudgetBytes = 840_000;
+// Includes the lazily split EPUB search/offline tooling so saved books remain usable after a cold offline launch,
+// plus the account-scoped books-only and accessible reader-recovery controls.
+const installShellBudgetBytes = 844_000;
 
 function readSource(path) {
   return readFileSync(join(projectRoot, path), "utf8");

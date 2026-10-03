@@ -531,7 +531,10 @@ test("a registration failure does not prevent the online application or Test Lab
     await expect(page.locator("#app-update-note")).toContainText(/unavailable|could not|failed/i);
     await expect.poll(() => page.evaluate(() => typeof window.PanelPilot?.detectPanels)).toBe("function");
     const lab = await context.newPage();
-    await lab.goto(`${fixture.origin}/panel-test.html`, { waitUntil: "networkidle" });
+    // The deliberately failed worker may keep its registration request open;
+    // the Test Lab is ready once its document has loaded and detector module is
+    // available, not when the browser reports a quiet network.
+    await lab.goto(`${fixture.origin}/panel-test.html`, { waitUntil: "load" });
     await expect.poll(() => lab.evaluate(() => typeof window.PanelPilot?.detectPanels)).toBe("function");
     await lab.close();
     expect(pageErrors).toEqual([]);

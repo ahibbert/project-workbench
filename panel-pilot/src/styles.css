@@ -18,6 +18,7 @@
   --app-nav-height: 4.55rem;
   --app-nav-bottom-inset: max(0.65rem, env(safe-area-inset-bottom));
   --app-nav-stack-bottom: calc(var(--app-nav-bottom-inset) + var(--app-nav-height) + 0.5rem);
+  --app-update-top: max(1rem, env(safe-area-inset-top));
 }
 
 * {
@@ -3152,6 +3153,18 @@ body.has-network-status.reader-focus .reader-topbar {
   text-align: center;
 }
 
+.reader-overview-hint[data-recovery="true"] {
+  min-width: 3.25rem;
+  min-height: 2.75rem;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  background: rgba(24, 44, 43, 0.62);
+  cursor: pointer;
+  letter-spacing: 0.12rem;
+  pointer-events: auto;
+}
+
 .device-storage-group {
   min-width: 0;
   margin: 0;
@@ -4580,7 +4593,21 @@ body.reader-active .reader-controls > button {
   color: var(--ink);
 }
 
-.reader-options-sheet > strong,
+.reader-options-heading {
+  grid-column: 1 / -1;
+  position: sticky;
+  top: -0.55rem;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-height: 3rem;
+  margin: -0.55rem -0.1rem 0;
+  padding: 0.55rem 0.1rem 0.35rem;
+  background: #fff;
+}
+
 .reader-options-sheet .padding-control,
 .reader-options-sheet .checkbox-field,
 .reader-options-sheet .reader-select-field,
@@ -4754,7 +4781,7 @@ body.has-reading-miniplayer .app-toast {
 .app-update {
   position: fixed;
   right: max(1rem, env(safe-area-inset-right));
-  top: max(1rem, env(safe-area-inset-top));
+  top: var(--app-update-top);
   z-index: 80;
   max-width: calc(100vw - max(1rem, env(safe-area-inset-left)) - max(1rem, env(safe-area-inset-right)));
   min-height: 2.8rem;

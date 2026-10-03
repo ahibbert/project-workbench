@@ -111,9 +111,12 @@
             <summary aria-label="More reader controls" title="More reader controls">
               <span aria-hidden="true">•••</span>
             </summary>
-            <div class="reader-options-sheet">
+            <div class="reader-options-sheet" role="dialog" aria-modal="true" aria-label="Reader controls">
               <div class="sheet-handle" aria-hidden="true"></div>
-              <strong>Reader controls</strong>
+              <div class="reader-options-heading">
+                <strong>Reader controls</strong>
+                <button class="sheet-close" id="close-reader-options" type="button" aria-label="Close reader controls">×</button>
+              </div>
               <label class="padding-control" title="Panel context padding">
                 <span>Panel context <strong id="panel-padding-value">8%</strong></span>
                 <input id="panel-padding" type="range" min="0" max="25" step="1" value="8">

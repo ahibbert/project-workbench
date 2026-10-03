@@ -42,6 +42,7 @@ async function stubApp(page, {
   moments = [],
   momentWrites = [],
   seriesContext = null,
+  recommendationConfig = { configured: false, managedByEnvironment: false },
 }) {
   let currentBook = { ...book, libraryStatus: progressState.current ? "reading" : book.libraryStatus };
   let currentPreferences = {
@@ -166,6 +167,10 @@ async function stubApp(page, {
       }] }) });
       return;
     }
+    if (url.pathname === "/api/comic-recommendations/config") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(recommendationConfig) });
+      return;
+    }
     if (url.pathname === "/api/book-recommendations") {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
         configured: true, status: "ready", mode: "personalized", results: recommendations ?? [{
@@ -251,6 +256,10 @@ test("a books-only household account gets a private book-first shell", async ({ 
       displayName: "Reader Two", isAdmin: false, contentTypes: ["books"],
     },
     suwayomiRequests,
+    recommendationConfig: { configured: true, managedByEnvironment: true },
+  });
+  await page.addInitScript(() => {
+    localStorage.setItem("panel-pilot-settings:acct_11111111111111111111111111111111", JSON.stringify({ libraryFormatFilter: "manga" }));
   });
   await page.goto("/", { waitUntil: "networkidle" });
   await expect(page.locator("body")).toHaveAttribute("data-account-id", "acct_11111111111111111111111111111111");
@@ -260,6 +269,23 @@ test("a books-only household account gets a private book-first shell", async ({ 
   await expect(page.locator("#current-account-name")).toHaveText("Reader Two");
   await expect(page.locator("#account-administration")).toBeHidden();
   await expect(page.locator(".suwayomi-panel")).toBeHidden();
+  await expect(page.locator(".comic-recommendations-settings-panel")).toBeVisible();
+  await expect(page.locator(".comic-recommendations-settings-panel h2")).toHaveText("Book recommendations");
+  await expect(page.locator("#comic-recommendations-config-state")).toHaveText("Configured");
+  await expect(page.locator("#comic-recommendations-config-note")).toContainText("Configured by the server environment");
+  await page.getByRole("button", { name: "Library", exact: true }).click();
+  await expect(page.locator("#library-format-filters")).toBeHidden();
+  await expect(page.locator(".book-library-card")).toHaveCount(1);
+  await page.getByRole("button", { name: "Moments", exact: true }).click();
+  await expect(page.locator("[data-moment-type='image']")).toBeHidden();
+  await expect(page.locator("[data-moment-type='text']")).toBeVisible();
+  await expect(page.locator("#moments-view .view-subtitle")).toHaveText("Passages worth keeping");
+  await expect(page.locator(".moments-empty")).toContainText("Highlight a passage in a book");
+  await page.getByRole("button", { name: "Stats", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Your bookshelf" })).toBeVisible();
+  await expect(page.locator("#stats-rhythm")).toBeHidden();
+  await expect(page.locator("#stats-achievements-panel")).toBeHidden();
+  await expect(page.locator(".stats-range")).toBeHidden();
   await page.locator("#nav-browse").click();
   await expect(page).toHaveURL(/#books-search$/);
   await expect(page.getByRole("heading", { name: "Browse books" })).toBeVisible();
@@ -269,6 +295,25 @@ test("a books-only household account gets a private book-first shell", async ({ 
   await expect(page.locator("#network-status-title")).toHaveText("Connection restored");
   await expect(page.locator("#network-status-banner")).not.toContainText("Suwayomi");
   expect(suwayomiRequests).toEqual([]);
+});
+
+test("a books-only account remains book-first while the book service is unavailable", async ({ page }) => {
+  await stubApp(page, {
+    booksEnabled: false,
+    account: {
+      id: "acct_22222222222222222222222222222222", username: "reader3",
+      displayName: "Reader Three", isAdmin: false, contentTypes: ["books"],
+    },
+  });
+  await page.goto("/", { waitUntil: "networkidle" });
+  await expect(page.locator("#smart-home")).toContainText("Find your next book");
+  await page.locator("#nav-browse").click();
+  await expect(page.locator(".books-unavailable")).toContainText("Books are temporarily unavailable");
+  await page.getByRole("button", { name: "Stats", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Your bookshelf" })).toBeVisible();
+  await expect(page.locator("#stats-rhythm")).toBeHidden();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await expect(page.locator(".comic-recommendations-settings-panel h2")).toHaveText("Book recommendations");
 });
 
 test("enabled books join the main library and open an isolated detail view", async ({ page }) => {
@@ -449,7 +494,7 @@ test("Shelfmark acquisition offers only normalized EPUB choices and queues an op
   await page.getByRole("button", { name: /The Mercy of Gods/ }).click();
   await expect(page.locator(".book-release-row")).toContainText("EPUB");
   await expect(page.locator(".book-release-row")).not.toContainText("PDF");
-  await page.getByRole("button", { name: "Add to Library" }).click();
+  await page.getByRole("button", { name: "Get this EPUB" }).click();
   await expect.poll(() => queued.length).toBe(1);
   expect(queued[0].releaseToken).toBe("opaque-release-token");
   expect(queued[0].bookToken).toBe("opaque-book-token");
@@ -490,7 +535,7 @@ test("failed Shelfmark records are identified and untried alternatives are offer
   await expect(rows.first()).toContainText("Untried");
   await expect(rows.last()).toContainText("No configured Shelfmark mirror");
   await expect(rows.last()).toContainText("Choose another release");
-  await expect(rows.last().getByRole("button")).toHaveText("Retry this record");
+  await expect(rows.last().getByRole("button")).toHaveText("Try this EPUB again");
   await expect(page.locator(".books-release-note")).toContainText("Untried EPUB records are shown first");
 });
 
@@ -501,7 +546,7 @@ test("Books for you enters the normal Shelfmark edition and release flow", async
   await page.locator("#nav-browse").click();
   await page.locator(".browse-media-switch").getByRole("button", { name: "Books" }).click();
   await expect(page.locator(".book-recommendation-card")).toContainText("Because you read Leviathan Wakes");
-  await page.locator(".book-recommendation-card").getByRole("button", { name: "Read this" }).click();
+  await page.locator(".book-recommendation-card").getByRole("button", { name: "Find this book" }).click();
   await expect(page.getByRole("searchbox", { name: "Book title or author" })).toHaveValue("The Mercy of Gods");
   await expect.poll(() => bookSearchQueries.at(-1)).toBe("9780356517759");
   await expect(page.getByRole("button", { name: /The Mercy of Gods/ })).toBeVisible();
@@ -561,7 +606,7 @@ test("book Browse keeps recommendations separate and shows only useful acquisiti
     expect(item.buttonRight).toBeLessThanOrEqual(item.cardRight + 0.5);
   });
 
-  await expect(page.locator(".books-downloads h2")).toHaveText("Acquisition activity");
+  await expect(page.locator(".books-downloads h2")).toHaveText("Book activity");
   await expect(page.locator(".books-downloads")).toContainText("Active Book");
   await expect(page.locator(".books-downloads")).toContainText("Downloading · 42%");
   await expect(page.locator(".books-downloads")).toContainText("Recent Book");
@@ -624,7 +669,7 @@ test("EPUB reader opens a public-domain fixture and persists an exact CFI", asyn
   expect(progressWrites.at(-1).locator).toMatch(/^epubcfi\(/);
   expect(progressWrites.at(-1).revision).toBe(0);
 
-  await page.getByRole("button", { name: "Books", exact: false }).first().click();
+  await page.getByRole("button", { name: "Book details" }).click();
   await expect(page).toHaveURL(/#book-detail\?id=1$/);
   await expect(page.getByRole("button", { name: "Continue reading" })).toBeVisible();
   const writesBeforeReopen = progressWrites.length;
@@ -743,14 +788,29 @@ test("centre taps toggle overlay controls without resizing or repaginating the E
     return { stage: [stage.x, stage.y, stage.width, stage.height], viewport: [viewport.x, viewport.y, viewport.width, viewport.height] };
   });
   const initialGeometry = await readerGeometry();
-  await page.getByRole("button", { name: "Hide reader controls from page centre" }).click();
+  await body.evaluate((element) => {
+    const view = element.ownerDocument.defaultView;
+    element.dispatchEvent(new MouseEvent("click", {
+      bubbles: true,
+      clientX: view.innerWidth / 2,
+      clientY: view.innerHeight / 2,
+    }));
+  });
   await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "false");
   await expect.poll(() => page.locator(".epub-reader").evaluate((reader) => {
     const stage = reader.querySelector(".epub-stage");
     return Math.abs(stage.getBoundingClientRect().height - reader.getBoundingClientRect().height);
   })).toBeLessThan(2);
   expect(await readerGeometry()).toEqual(initialGeometry);
-  await page.getByRole("button", { name: "Show reader controls from page centre" }).click();
+  await page.waitForTimeout(500);
+  await body.evaluate((element) => {
+    const view = element.ownerDocument.defaultView;
+    element.dispatchEvent(new MouseEvent("click", {
+      bubbles: true,
+      clientX: view.innerWidth / 2,
+      clientY: view.innerHeight / 2,
+    }));
+  });
   await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "true");
   expect(await readerGeometry()).toEqual(initialGeometry);
 
@@ -1075,7 +1135,7 @@ test("iOS-style content touches always escape distraction-free reading in both f
   await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "true");
 });
 
-test("hidden paginated EPUB has an unobstructed parent centre escape zone", async ({ page }) => {
+test("hidden paginated EPUB preserves prose interaction and an explicit recovery action", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await stubApp(page, { booksEnabled: true });
   await openEpubReader(page);
@@ -1100,31 +1160,21 @@ test("hidden paginated EPUB has an unobstructed parent centre escape zone", asyn
     const hit = document.elementFromPoint(zoneRect.left + zoneRect.width / 2, zoneRect.top + zoneRect.height / 2);
     return {
       zoneDisplay: getComputedStyle(zone).display,
-      zoneZ: Number(getComputedStyle(zone).zIndex),
-      leftRatio: (zoneRect.left - stageRect.left) / stageRect.width,
-      rightRatio: (zoneRect.right - stageRect.left) / stageRect.width,
-      topRatio: (zoneRect.top - stageRect.top) / stageRect.height,
-      bottomRatio: (zoneRect.bottom - stageRect.top) / stageRect.height,
-      areaRatio: (zoneRect.width * zoneRect.height) / (stageRect.width * stageRect.height),
       centreHit: hit === zone,
       contentClearsHandle: viewportRect.top >= handleRect.bottom - 1,
     };
   });
-  expect(geometry).toMatchObject({ zoneDisplay: "block", zoneZ: 4, centreHit: true, contentClearsHandle: true });
-  expect(geometry.leftRatio).toBeGreaterThanOrEqual(0.32);
-  expect(geometry.rightRatio).toBeLessThanOrEqual(0.68);
-  expect(geometry.topRatio).toBeGreaterThanOrEqual(0.38);
-  expect(geometry.bottomRatio).toBeLessThanOrEqual(0.62);
-  expect(geometry.areaRatio).toBeLessThanOrEqual(0.08);
+  expect(geometry).toMatchObject({ zoneDisplay: "none", centreHit: false, contentClearsHandle: true });
 
-  const zone = page.getByRole("button", { name: "Show reader controls from page centre" });
-  await zone.click();
+  await page.getByRole("button", { name: "Show reader controls", exact: true }).click();
   await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "true");
-  const hideZone = page.getByRole("button", { name: "Hide reader controls from page centre" });
-  await expect(hideZone).toBeVisible();
-  await hideZone.click();
+  await page.waitForTimeout(500);
+  await body.evaluate((element) => {
+    const view = element.ownerDocument.defaultView;
+    element.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: view.innerWidth / 2, clientY: view.innerHeight / 2 }));
+  });
   await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "false");
-  await zone.click();
+  await page.getByRole("button", { name: "Show reader controls", exact: true }).click();
   await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "true");
 
   await page.locator(".epub-settings summary").click();
@@ -1140,7 +1190,7 @@ test("hidden paginated EPUB has an unobstructed parent centre escape zone", asyn
     element.dispatchEvent(new PointerEvent("pointerup", point));
   });
   await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "false");
-  await expect(zone).toBeHidden();
+  await expect(page.locator(".epub-centre-restore")).toBeHidden();
 });
 
 test("offline lifecycle recovery restores an exact CFI then reconciles canonically", async ({ page }) => {
@@ -1165,7 +1215,7 @@ test("offline lifecycle recovery restores an exact CFI then reconciles canonical
   expect(cached.locator).toMatch(/^epubcfi\(/);
   expect(cached.baseRevision).toBe(progressState.current.revision);
 
-  await page.getByRole("button", { name: /Books library/ }).click();
+  await page.getByRole("button", { name: "Book details" }).click();
   offline = false;
   progressWrites.length = 0;
   await page.getByRole("button", { name: "Continue reading" }).click();

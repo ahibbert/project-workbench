@@ -162,6 +162,11 @@ test("landscape touch iPads keep distraction-free mode and keyboard recovery", a
   await openDemo(page);
 
   await expect(page.locator("body")).toHaveClass(/\breader-focus\b/);
+  await page.getByRole("button", { name: "Show reader controls" }).click();
+  await expect(page.locator("body")).not.toHaveClass(/\breader-chrome-hidden\b/);
+  const stageBox = await page.locator("#stage").boundingBox();
+  await page.locator("#stage").click({ position: { x: stageBox.width / 2, y: stageBox.height / 2 } });
+  await expect(page.locator("body")).toHaveClass(/\breader-chrome-hidden\b/);
   const initialPanel = await page.locator("#panel-stat").textContent();
   await page.keyboard.press("PageDown");
   await expect(page.locator("#panel-stat")).not.toHaveText(initialPanel || "");

@@ -1,5 +1,9 @@
 import { expect, test } from "@playwright/test";
 
+// Smoke tests stub the backend. Block the production service worker so its own
+// network requests cannot bypass Playwright's API routes.
+test.use({ serviceWorkers: "block" });
+
 async function stubBackend(page) {
   await page.route("**/api/**", async (route) => {
     await route.fulfill({
@@ -14,7 +18,7 @@ function watchRuntimeErrors(page) {
   const errors = [];
   page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
   page.on("console", (message) => {
-    if (message.type() === "error") errors.push(`console: ${message.text()}`);
+    if (message.type() === "error") errors.push(`console: ${message.text()} (${message.location().url || "unknown"})`);
   });
   return errors;
 }

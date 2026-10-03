@@ -555,6 +555,11 @@ body.book-reader-active .books-content {
   --epub-reader-color: #e4e5df;
 }
 
+.epub-reader {
+  --epub-toolbar-reserve: calc(env(safe-area-inset-top) + 3.25rem);
+  --epub-footer-reserve: calc(env(safe-area-inset-bottom) + 5.6rem);
+}
+
 .epub-toolbar,
 .epub-footer {
   position: absolute;
@@ -587,9 +592,12 @@ body.book-reader-active .books-content {
   justify-content: center;
   gap: 1rem;
   min-height: 2.85rem;
-  padding: 0.45rem max(0.8rem, env(safe-area-inset-right)) max(0.45rem, env(safe-area-inset-bottom)) max(0.8rem, env(safe-area-inset-left));
+  /* Float above the home indicator. The safe area belongs to positioning,
+     not to both the card's padding and its margin. */
+  padding: 0.45rem max(0.8rem, env(safe-area-inset-right)) 0.45rem max(0.8rem, env(safe-area-inset-left));
   width: min(34rem, calc(100% - max(1rem, env(safe-area-inset-left)) - max(1rem, env(safe-area-inset-right))));
-  margin: 0.55rem auto max(0.55rem, env(safe-area-inset-bottom));
+  margin: 0.55rem auto 0;
+  bottom: max(0.55rem, env(safe-area-inset-bottom));
   border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
   border-radius: 18px;
   box-shadow: 0 12px 34px rgba(35, 42, 37, 0.16);
@@ -680,9 +688,9 @@ body.book-reader-active .books-content {
   overflow: hidden;
   background: inherit;
   touch-action: pan-y pinch-zoom;
-  padding-top: calc(env(safe-area-inset-top) + 3.25rem);
+  padding-top: var(--epub-toolbar-reserve);
   padding-right: env(safe-area-inset-right);
-  padding-bottom: env(safe-area-inset-bottom);
+  padding-bottom: var(--epub-footer-reserve);
   padding-left: env(safe-area-inset-left);
 }
 
@@ -750,7 +758,7 @@ body.book-reader-active .books-content {
   color: var(--epub-reader-color);
   font-size: 0.8rem;
   letter-spacing: 0.12rem;
-  opacity: 0.42;
+  opacity: 0.78;
   transform: translateX(-50%);
   -webkit-tap-highlight-color: transparent;
 }
@@ -777,7 +785,9 @@ body.book-reader-active .books-content {
   transform: translate(-50%, -50%);
 }
 
-.epub-reader[data-flow="paginated"] .epub-centre-restore { display: block; }
+/* EPUB iframe taps are forwarded by the reader itself. A transparent parent
+   overlay would steal native text selection, footnotes and links. */
+.epub-centre-restore { display: none; }
 
 .epub-settings {
   position: relative;

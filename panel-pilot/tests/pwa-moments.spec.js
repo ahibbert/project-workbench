@@ -64,11 +64,11 @@ test("a reader panel can be saved, downloaded, browsed, and removed as a high-re
   await expect(page.locator("#moment-rediscovery")).toBeVisible();
   await expect(page.locator("#moment-rediscovery-card .moment-card-featured")).toContainText("Demo chapter");
   await expect(page.locator("#moments-grid .moment-download")).toHaveAttribute("download", /\.jpg$/);
-  await expect(page.locator("#moments-count")).toHaveText("1 saved");
+  await expect(page.locator("#moments-count")).toHaveText("1 of 1 saved");
 
   page.once("dialog", (dialog) => dialog.accept());
   await page.locator("#moments-grid").getByRole("button", { name: "Remove" }).click();
   await expect(page.locator("#moments-grid .moment-card")).toHaveCount(0);
   await expect(page.locator("#moment-rediscovery")).toBeHidden();
-  await expect(page.locator("#moments-count")).toHaveText("0 saved");
+  await expect(page.locator("#moments-count")).toHaveText("0 of 0 saved");
 });

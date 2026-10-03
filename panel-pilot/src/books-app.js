@@ -484,9 +484,9 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
 
   function downloadLabel(download) {
     return {
-      queued: "Queued in Shelfmark",
+      queued: "Queued",
       downloading: "Downloading",
-      importing: "Waiting for CWA import",
+      importing: "Adding to your library",
       ready: "In library",
       failed: "Failed",
       cancelled: "Cancelled",
@@ -519,7 +519,9 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
       )).slice(0, 8);
       if (!visibleDownloads.length) return;
       const section = element("section", "books-downloads");
-      section.append(element("h2", "", "Acquisition activity"));
+      // This is deliberately a reader-facing summary rather than a Shelfmark/CWA
+      // dashboard. Individual states still describe the actual work in progress.
+      section.append(element("h2", "", "Book activity"));
       for (const download of visibleDownloads) {
         const row = element("div", "books-download-row");
         row.dataset.state = download.status;
@@ -577,7 +579,7 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
     recommendationRail.append(element("p", "books-loading", "Finding book recommendations…"));
     recommendations.append(recommendationHeading, recommendationRail);
     const panel = element("section", "panel books-search-panel");
-    panel.append(element("h2", "", "Find a book"), element("p", "books-search-help", "Search for a title or author, then choose the EPUB edition you want to add."));
+    panel.append(element("h2", "", "Find a book"), element("p", "books-search-help", "Search by title or author, then choose the EPUB edition you want to read."));
     const form = element("form", "books-search-form");
     const input = element("input");
     input.type = "search";
@@ -596,7 +598,7 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       submit.disabled = true;
-      results.replaceChildren(element("p", "books-loading", "Searching Shelfmark…"));
+      results.replaceChildren(element("p", "books-loading", "Finding editions…"));
       try {
         const query = recommendedQuery || input.value.trim();
         recommendedQuery = "";
@@ -614,7 +616,7 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
           const copy = element("span");
           copy.append(element("strong", "", book.title), element("small", "", [bookByline(book), book.publishedDate, book.language].filter(Boolean).join(" · ")));
           const existing = Number(book.catalogBookId || 0);
-          result.append(copy, element("span", "", book.inLibrary ? "In library" : existing ? "Add ›" : "Choose ›"));
+          result.append(copy, element("span", "", book.inLibrary ? "In library" : existing ? "Add to library ›" : "Choose an edition ›"));
           result.disabled = Boolean(book.inLibrary);
           if (existing && !book.inLibrary) {
             result.addEventListener("click", async () => {
@@ -652,7 +654,10 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
     panel.append(form, results);
     const downloadHost = element("div");
     downloadHost.id = "books-downloads-container";
-    content.replaceChildren(mediaSwitch, recommendations, panel, downloadHost);
+    // Choosing a book is the primary Browse task. Recommendations remain close
+    // by, but never force a mobile reader to scroll past a horizontal rail before
+    // they can search for a title they already have in mind.
+    content.replaceChildren(mediaSwitch, panel, recommendations, downloadHost);
     void renderDownloads(downloadHost);
     void request("/api/book-recommendations?limit=12").then((payload) => {
       recommendationRail.replaceChildren();
@@ -686,22 +691,23 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
           ? `Next in ${recommendation.series?.name || "your series"}`
           : recommendation.reason?.seedTitles?.length ? `Because you read ${recommendation.reason.seedTitles[0]}` : "Selected for your library";
         copy.append(element("small", "book-recommendation-reason", reason));
-        const readThis = element("button", "mini-button", "Read this");
-        readThis.type = "button";
-        readThis.addEventListener("click", () => {
+        const findEdition = element("button", "mini-button", "Find this book");
+        findEdition.type = "button";
+        findEdition.addEventListener("click", () => {
           input.value = recommendation.title;
           recommendedQuery = recommendation.identifiers?.isbn?.[0]
             || [recommendation.title, recommendation.authors?.[0]].filter(Boolean).join(" ");
           form.requestSubmit();
           panel.scrollIntoView({ behavior: "smooth", block: "start" });
         });
-        card.append(copy, readThis);
+        card.append(copy, findEdition);
         recommendationRail.append(card);
       });
     }).catch((error) => {
       recommendationRail.replaceChildren(element("p", "books-error", error.message));
     });
-    input.focus({ preventScroll: true });
+    // Do not focus on entry: focusing a search input immediately opens the iOS
+    // keyboard and hides the recommendations before the reader has chosen to search.
     const initial = new URLSearchParams(bookQuery);
     const initialQuery = initial.get("query")?.trim() || "";
     if (initialQuery) {
@@ -787,7 +793,7 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
         if (release.attemptStatus === "failed" && release.attemptErrorAction) {
           copy.append(element("small", "book-release-action", release.attemptErrorAction));
         }
-        const add = element("button", release.attemptStatus ? "mini-button" : "primary-button", release.attemptStatus === "failed" ? "Retry this record" : "Add to Library");
+        const add = element("button", release.attemptStatus ? "mini-button" : "primary-button", release.attemptStatus === "failed" ? "Try this EPUB again" : "Get this EPUB");
         add.type = "button";
         add.dataset.booksAction = "queue-release";
         add.dataset.releaseIndex = releaseIndex;
@@ -844,7 +850,7 @@ export function createBooksApp({ root, navigate, onLibraryChange = () => {} }) {
       const detail = route.bookRoute === "book-detail";
       heading.textContent = searching ? "Browse books" : detail ? "Book details" : "Books";
       subtitle.textContent = searching
-        ? "Search Shelfmark and add an EPUB to your library"
+        ? "Find an EPUB edition to add to your library"
         : detail ? "Your text library" : "Your EPUB library from Calibre-Web Automated";
       actions.hidden = searching || detail || route.bookRoute === "book-read";
       if (route.bookRoute !== "book-read") leaveReader();

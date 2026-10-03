@@ -199,7 +199,7 @@ export async function createEpubReader({ root, book, progress, preferences, pref
   reader.dataset.theme = preferences.theme;
   reader.dataset.flow = preferences.readingFlow;
   const toolbar = node("header", "epub-toolbar");
-  const back = node("button", "epub-tool epub-back", "‹ Books library");
+  const back = node("button", "epub-tool epub-back", "‹ Book details");
   back.type = "button";
   const titleGroup = node("div", "epub-title-group");
   const title = node("strong", "epub-reader-title", book.title);
@@ -712,12 +712,16 @@ export async function createEpubReader({ root, book, progress, preferences, pref
     if (!visible && settings.open) settings.open = false;
     reader.classList.toggle("epub-chrome-hidden", !visible);
     reader.dataset.controlsVisible = visible ? "true" : "false";
+    // Opacity alone leaves invisible reader chrome in the tab order on iOS.
+    // Keep the actual reading surface and explicit recovery handle available.
+    [toolbar, footer].forEach((surface) => {
+      surface.inert = !visible;
+      surface.setAttribute("aria-hidden", String(!visible));
+    });
     centreRestore.setAttribute("aria-label", visible ? "Hide reader controls from page centre" : "Show reader controls from page centre");
     if (visible && linger && !settings.open && !toc.open) {
       controlsTimer = window.setTimeout(() => {
-        reader.classList.add("epub-chrome-hidden");
-        reader.dataset.controlsVisible = "false";
-        centreRestore.setAttribute("aria-label", "Show reader controls from page centre");
+        setControlsVisible(false, false);
       }, 5000);
     }
   }
