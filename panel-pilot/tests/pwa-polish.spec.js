@@ -177,6 +177,7 @@ async function installPolishFixture(page, { holdStoredChapters = false, detailCh
   const items = structuredClone(seededLibrary);
   let storedQueries = 0;
   let searchRequests = 0;
+  const searchQueries = [];
   const progressMutations = [];
   const downloadBufferRequests = [];
 
@@ -219,6 +220,7 @@ async function installPolishFixture(page, { holdStoredChapters = false, detailCh
           data = { fetchSourceManga: { hasNextPage: false, mangas: [] } };
         } else {
           searchRequests += 1;
+          searchQueries.push(requested);
           if (requested === "First request") {
             firstSearchStarted.resolve();
             await releaseFirstSearch.promise;
@@ -227,7 +229,11 @@ async function installPolishFixture(page, { holdStoredChapters = false, detailCh
             ? [searchManga("First Focus Card", 9101), searchManga("Second Focus Card", 9102)]
             : requested === "Paged results"
               ? [searchManga(input.page === 1 ? "Paged result one" : "Paged result two", input.page === 1 ? 9301 : 9302)]
-            : [searchManga(`${requested} result`, requested === "First request" ? 9201 : 9202)];
+              : requested === "Star Wars Legacy"
+                ? [searchManga("Star Ocean: Till the End of Time", 9401), searchManga("Star Wars", 9402)]
+                : requested === "Star Wars"
+                  ? [searchManga("Journey to Star Wars", 9403), searchManga("Star Wars: Legacy (2006)", 9404)]
+              : [searchManga(`${requested} result`, requested === "First request" ? 9201 : 9202)];
           data = { fetchSourceManga: { hasNextPage: requested === "Paged results" && input.page === 1, mangas: results } };
         }
       } else if (query.includes("GET_MANGA_CHAPTERS_FETCH")) {
@@ -339,6 +345,7 @@ async function installPolishFixture(page, { holdStoredChapters = false, detailCh
     releaseFirstSearch: () => releaseFirstSearch.resolve(),
     releaseStoredChapters: () => releaseStored.resolve(),
     searchRequests: () => searchRequests,
+    searchQueries: () => [...searchQueries],
     progressMutations,
     downloadBufferRequests,
     storedQueries: () => storedQueries,
@@ -413,6 +420,18 @@ test("Browse search is latest-request-wins when the first response arrives last"
   await expect(page.locator("#manga-results .browse-card")).toHaveCount(1);
   await expect(page.locator("#manga-results")).toContainText("Second request result");
   await expect(page.locator("#manga-results")).not.toContainText("First request result");
+});
+
+test("Browse broadens an overly-specific series search and ranks the real title first", async ({ page }) => {
+  const fixture = await installPolishFixture(page);
+  await openReadyBrowse(page);
+
+  await page.locator("#search-query").fill("Star Wars Legacy");
+  await page.locator("#search-source").click();
+
+  await expect.poll(() => fixture.searchQueries()).toEqual(["Star Wars Legacy", "Star Wars"]);
+  await expect(page.locator("#manga-results .manga-card").first()).toContainText("Star Wars: Legacy (2006)");
+  await expect(page.locator("#manga-results")).toContainText("Broadened search · Star Wars");
 });
 
 test("a blank replacement search cancels an older request instead of restoring stale results", async ({ page }) => {

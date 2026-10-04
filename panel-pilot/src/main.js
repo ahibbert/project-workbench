@@ -4006,7 +4006,7 @@ async function searchSource() {
     const results = [];
     const failures = [];
     const observations = [];
-    const pageStates = sources.map((source) => ({ source, nextPage: 2, hasNextPage: false }));
+    const pageStates = sources.map((source) => ({ source, query, nextPage: 2, hasNextPage: false }));
     let searched = 0;
     await mapWithConcurrency(sources, 3, async (source) => {
       const startedAt = performance.now();
@@ -4014,12 +4014,45 @@ async function searchSource() {
         const data = await graphQL(queries.searchSource, {
           input: { source: source.id, query, page: 1, type: "SEARCH" },
         }, { timeoutMs: 12000, signal: searchController.signal });
-        const mangas = data.fetchSourceManga?.mangas || [];
+        const primaryMangas = data.fetchSourceManga?.mangas || [];
+        let mangas = primaryMangas;
+        let effectiveQuery = query;
+        let hasNextPage = Boolean(data.fetchSourceManga?.hasNextPage && primaryMangas.length);
+        // Source search syntax varies a great deal. A precise series title can
+        // return nothing from a comic source while its shorter parent title
+        // returns the right issue/series. Only broaden when the first response
+        // has no title that actually satisfies the original words.
+        const fallbackQuery = broaderSourceSearchQuery(query);
+        if (fallbackQuery && !hasStrongMangaTitleMatch(primaryMangas, query)) {
+          try {
+            const fallbackData = await graphQL(queries.searchSource, {
+              input: { source: source.id, query: fallbackQuery, page: 1, type: "SEARCH" },
+            }, { timeoutMs: 12000, signal: searchController.signal });
+            const fallbackMangas = (fallbackData.fetchSourceManga?.mangas || []).map((manga) => ({
+              ...manga,
+              sourceId: manga.sourceId || source.id,
+              searchFallbackQuery: fallbackQuery,
+            }));
+            mangas = uniqueMangaResults([
+              ...primaryMangas.map((manga) => ({ ...manga, sourceId: manga.sourceId || source.id })),
+              ...fallbackMangas,
+            ]);
+            effectiveQuery = fallbackQuery;
+            hasNextPage = Boolean(fallbackData.fetchSourceManga?.hasNextPage && fallbackMangas.length);
+          } catch (fallbackError) {
+            if (fallbackError?.name === "ReaderLoadCancelled") throw fallbackError;
+            // A source's optional broader retry must not discard its useful
+            // primary response or mark the source unavailable.
+          }
+        }
         mangas.forEach((manga) => {
           results.push({ ...manga, sourceId: manga.sourceId || source.id });
         });
         const pageState = pageStates.find((entry) => String(entry.source.id) === String(source.id));
-        if (pageState) pageState.hasNextPage = Boolean(data.fetchSourceManga?.hasNextPage && mangas.length);
+        if (pageState) {
+          pageState.query = effectiveQuery;
+          pageState.hasNextPage = hasNextPage;
+        }
         observations.push(makeSourceObservation(source, "search", "success", startedAt, sourceChoiceMediaFormat()));
       } catch (error) {
         if (!isCurrentSearch() || error?.name === "ReaderLoadCancelled") return;
@@ -4191,6 +4224,34 @@ function searchIndexedMangas(query, sources) {
   );
 }
 
+function broaderSourceSearchQuery(query) {
+  const terms = String(query || "").trim().split(/\s+/).filter(Boolean);
+  // One word has nothing useful to broaden, and dropping multiple words at
+  // once becomes too noisy. “Star Wars Legacy” becomes “Star Wars”.
+  return terms.length >= 3 ? terms.slice(0, -1).join(" ") : "";
+}
+
+function mangaTitleRelevance(title, query) {
+  const normalizedTitle = normalizeTitle(title);
+  const normalizedQuery = normalizeTitle(query);
+  if (!normalizedTitle || !normalizedQuery) return 99;
+  if (normalizedTitle === normalizedQuery) return 0;
+  if (normalizedTitle.startsWith(`${normalizedQuery} `)) return 1;
+  if (normalizedTitle.includes(normalizedQuery)) return 2;
+  const terms = normalizedQuery.split(" ").filter(Boolean);
+  const positions = terms.map((term) => normalizedTitle.indexOf(term));
+  if (positions.every((position) => position >= 0)) {
+    const ordered = positions.every((position, index) => index === 0 || position > positions[index - 1]);
+    return ordered ? 3 : 4;
+  }
+  const matchedTerms = positions.filter((position) => position >= 0).length;
+  return 10 + (terms.length - matchedTerms) * 2;
+}
+
+function hasStrongMangaTitleMatch(results, query) {
+  return results.some((manga) => mangaTitleRelevance(manga?.title, query) <= 4);
+}
+
 function uniqueMangaResults(results) {
   const seen = new Set();
   return results.filter((manga) => {
@@ -4210,6 +4271,8 @@ function sortMangaResults(results, query) {
     const aExact = aTitle === normalizedQuery ? 0 : 1;
     const bExact = bTitle === normalizedQuery ? 0 : 1;
     if (aExact !== bExact) return aExact - bExact;
+    const relevanceDifference = mangaTitleRelevance(a.title, query) - mangaTitleRelevance(b.title, query);
+    if (relevanceDifference) return relevanceDifference;
     if (desiredFormat) {
       const aFormat = resultSourceMediaFormat(a) === desiredFormat ? 0 : 1;
       const bFormat = resultSourceMediaFormat(b) === desiredFormat ? 0 : 1;
@@ -4270,12 +4333,13 @@ function sourceReliabilityScore(sourceId) {
 }
 
 function sourceProfileResultMeta(manga, resultIndex, fallback) {
+  const matchNote = manga.searchFallbackQuery ? `Broadened search · ${manga.searchFallbackQuery}` : fallback;
   const profile = state.sourceProfiles.get(String(manga.sourceId));
-  if (!profile?.attempts) return fallback;
+  if (!profile?.attempts) return matchNote;
   const signal = profile.confidence === "early" ? "early signal" : profile.confidence;
-  if (resultIndex === 0) return `Recommended · ${profile.score}/100 · ${signal}`;
+  if (resultIndex === 0) return `Recommended · ${profile.score}/100 · ${signal}${manga.searchFallbackQuery ? ` · ${matchNote}` : ""}`;
   if (profile.consecutiveFailures) return `Recent failures · ${profile.score}/100`;
-  return `${profile.score}/100 reliability · ${signal}`;
+  return `${profile.score}/100 reliability · ${signal}${manga.searchFallbackQuery ? ` · ${matchNote}` : ""}`;
 }
 
 function sourceChoiceResultMeta(manga, resultIndex, fallback) {
@@ -4615,7 +4679,7 @@ async function loadMoreSearchResults(returnFocusTarget) {
       try {
         const page = pageState.nextPage;
         const data = await graphQL(queries.searchSource, {
-          input: { source: pageState.source.id, query: pagination.query, page, type: "SEARCH" },
+          input: { source: pageState.source.id, query: pageState.query || pagination.query, page, type: "SEARCH" },
         }, { timeoutMs: 12000, signal: searchController.signal });
         if (!isCurrentSearch()) return;
         const mangas = data.fetchSourceManga?.mangas || [];
