@@ -3453,23 +3453,14 @@ function setReaderChromeVisible(visible, { refit = true } = {}) {
 
 function updateReaderFocusRecoveryAction() {
   if (!el.stage) return;
-  const hidden = state.readerFocus && !state.readerChromeVisible;
-  // The stage must remain a reading surface: turning it into a button causes
-  // the shared keyboard and press-and-hold readers to treat every page as a
-  // control. Reuse the existing overview hint as the compact named recovery.
+  // The stage remains the single recovery surface. Turning it into a button
+  // causes the shared keyboard and press-and-hold readers to treat every page
+  // as a control, so keep its semantic role as a reading region.
   el.stage.setAttribute("role", "region");
   el.stage.setAttribute("aria-label", "Panel reading stage");
   const hint = el.readerOverviewHint;
   if (!hint) return;
-  const recovery = hidden && !state.readerOverview;
-  if (recovery) {
-    hint.dataset.recovery = "true";
-    hint.textContent = "•••";
-    hint.setAttribute("role", "button");
-    hint.setAttribute("aria-label", "Show reader controls");
-    hint.tabIndex = 0;
-    hint.hidden = false;
-  } else if (hint.dataset.recovery === "true") {
+  if (hint.dataset.recovery === "true") {
     delete hint.dataset.recovery;
     hint.removeAttribute("role");
     hint.removeAttribute("aria-label");
@@ -15470,18 +15461,6 @@ function wireEvents() {
     if (!el.readerOptions) return;
     el.readerOptions.open = false;
     el.readerOptions.querySelector("summary")?.focus({ preventScroll: true });
-  });
-  el.readerOverviewHint?.addEventListener("click", (event) => {
-    if (el.readerOverviewHint.dataset.recovery !== "true") return;
-    event.preventDefault();
-    event.stopPropagation();
-    setReaderChromeVisible(true);
-  });
-  el.readerOverviewHint?.addEventListener("keydown", (event) => {
-    if (el.readerOverviewHint.dataset.recovery === "true" && (event.key === "Enter" || event.key === " ")) {
-      event.preventDefault();
-      setReaderChromeVisible(true);
-    }
   });
   bindOptionsSwipe();
 

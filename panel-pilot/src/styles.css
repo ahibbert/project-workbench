@@ -3153,18 +3153,6 @@ body.has-network-status.reader-focus .reader-topbar {
   text-align: center;
 }
 
-.reader-overview-hint[data-recovery="true"] {
-  min-width: 3.25rem;
-  min-height: 2.75rem;
-  display: grid;
-  place-items: center;
-  padding: 0;
-  background: rgba(24, 44, 43, 0.62);
-  cursor: pointer;
-  letter-spacing: 0.12rem;
-  pointer-events: auto;
-}
-
 .device-storage-group {
   min-width: 0;
   margin: 0;

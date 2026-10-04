@@ -1121,7 +1121,7 @@ test("EPUB footnotes open as readable popovers without losing the current page",
   await expect(page.frameLocator(".epub-viewport iframe").locator("body")).toContainText("Alice was beginning");
 });
 
-test("iOS-style content touches always escape distraction-free reading in both flows", async ({ page }) => {
+test("iOS-style content touches always toggle reader controls in both flows without a recovery button", async ({ page }) => {
   await stubApp(page, { booksEnabled: true });
   await openEpubReader(page);
 
@@ -1154,7 +1154,7 @@ test("iOS-style content touches always escape distraction-free reading in both f
     }
     await tapContent();
     await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "false");
-    await expect(page.getByRole("button", { name: "Show reader controls", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Show reader controls", exact: true })).toHaveCount(0);
     await page.waitForTimeout(400);
     await tapContent();
     await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "true");
@@ -1163,11 +1163,12 @@ test("iOS-style content touches always escape distraction-free reading in both f
 
   await tapContent();
   await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "false");
-  await page.getByRole("button", { name: "Show reader controls", exact: true }).click();
+  await page.waitForTimeout(400);
+  await tapContent();
   await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "true");
 });
 
-test("hidden paginated EPUB preserves prose interaction and an explicit recovery action", async ({ page }) => {
+test("hidden paginated EPUB preserves prose interaction and restores controls with a centre tap", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await stubApp(page, { booksEnabled: true });
   await openEpubReader(page);
@@ -1182,23 +1183,21 @@ test("hidden paginated EPUB preserves prose interaction and an explicit recovery
 
   const geometry = await page.locator(".epub-reader").evaluate((reader) => {
     const stage = reader.querySelector(".epub-stage");
-    const zone = reader.querySelector(".epub-centre-restore");
-    const handle = reader.querySelector(".epub-restore-controls");
     const viewport = reader.querySelector(".epub-viewport");
     const stageRect = stage.getBoundingClientRect();
-    const zoneRect = zone.getBoundingClientRect();
-    const handleRect = handle.getBoundingClientRect();
     const viewportRect = viewport.getBoundingClientRect();
-    const hit = document.elementFromPoint(zoneRect.left + zoneRect.width / 2, zoneRect.top + zoneRect.height / 2);
     return {
-      zoneDisplay: getComputedStyle(zone).display,
-      centreHit: hit === zone,
-      contentClearsHandle: viewportRect.top >= handleRect.bottom - 1,
+      footerGap: Math.round(stageRect.bottom - viewportRect.bottom),
+      recoveryButtons: reader.querySelectorAll(".epub-restore-controls, .epub-centre-restore").length,
     };
   });
-  expect(geometry).toMatchObject({ zoneDisplay: "none", centreHit: false, contentClearsHandle: true });
+  expect(geometry).toMatchObject({ footerGap: 0, recoveryButtons: 0 });
 
-  await page.getByRole("button", { name: "Show reader controls", exact: true }).click();
+  await page.waitForTimeout(250);
+  await body.evaluate((element) => {
+    const view = element.ownerDocument.defaultView;
+    element.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: view.innerWidth / 2, clientY: view.innerHeight / 2 }));
+  });
   await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "true");
   await page.waitForTimeout(500);
   await body.evaluate((element) => {
@@ -1206,7 +1205,11 @@ test("hidden paginated EPUB preserves prose interaction and an explicit recovery
     element.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: view.innerWidth / 2, clientY: view.innerHeight / 2 }));
   });
   await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "false");
-  await page.getByRole("button", { name: "Show reader controls", exact: true }).click();
+  await page.waitForTimeout(250);
+  await body.evaluate((element) => {
+    const view = element.ownerDocument.defaultView;
+    element.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: view.innerWidth / 2, clientY: view.innerHeight / 2 }));
+  });
   await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "true");
 
   await page.locator(".epub-settings summary").click();
@@ -1222,7 +1225,7 @@ test("hidden paginated EPUB preserves prose interaction and an explicit recovery
     element.dispatchEvent(new PointerEvent("pointerup", point));
   });
   await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "false");
-  await expect(page.locator(".epub-centre-restore")).toBeHidden();
+  await expect(page.getByRole("button", { name: "Show reader controls", exact: true })).toHaveCount(0);
 });
 
 test("offline lifecycle recovery restores an exact CFI then reconciles canonically", async ({ page }) => {

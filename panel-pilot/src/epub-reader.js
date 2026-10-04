@@ -228,14 +228,7 @@ export async function createEpubReader({ root, book, progress, preferences, pref
   const next = node("button", "epub-page-control epub-next");
   next.type = "button";
   next.setAttribute("aria-label", "Next page");
-  const restoreControls = node("button", "epub-restore-controls", "•••");
-  restoreControls.type = "button";
-  restoreControls.setAttribute("aria-label", "Show reader controls");
-  restoreControls.title = "Show reader controls";
-  const centreRestore = node("button", "epub-centre-restore");
-  centreRestore.type = "button";
-  centreRestore.setAttribute("aria-label", "Show reader controls from page centre");
-  stage.append(viewport, loading, previous, next, centreRestore, restoreControls);
+  stage.append(viewport, loading, previous, next);
 
   const footer = node("footer", "epub-footer");
   const progressCopy = node("div", "epub-progress-copy");
@@ -730,12 +723,11 @@ export async function createEpubReader({ root, book, progress, preferences, pref
     reader.classList.toggle("epub-chrome-hidden", !visible);
     reader.dataset.controlsVisible = visible ? "true" : "false";
     // Opacity alone leaves invisible reader chrome in the tab order on iOS.
-    // Keep the actual reading surface and explicit recovery handle available.
+    // The reading surface itself remains the single way to restore chrome.
     [toolbar, footer].forEach((surface) => {
       surface.inert = !visible;
       surface.setAttribute("aria-hidden", String(!visible));
     });
-    centreRestore.setAttribute("aria-label", visible ? "Hide reader controls from page centre" : "Show reader controls from page centre");
     if (visible && linger && !settings.open && !toc.open) {
       controlsTimer = window.setTimeout(() => {
         setControlsVisible(false, false);
@@ -1061,7 +1053,9 @@ export async function createEpubReader({ root, book, progress, preferences, pref
       // Some iOS WebKit builds do not deliver pointerup reliably inside the
       // EPUB iframe. The click path keeps the centre control toggle available
       // without double-handling browsers that delivered both events.
-      if (Date.now() < suppressTapUntil || Date.now() - lastHandledGesture < 450 || hasTextSelection(document)) return;
+      // Ignore the synthetic click from the same touch, but keep a deliberate
+      // second centre tap responsive instead of making recovery feel stuck.
+      if (Date.now() < suppressTapUntil || Date.now() - lastHandledGesture < 220 || hasTextSelection(document)) return;
       handleReaderTap(event.clientX / Math.max(1, contents.window.innerWidth));
       lastHandledGesture = Date.now();
     });
@@ -1180,25 +1174,6 @@ export async function createEpubReader({ root, book, progress, preferences, pref
   back.addEventListener("click", onExit);
   previous.addEventListener("click", () => navigateReadingStep(-1));
   next.addEventListener("click", () => navigateReadingStep(1));
-  restoreControls.addEventListener("click", () => setControlsVisible(true, false));
-  let centrePressStarted = 0;
-  let suppressCentreClickUntil = 0;
-  const startCentrePress = () => { centrePressStarted = Date.now(); };
-  const finishCentrePress = () => {
-    if (centrePressStarted && Date.now() - centrePressStarted >= 500) suppressCentreClickUntil = Date.now() + 1000;
-    centrePressStarted = 0;
-  };
-  centreRestore.addEventListener("pointerdown", startCentrePress, { passive: true });
-  centreRestore.addEventListener("pointerup", finishCentrePress, { passive: true });
-  centreRestore.addEventListener("pointercancel", finishCentrePress, { passive: true });
-  centreRestore.addEventListener("touchstart", startCentrePress, { passive: true });
-  centreRestore.addEventListener("touchend", finishCentrePress, { passive: true });
-  centreRestore.addEventListener("touchcancel", finishCentrePress, { passive: true });
-  centreRestore.addEventListener("click", () => {
-    if (Date.now() >= suppressCentreClickUntil && !hasTextSelection(document)) {
-      setControlsVisible(reader.classList.contains("epub-chrome-hidden"), false);
-    }
-  });
   tocButton.addEventListener("click", () => { showBookMenuPanel("contents"); toc.showModal(); setControlsVisible(true, false); });
   fullscreenButton.addEventListener("click", () => { void toggleFullscreen(); });
   contentsTab.addEventListener("click", () => showBookMenuPanel("contents"));

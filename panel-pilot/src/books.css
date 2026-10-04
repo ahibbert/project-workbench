@@ -744,52 +744,6 @@ body.book-reader-active .books-content {
   opacity: 1;
 }
 
-.epub-restore-controls {
-  position: absolute;
-  top: max(0.45rem, env(safe-area-inset-top));
-  left: 50%;
-  z-index: 5;
-  display: none;
-  min-width: 3.25rem;
-  min-height: 2.75rem;
-  padding: 0;
-  border: 0;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--epub-reader-color) 10%, transparent);
-  color: var(--epub-reader-color);
-  font-size: 0.8rem;
-  letter-spacing: 0.12rem;
-  opacity: 0.78;
-  transform: translateX(-50%);
-  -webkit-tap-highlight-color: transparent;
-}
-
-.epub-reader.epub-chrome-hidden .epub-restore-controls { display: block; }
-.epub-restore-controls:is(:hover, :focus-visible) { opacity: 1; }
-
-.epub-centre-restore {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  z-index: 4;
-  display: none;
-  width: min(34%, 10rem);
-  height: min(22%, 9rem);
-  min-width: 5rem;
-  min-height: 5rem;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  -webkit-tap-highlight-color: transparent;
-  touch-action: manipulation;
-  transform: translate(-50%, -50%);
-}
-
-/* EPUB iframe taps are forwarded by the reader itself. A transparent parent
-   overlay would steal native text selection, footnotes and links. */
-.epub-centre-restore { display: none; }
-
 .epub-settings {
   position: relative;
 }
