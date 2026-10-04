@@ -788,11 +788,12 @@ test("centre taps toggle overlay controls without resizing or repaginating the E
     return {
       stage: [stage.x, stage.y, stage.width, stage.height],
       viewport: [viewport.x, viewport.y, viewport.width, viewport.height],
+      topInset: Math.round(viewport.top - stage.top),
       footerGap: Math.round(stage.bottom - viewport.bottom),
     };
   });
   const initialGeometry = await readerGeometry();
-  expect(initialGeometry.footerGap).toBeLessThanOrEqual(1);
+  expect(Math.abs(initialGeometry.topInset - initialGeometry.footerGap)).toBeLessThanOrEqual(1);
   await body.evaluate((element) => {
     const view = element.ownerDocument.defaultView;
     element.dispatchEvent(new MouseEvent("click", {

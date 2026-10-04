@@ -151,6 +151,10 @@ export async function createEpubReader({ root, book, progress, preferences, pref
   let bookMoments = [];
   const renderedMomentLocators = new Set();
   const emergencyPositionKey = `panel-pilot:book-position:${accountId ? `${accountId}:` : ""}${book.id}`;
+  const themeColorMeta = document.querySelector('meta[name="theme-color"]');
+  const originalThemeColor = themeColorMeta?.getAttribute("content") || "";
+  const originalDocumentBackground = document.documentElement.style.backgroundColor;
+  const originalBodyBackground = document.body.style.backgroundColor;
 
   function readEmergencyPosition() {
     try {
@@ -477,6 +481,14 @@ export async function createEpubReader({ root, book, progress, preferences, pref
   function applyPreferences() {
     reader.dataset.theme = preferences.theme;
     reader.dataset.flow = preferences.readingFlow;
+    // In an installed iOS web app with `black-translucent`, the page paints
+    // beneath the status area. Matching the outer document to the reader
+    // palette makes that area sepia/dark too. Safari tabs may still keep
+    // browser chrome under Apple's control, but theme-color helps there.
+    const palette = themePalette(preferences.theme);
+    document.documentElement.style.backgroundColor = palette.background;
+    document.body.style.backgroundColor = palette.background;
+    themeColorMeta?.setAttribute("content", palette.background);
     stage.style.setProperty("--book-content-width", `${preferences.contentWidth}px`);
     stage.style.setProperty("--book-inline-inset", pageWidthInset(preferences.contentWidth));
     rendition?.getContents?.().forEach((contents) => applyDocumentPreferences(contents.document));
@@ -1354,6 +1366,9 @@ export async function createEpubReader({ root, book, progress, preferences, pref
       if (externalDialog.open) externalDialog.close();
       if (footnoteDialog.open) footnoteDialog.close();
       if (lookupDialog.open) lookupDialog.close();
+      document.documentElement.style.backgroundColor = originalDocumentBackground;
+      document.body.style.backgroundColor = originalBodyBackground;
+      if (themeColorMeta) themeColorMeta.setAttribute("content", originalThemeColor || "#ffffff");
       destroyed = true;
     },
   };
