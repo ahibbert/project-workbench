@@ -437,23 +437,40 @@ export async function createEpubReader({ root, book, progress, preferences, pref
     const normalizedLabel = String(label || "").replace(/\s+/g, " ").trim().toLocaleLowerCase();
     if (!normalizedLabel) return;
     const candidates = [...document.body.querySelectorAll("h1, h2, h3, h4, h5, h6, [role='heading'], p, div, span")].slice(0, 40);
+    const applyHeadingStyles = (heading) => {
+      heading.setAttribute("data-panels-section-heading", "true");
+      Object.entries(headingStyles).forEach(([property, value]) => setImportant(heading.style, property.replace(/[A-Z]/g, (match) => `-${match.toLowerCase()}`), value));
+      setImportant(heading.style, "font-size", "1.35em");
+      setImportant(heading.style, "font-weight", "700");
+    };
     const matching = candidates.find((candidate) => (
       String(candidate.textContent || "").replace(/\s+/g, " ").trim().toLocaleLowerCase() === normalizedLabel
     ));
     if (matching) {
-      matching.setAttribute("data-panels-section-heading", "true");
-      Object.entries(headingStyles).forEach(([property, value]) => setImportant(matching.style, property.replace(/[A-Z]/g, (match) => `-${match.toLowerCase()}`), value));
-      setImportant(matching.style, "font-size", "1.35em");
-      setImportant(matching.style, "font-weight", "700");
+      applyHeadingStyles(matching);
       return;
     }
     if (document.body.querySelector("[data-panels-section-heading]") || document.body.querySelector("h1, h2, h3, h4, h5, h6")) return;
+    // Some EPUBs flatten the book title, TOC label and opening prose into one
+    // unstyled paragraph. Promote the known TOC label and remove that metadata
+    // prefix from the prose rather than making a reader encounter it as text.
+    const escapedLabel = String(label).trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+    const embeddedLabel = new RegExp(escapedLabel, "i");
+    const flattened = candidates.find((candidate) => {
+      if (candidate.children.length) return false;
+      const text = String(candidate.textContent || "").replace(/\s+/g, " ").trim();
+      const match = embeddedLabel.exec(text);
+      return match && match.index <= 160 && text.slice(match.index + match[0].length).trim().length >= 24;
+    });
     const heading = document.createElement("h2");
-    heading.dataset.panelsSectionHeading = "true";
     heading.textContent = label;
     document.body.prepend(heading);
-    Object.entries(headingStyles).forEach(([property, value]) => setImportant(heading.style, property.replace(/[A-Z]/g, (match) => `-${match.toLowerCase()}`), value));
-    setImportant(heading.style, "font-size", "1.35em");
+    applyHeadingStyles(heading);
+    if (flattened) {
+      const text = String(flattened.textContent || "").replace(/\s+/g, " ").trim();
+      const match = embeddedLabel.exec(text);
+      flattened.textContent = text.slice(match.index + match[0].length).trimStart();
+    }
   }
 
   function applyPreferences() {
@@ -979,8 +996,15 @@ export async function createEpubReader({ root, book, progress, preferences, pref
     const clearGesture = () => { contentGesture = null; contentTouch = null; };
     const captureOptions = { passive: true, capture: true };
     document.addEventListener("selectionchange", () => captureTextSelection(contents), { passive: true });
-    contents.window.addEventListener("pointerdown", (event) => { contentGesture = { x: event.clientX, y: event.clientY, at: Date.now() }; }, captureOptions);
+    contents.window.addEventListener("pointerdown", (event) => {
+      // iOS emits both Pointer and Touch events for one physical tap. Let the
+      // Touch path own it, otherwise a zero/early pointer coordinate can be
+      // handled first and suppress the actual centre tap.
+      if (event.pointerType === "touch" || contentTouch) return;
+      contentGesture = { x: event.clientX, y: event.clientY, at: Date.now() };
+    }, captureOptions);
     contents.window.addEventListener("pointerup", (event) => {
+      if (event.pointerType === "touch" || contentTouch) return;
       finishGesture(contentGesture, event.clientX, event.clientY, event.target);
       contentGesture = null;
     }, captureOptions);

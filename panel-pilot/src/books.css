@@ -557,7 +557,6 @@ body.book-reader-active .books-content {
 
 .epub-reader {
   --epub-toolbar-reserve: calc(env(safe-area-inset-top) + 3.25rem);
-  --epub-footer-reserve: calc(env(safe-area-inset-bottom) + 5.6rem);
 }
 
 .epub-toolbar,
@@ -690,7 +689,9 @@ body.book-reader-active .books-content {
   touch-action: pan-y pinch-zoom;
   padding-top: var(--epub-toolbar-reserve);
   padding-right: env(safe-area-inset-right);
-  padding-bottom: var(--epub-footer-reserve);
+  /* Reader chrome deliberately floats over the bottom of a page. Reserving
+     its height shortens every EPUB page and leaves a visible dead zone. */
+  padding-bottom: 0;
   padding-left: env(safe-area-inset-left);
 }
 

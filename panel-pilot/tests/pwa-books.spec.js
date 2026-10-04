@@ -785,9 +785,14 @@ test("centre taps toggle overlay controls without resizing or repaginating the E
   const readerGeometry = () => page.locator(".epub-reader").evaluate((reader) => {
     const stage = reader.querySelector(".epub-stage").getBoundingClientRect();
     const viewport = reader.querySelector(".epub-viewport").getBoundingClientRect();
-    return { stage: [stage.x, stage.y, stage.width, stage.height], viewport: [viewport.x, viewport.y, viewport.width, viewport.height] };
+    return {
+      stage: [stage.x, stage.y, stage.width, stage.height],
+      viewport: [viewport.x, viewport.y, viewport.width, viewport.height],
+      footerGap: Math.round(stage.bottom - viewport.bottom),
+    };
   });
   const initialGeometry = await readerGeometry();
+  expect(initialGeometry.footerGap).toBeLessThanOrEqual(1);
   await body.evaluate((element) => {
     const view = element.ownerDocument.defaultView;
     element.dispatchEvent(new MouseEvent("click", {
@@ -853,6 +858,33 @@ test("centre taps toggle overlay controls without resizing or repaginating the E
     dispatch("touchend", [], [touch]);
   });
   await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "false");
+
+  // iOS sends both Pointer and Touch events for the same physical tap. The
+  // touch path must still toggle once rather than being swallowed by the first
+  // pointer event.
+  await page.waitForTimeout(500);
+  await body.evaluate((element) => {
+    const view = element.ownerDocument.defaultView;
+    const touch = { clientX: view.innerWidth / 2, clientY: view.innerHeight / 2 };
+    const pointer = (type) => element.dispatchEvent(new PointerEvent(type, {
+      bubbles: true,
+      pointerType: "touch",
+      pointerId: 7,
+      clientX: touch.clientX,
+      clientY: touch.clientY,
+    }));
+    const touchEvent = (type, touches, changedTouches = touches) => {
+      const event = new Event(type, { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "touches", { value: touches });
+      Object.defineProperty(event, "changedTouches", { value: changedTouches });
+      element.dispatchEvent(event);
+    };
+    pointer("pointerdown");
+    touchEvent("touchstart", [touch]);
+    pointer("pointerup");
+    touchEvent("touchend", [], [touch]);
+  });
+  await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "true");
 });
 
 test("fullscreen falls back to distraction-free controls on unsupported browsers", async ({ page }) => {
