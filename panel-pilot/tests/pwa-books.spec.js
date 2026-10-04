@@ -887,6 +887,17 @@ test("centre taps toggle overlay controls without resizing or repaginating the E
   await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "true");
 });
 
+test("native EPUB centre target restores and hides controls independently of iframe events", async ({ page }) => {
+  await stubApp(page, { booksEnabled: true });
+  await openEpubReader(page);
+  const target = page.locator(".epub-centre-tap-target");
+  await expect(target).toHaveAttribute("aria-label", "Show or hide reader controls");
+  await target.click({ force: true });
+  await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "false");
+  await target.click({ force: true });
+  await expect(page.locator(".epub-reader")).toHaveAttribute("data-controls-visible", "true");
+});
+
 test("fullscreen falls back to distraction-free controls on unsupported browsers", async ({ page }) => {
   await stubApp(page, { booksEnabled: true });
   await page.goto("/", { waitUntil: "networkidle" });

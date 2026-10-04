@@ -228,7 +228,15 @@ export async function createEpubReader({ root, book, progress, preferences, pref
   const next = node("button", "epub-page-control epub-next");
   next.type = "button";
   next.setAttribute("aria-label", "Next page");
-  stage.append(viewport, loading, previous, next);
+  // EPUB content lives in an iframe. Some iOS WebKit builds lose a touch
+  // before it reaches that document, leaving the reader with no way back to
+  // its controls. A small, transparent native button is deliberately above
+  // the iframe so a normal centre tap is always owned by Panels. It does not
+  // show an affordance and leaves the page edges available for navigation.
+  const controlsToggle = node("button", "epub-centre-tap-target");
+  controlsToggle.type = "button";
+  controlsToggle.setAttribute("aria-label", "Show or hide reader controls");
+  stage.append(viewport, loading, previous, next, controlsToggle);
 
   const footer = node("footer", "epub-footer");
   const progressCopy = node("div", "epub-progress-copy");
@@ -1174,6 +1182,9 @@ export async function createEpubReader({ root, book, progress, preferences, pref
   back.addEventListener("click", onExit);
   previous.addEventListener("click", () => navigateReadingStep(-1));
   next.addEventListener("click", () => navigateReadingStep(1));
+  controlsToggle.addEventListener("click", () => {
+    setControlsVisible(reader.classList.contains("epub-chrome-hidden"), false);
+  });
   tocButton.addEventListener("click", () => { showBookMenuPanel("contents"); toc.showModal(); setControlsVisible(true, false); });
   fullscreenButton.addEventListener("click", () => { void toggleFullscreen(); });
   contentsTab.addEventListener("click", () => showBookMenuPanel("contents"));
