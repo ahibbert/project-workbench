@@ -1729,13 +1729,14 @@ test("a corrupt cached page reduces verified bytes and a resumed repair restores
   }
 });
 
-test("an online Suwayomi failure falls back to a ready local chapter", async ({ page, context }) => {
+test("continue reading prefers a ready local chapter before contacting Suwayomi", async ({ page, context }) => {
   const fixture = await startDeviceChapterFixture();
   try {
     await prepareApp(page, context, fixture, { controlled: true });
     await openChapterList(page);
     await downloadChapter(page, 1101);
     await expectDeviceReady(page, 1101);
+    const chapterRequestsBeforeResume = fixture.chapterPayloadRequestCount(1101);
 
     fixture.setLibraryResume(1101);
     fixture.failChapterPayload(1101);
@@ -1745,11 +1746,11 @@ test("an online Suwayomi failure falls back to a ready local chapter", async ({ 
     await expect(card).toBeVisible();
     await card.locator(".manga-cover-button").click();
 
-    await expect.poll(() => fixture.chapterPayloadRequestCount(1101)).toBeGreaterThan(0);
     await expect(page.locator("#reader-view")).toHaveClass(/\bactive\b/);
     await expect(page.locator("#chapter-title")).toContainText("Device chapter one");
     await expect(page.locator("#reader-loading")).toHaveAttribute("aria-hidden", "true", { timeout: 10_000 });
     await expect(page.locator("#reader-error")).toBeHidden();
+    expect(fixture.chapterPayloadRequestCount(1101)).toBe(chapterRequestsBeforeResume);
   } finally {
     await fixture.close();
   }

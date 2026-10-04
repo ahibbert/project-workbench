@@ -9234,6 +9234,23 @@ async function loadChapterPages(options = {}) {
     return;
   }
 
+  // A completed browser copy is authoritative for reading.  In particular, do
+  // not ask a rate-limited or temporarily broken source for pages that the
+  // reader has already explicitly saved on this device.  Chapter-list buttons
+  // already take this path; doing it here also covers Continue Reading, deep
+  // links, and every other route which reaches the shared loader.
+  const localChapter = devicePackageForChapter(chapterId, serverUrl);
+  if (localChapter?.status === "ready" && !deviceChapterIsIncomplete(localChapter)) {
+    try {
+      await openDeviceChapter(localChapter, options.chapter || state.pendingResume || currentMangaLibraryItem());
+      return;
+    } catch (error) {
+      // Do not make a stale browser cache stop an otherwise usable live read.
+      // openDeviceChapter performs its own integrity and service-worker checks.
+      console.warn("Could not open completed device chapter; trying Suwayomi.", error);
+    }
+  }
+
   state.readerLoadController?.abort();
   state.prepareGeneration += 1;
   const loadController = new AbortController();
