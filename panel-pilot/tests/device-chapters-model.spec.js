@@ -11,6 +11,10 @@ function imagePath(chapterId, pageNumber) {
   return `/images/${chapterId}/${pageNumber}.svg`;
 }
 
+function mislabeledHtmlImagePath(chapterId, pageNumber) {
+  return `/mislabeled-images/${chapterId}/${pageNumber}.jpg`;
+}
+
 function imageBody(chapterId, pageNumber) {
   return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="12" height="18"><rect width="12" height="18" fill="hsl(${(chapterId + pageNumber) % 360} 40% 80%)"/></svg>`);
 }
@@ -48,6 +52,18 @@ function startModelFixture() {
       response.end(body);
       return;
     }
+    const mislabeledMatch = url.pathname.match(/^\/mislabeled-images\/(\d+)\/(\d+)\.jpg$/);
+    if (mislabeledMatch) {
+      requestCounts.set(url.pathname, (requestCounts.get(url.pathname) || 0) + 1);
+      const body = Buffer.from("<!doctype html><html><head><title>Source block page</title></head><body>Not an image</body></html>");
+      response.writeHead(200, {
+        "Cache-Control": "no-store",
+        "Content-Length": body.length,
+        "Content-Type": "image/jpeg",
+      });
+      response.end(body);
+      return;
+    }
     response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
     response.end("Not found");
   });
@@ -61,6 +77,7 @@ function startModelFixture() {
         failImageOnce(chapterId, pageNumber) { failOnce.add(imagePath(chapterId, pageNumber)); },
         failImageAlways(chapterId, pageNumber) { failAlways.add(imagePath(chapterId, pageNumber)); },
         requestCount(chapterId, pageNumber) { return requestCounts.get(imagePath(chapterId, pageNumber)) || 0; },
+        mislabeledHtmlImagePath,
         close() { return new Promise((done, fail) => server.close((error) => error ? fail(error) : done())); },
       });
     });
@@ -165,6 +182,36 @@ test("retrying an incomplete package reuses verified pages and reaches ready", a
     expect(fixture.requestCount(2201, 1)).toBe(1);
     expect(fixture.requestCount(2201, 2)).toBe(2);
     expect(fixture.requestCount(2201, 3)).toBe(1);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("an HTML block page mislabeled as an image never becomes an offline chapter", async ({ page }) => {
+  const fixture = await startModelFixture();
+  try {
+    await page.goto(fixture.origin);
+    const result = await page.evaluate(async (pageUrl) => {
+      const api = await import("/device-chapters.js");
+      const chapter = {
+        serverUrl: location.origin,
+        chapterId: 2251,
+        mangaId: 77,
+        title: "Blocked source fixture",
+        chapterTitle: "Chapter 2251",
+        pageUrls: [pageUrl],
+      };
+      let error = "";
+      try { await api.downloadDeviceChapter(chapter); } catch (reason) { error = reason.message; }
+      const stored = await api.getDeviceChapter(location.origin, 2251);
+      return { error, status: stored?.status, downloadedPages: stored?.downloadedPages };
+    }, fixture.mislabeledHtmlImagePath(2251, 1));
+
+    expect(result).toEqual({
+      error: "Page download returned an HTML document instead of an image. This source download is invalid.",
+      status: "failed",
+      downloadedPages: 0,
+    });
   } finally {
     await fixture.close();
   }

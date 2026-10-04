@@ -2436,6 +2436,15 @@ function friendlySourceErrorMessage(error) {
   ) {
     return "Source not responding, try again in a few minutes.";
   }
+  if (/html document instead of an image|source download is invalid/i.test(message)) {
+    return "This source returned a web page instead of a comic image. Its downloaded copy is invalid; switch this title to another source.";
+  }
+  if (
+    /xoxo/i.test(activeChapterSourceLabel())
+    && /could not load image|timed out loading image|\/api\/suwayomi\/asset|https?:\/\//i.test(message)
+  ) {
+    return "XOXO returned a web page rather than the comic image. This source's download is invalid; switch this title to another source.";
+  }
   if (/could not load image|timed out loading image|\/api\/suwayomi\/asset|https?:\/\//i.test(message)) {
     return "This page could not be loaded from the source. Your reading position is safe; try again shortly.";
   }

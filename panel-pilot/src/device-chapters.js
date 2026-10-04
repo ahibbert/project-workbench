@@ -286,6 +286,18 @@ function isImageContentType(contentType) {
   return /^image\//i.test(String(contentType || "").trim());
 }
 
+async function isHtmlDocumentBlob(blob) {
+  // Some sources incorrectly label their block/error page as image/jpeg.  The
+  // browser can only report that an <img> failed, so reject the false image
+  // before it is committed to an offline chapter package.
+  const sample = new Uint8Array(await blob.slice(0, 1024).arrayBuffer());
+  const text = new TextDecoder("utf-8", { fatal: false })
+    .decode(sample)
+    .replace(/^\uFEFF\s*/, "")
+    .toLowerCase();
+  return /^(?:<!doctype\s+html\b|<html\b|<head\b|<body\b|<script\b)/.test(text);
+}
+
 async function inspectCachedPage(cache, cachePath) {
   if (typeof cachePath !== "string" || !cachePath.startsWith(DEVICE_CHAPTER_PATH_PREFIX)) return null;
   const response = await cache.match(cacheRequest(cachePath));
@@ -551,6 +563,9 @@ async function storeFetchedPage(cache, cachePath, sourceUrl, signal) {
   if (!isImageContentType(contentType)) throw new TypeError(`Page download returned ${contentType || "an unknown content type"}, not an image.`);
   const blob = await response.blob();
   if (!blob.size) throw new Error("Page download returned an empty image.");
+  if (await isHtmlDocumentBlob(blob)) {
+    throw new TypeError("Page download returned an HTML document instead of an image. This source download is invalid.");
+  }
   throwIfAborted(signal);
   const headers = new Headers({ "Cache-Control": "private, no-store", "Content-Length": String(blob.size), "Content-Type": contentType, "X-Content-Type-Options": "nosniff" });
   await cache.put(cacheRequest(cachePath), new Response(blob, { status: 200, statusText: "OK", headers }));
