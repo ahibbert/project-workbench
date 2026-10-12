@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Australian dwelling-price data note">
+  <rect width="512" height="512" rx="92" fill="#f6eee9"/>
+  <path d="M78 243L256 98l178 145-31 38h-28v147H137V281h-28z" fill="#fff" stroke="#9b5e43" stroke-width="16" stroke-linejoin="round"/>
+  <path d="M180 390V284h43v106M248 390V235h43v155M316 390V185h43v205" fill="#b66f4f"/>
+  <path d="M165 390h210" stroke="#713f2d" stroke-width="13" stroke-linecap="round"/>
+</svg>

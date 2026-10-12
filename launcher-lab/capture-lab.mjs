@@ -27,7 +27,11 @@ try {
   await page.getByRole("button", { name: /Inline sheet/ }).click();
   await page.locator('[role="tab"][data-concept="workbench-desk"]').click();
   await page.locator(".prototype-frame").screenshot({ path: resolve(output, "detail-inline-sheet.png") });
-  console.log(`Captured ${concepts.length} concept stages and two detail treatments in ${output}.`);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("http://127.0.0.1:8875/?concept=workbench-desk&detail=inline", { waitUntil: "networkidle" });
+  await page.locator('[data-project-id="little-now"]').click();
+  await page.locator(".desk-zone-apps").screenshot({ path: resolve(output, "detail-inline-sheet-mobile.png") });
+  console.log(`Captured ${concepts.length} concept stages, two detail treatments and a mobile inline state in ${output}.`);
 } finally {
   await browser.close();
 }

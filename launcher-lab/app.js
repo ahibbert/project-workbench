@@ -105,7 +105,7 @@ function selectProject(id) {
   renderInspector({ openDialog: state.detail === "dialog" });
   if (state.detail === "inline" && state.selected) {
     const inlineTarget = document.querySelector(".desk-inline-sheet") ?? document.querySelector("#inline-inspector");
-    inlineTarget.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    inlineTarget.scrollIntoView({ block: matchMedia("(max-width: 680px)").matches ? "start" : "nearest", behavior: "smooth" });
   }
 }
 
@@ -239,7 +239,7 @@ const mapPositions = {
   "little-now": [15, 20], "panels": [33, 13], "margin": [50, 23],
   "panel-pilot": [14, 45], "household-cash": [34, 43], "starfall-company": [52, 50],
   "gamlss-longitudinal": [70, 16], "distribution-playground": [87, 25],
-  "copula-paper": [70, 45], "llm-review-bench": [88, 50],
+  "copula-paper": [70, 45], "gamlss-longitudinal-paper": [88, 50],
   "workbench-blog": [20, 73], "housing-note": [43, 80],
   "ndis-note": [65, 75], "bulk-billing-note": [84, 82]
 };
@@ -271,6 +271,14 @@ function renderMapDrawer(items) {
   return stage;
 }
 
+function createDeskInlineSheet(project) {
+  const sheet = el("article", "desk-inline-sheet");
+  sheet.style.setProperty("--accent", project.accent);
+  sheet.setAttribute("aria-labelledby", "desk-inline-title");
+  sheet.append(createInspectorFragment(project, "desk-inline-title", { includeMedia: true }));
+  return sheet;
+}
+
 function renderWorkbenchDesk(items) {
   const stage = el("div", "desk-concept");
   stage.append(createStageHeader("Open workbench", "A clean studio surface for projects being actively handled."));
@@ -282,23 +290,25 @@ function renderWorkbenchDesk(items) {
     const zone = el("section", `desk-zone desk-zone-${group.id}`);
     zone.style.setProperty("--group-color", group.color);
     zone.append(el("h3", "", group.label));
+    const selectedProject = state.detail === "inline" ? groupItems.find((project) => project.id === state.selected) : null;
+    const compactInline = Boolean(selectedProject && matchMedia("(max-width: 680px)").matches);
+    const orderedItems = selectedProject
+      ? [selectedProject, ...groupItems.filter((project) => project.id !== selectedProject.id)]
+      : groupItems;
+    const content = el("div", `desk-zone-content${selectedProject ? " has-inline-sheet" : ""}`);
     const objects = el("div", "desk-objects");
-    groupItems.forEach((project, index) => {
-      const hasInlineSheet = state.detail === "inline" && state.selected === project.id;
-      const unit = el("div", `desk-project-unit${hasInlineSheet ? " has-inline-sheet" : ""}`);
+    orderedItems.forEach((project, index) => {
+      const hasCompactSheet = compactInline && project.id === selectedProject.id;
+      const unit = el("div", `desk-project-unit${hasCompactSheet ? " has-inline-sheet" : ""}`);
       const object = createProjectControl(project, `desk-object desk-object-${project.visual}`, { artifactSize: "medium" });
       object.style.setProperty("--tilt", `${[-1.2, 0.8, -0.55, 1, -0.75, 0.45][index % 6]}deg`);
       unit.append(object);
-      if (hasInlineSheet) {
-        const sheet = el("article", "desk-inline-sheet");
-        sheet.style.setProperty("--accent", project.accent);
-        sheet.setAttribute("aria-labelledby", "desk-inline-title");
-        sheet.append(createInspectorFragment(project, "desk-inline-title", { includeMedia: true }));
-        unit.append(sheet);
-      }
+      if (hasCompactSheet) unit.append(createDeskInlineSheet(selectedProject));
       objects.append(unit);
     });
-    zone.append(objects);
+    content.append(objects);
+    if (selectedProject && !compactInline) content.append(createDeskInlineSheet(selectedProject));
+    zone.append(content);
     board.append(zone);
   });
   stage.append(board);
@@ -331,7 +341,7 @@ const constellationPositions = {
   "little-now": [10, 17], "panels": [25, 10], "margin": [38, 26],
   "panel-pilot": [18, 39], "household-cash": [7, 55], "starfall-company": [34, 55],
   "gamlss-longitudinal": [58, 13], "distribution-playground": [76, 21],
-  "copula-paper": [67, 40], "llm-review-bench": [88, 47],
+  "copula-paper": [67, 40], "gamlss-longitudinal-paper": [88, 47],
   "workbench-blog": [47, 68], "housing-note": [60, 82],
   "ndis-note": [77, 72], "bulk-billing-note": [91, 88]
 };

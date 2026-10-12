@@ -1,13 +1,6 @@
 window.launcherData = {
   groups: [
     {
-      id: "software",
-      label: "Software",
-      short: "Software",
-      description: "Apps, tools, readers and games outside the formal statistics work.",
-      color: "#b4473f"
-    },
-    {
       id: "research",
       label: "Research",
       short: "Research",
@@ -15,9 +8,16 @@ window.launcherData = {
       color: "#2f5f91"
     },
     {
-      id: "writing",
-      label: "Writing",
-      short: "Writing",
+      id: "apps",
+      label: "Apps",
+      short: "Apps",
+      description: "Apps, tools, readers and games outside the formal statistics work.",
+      color: "#b4473f"
+    },
+    {
+      id: "blogs",
+      label: "Blogs",
+      short: "Blogs",
       description: "Public notes and less-formal analysis from the workbench blog.",
       color: "#587366"
     }
@@ -83,7 +83,7 @@ window.launcherData = {
   projects: [
     {
       id: "little-now",
-      group: "software",
+      group: "apps",
       title: "Little Now",
       type: "iPhone & iPad app",
       status: "Shipping",
@@ -106,7 +106,7 @@ window.launcherData = {
     },
     {
       id: "panels",
-      group: "software",
+      group: "apps",
       title: "Panels",
       type: "Reading app",
       status: "Private beta",
@@ -121,7 +121,7 @@ window.launcherData = {
     },
     {
       id: "margin",
-      group: "software",
+      group: "apps",
       title: "Margin",
       type: "Research discovery app",
       status: "Private beta",
@@ -135,11 +135,11 @@ window.launcherData = {
       description: "A calm personal feed for discovering research and deciding what deserves a closer read.",
       focus: "Testing a quieter, context-first research discovery experience.",
       links: [{ label: "Open sign-in", href: "https://research.aydins-workbench.com" }],
-      related: ["workbench-blog", "llm-review-bench"]
+      related: ["workbench-blog"]
     },
     {
       id: "panel-pilot",
-      group: "software",
+      group: "apps",
       title: "Panel Pilot",
       type: "Native reader prototype",
       status: "In development",
@@ -154,7 +154,7 @@ window.launcherData = {
     },
     {
       id: "household-cash",
-      group: "software",
+      group: "apps",
       title: "Household Cash",
       type: "Household tool",
       status: "Private",
@@ -172,7 +172,7 @@ window.launcherData = {
     },
     {
       id: "starfall-company",
-      group: "software",
+      group: "apps",
       title: "Starfall Company",
       type: "Tactics game",
       status: "Playable MVP",
@@ -197,6 +197,7 @@ window.launcherData = {
       status: "In development",
       access: "Open source",
       visual: "trajectories",
+      icon: "assets/projects/gamlss-longitudinal/icon.svg",
       media: [
         { src: "assets/projects/gamlss-longitudinal/optimizer-benchmark.webp", alt: "Optimizer benchmark output from the gamlss.longitudinal project", label: "Research output · optimiser benchmark" }
       ],
@@ -208,7 +209,7 @@ window.launcherData = {
         { label: "Package site", href: "https://gamlsslongitudinal.aydins-workbench.com" },
         { label: "Source", href: "https://github.com/ahibbert/gamlss.longitudinal" }
       ],
-      related: ["distribution-playground", "copula-paper"]
+      related: ["distribution-playground", "copula-paper", "gamlss-longitudinal-paper"]
     },
     {
       id: "distribution-playground",
@@ -218,12 +219,13 @@ window.launcherData = {
       status: "Research preview",
       access: "Public",
       visual: "distribution",
+      icon: "assets/projects/distribution-playground/icon.svg",
       accent: "#285f91",
       featured: true,
       description: "Interactive distributions, dependence, quantile comparison and longitudinal simulation in one workbench.",
       focus: "Deeper worked examples, interpretation and export workflows.",
       links: [{ label: "Launch tool", href: "https://gamlss.aydins-workbench.com" }],
-      related: ["gamlss-longitudinal", "copula-paper"]
+      related: ["gamlss-longitudinal", "copula-paper", "gamlss-longitudinal-paper"]
     },
     {
       id: "copula-paper",
@@ -233,34 +235,40 @@ window.launcherData = {
       status: "Under review",
       access: "Public preprint",
       visual: "paper",
+      icon: "assets/projects/copula-paper/icon.svg",
       accent: "#547a9b",
       description: "A comparison of copula-based, mixed-model and estimating-equation approaches for correlated regression.",
       focus: "Understanding what each modelling strategy represents and where its trade-offs appear.",
       links: [{ label: "Read preprint", href: "https://arxiv.org/abs/2410.11892" }],
-      related: ["gamlss-longitudinal", "distribution-playground"]
+      related: ["gamlss-longitudinal", "distribution-playground", "gamlss-longitudinal-paper"]
     },
     {
-      id: "llm-review-bench",
+      id: "gamlss-longitudinal-paper",
       group: "research",
-      title: "LLM statistician review bench",
-      type: "Research concept",
-      status: "On hold",
-      access: "Concept",
-      visual: "benchmark",
-      accent: "#746294",
-      description: "A proposed benchmark comparing model-generated statistical reviews with expert expectations.",
-      focus: "Define a small rubric-based benchmark before building a larger evaluation system.",
-      links: [],
-      related: ["margin"]
+      title: "Longitudinal GAMLSS Models With Copula Dependence in R",
+      type: "Paper in progress",
+      status: "In progress",
+      access: "Working manuscript",
+      visual: "paper",
+      icon: "assets/projects/gamlss-longitudinal-paper/icon.svg",
+      media: [
+        { src: "assets/projects/gamlss-longitudinal/optimizer-benchmark.webp", alt: "Optimizer benchmark output supporting the longitudinal GAMLSS manuscript", label: "Manuscript output · optimiser benchmark" }
+      ],
+      accent: "#64558a",
+      description: "A paper describing longitudinal GAMLSS models with flexible margins and first-order copula dependence in R.",
+      focus: "Developing the manuscript, package examples, validation and reproducible reviewer materials.",
+      links: [{ label: "Package source", href: "https://github.com/ahibbert/gamlss.longitudinal" }],
+      related: ["gamlss-longitudinal", "distribution-playground", "copula-paper"]
     },
     {
       id: "workbench-blog",
-      group: "writing",
+      group: "blogs",
       title: "Aydin's Workbench blog",
       type: "Public notes",
       status: "Live",
       access: "Public",
       visual: "blog",
+      icon: "assets/projects/workbench-blog/icon.svg",
       accent: "#547766",
       featured: true,
       description: "Reproducible notes on Australian public data, modelling questions and projects while they are still taking shape.",
@@ -270,12 +278,13 @@ window.launcherData = {
     },
     {
       id: "housing-note",
-      group: "writing",
+      group: "blogs",
       title: "A First Pass At Australian Dwelling Prices",
       type: "Data note",
       status: "Public draft",
       access: "Public",
       visual: "housing",
+      icon: "assets/projects/housing-note/icon.svg",
       accent: "#a96547",
       description: "A reproducible look at ABS dwelling values, state mean prices and the policy questions they raise.",
       focus: "Housing, cost of living and public data.",
@@ -284,12 +293,13 @@ window.launcherData = {
     },
     {
       id: "ndis-note",
-      group: "writing",
+      group: "blogs",
       title: "Are NDIS Participant Outcomes Changing?",
       type: "Data note",
       status: "Public draft",
       access: "Public",
       visual: "outcomes",
+      icon: "assets/projects/ndis-note/icon.svg",
       accent: "#4b7d74",
       description: "A simpler look at national participant outcome levels and changes after plan reassessment.",
       focus: "Descriptive movement kept separate from causal interpretation.",
@@ -298,12 +308,13 @@ window.launcherData = {
     },
     {
       id: "bulk-billing-note",
-      group: "writing",
+      group: "blogs",
       title: "Did Bulk Billing Changes Shift Access?",
       type: "Policy note",
       status: "Public draft",
       access: "Public",
       visual: "health",
+      icon: "assets/projects/bulk-billing-note/icon.svg",
       accent: "#8f554f",
       description: "An early look at whether expanded GP bulk-billing incentives changed access patterns.",
       focus: "Policy signal, timing artefacts and reporting noise.",

@@ -16,14 +16,15 @@ Every concept can be paired with one of three project-detail treatments:
 - Desk dossier modal
 - Inline project sheet
 
-The workbench trial starts with no project selected. Its six software entries use
-their real app/project icons; inline and dossier details show only sourced media
+The workbench trial starts with no project selected. App entries use their real
+project icons, while research and blog entries use work-specific visual marks;
+inline and dossier details show only sourced media
 with explicit labels (for example, App Store capture, brand preview, research
 output or gameplay direction). Projects without truthful media keep a text-only
 detail view.
 
-The prototype uses the proposed three-part taxonomy: Software, Research and
-Writing. Serve this folder over HTTP and open `index.html`; no build is needed.
+The prototype uses the three-part taxonomy: Research, Apps and Blogs. Serve this
+folder over HTTP and open `index.html`; no build is needed.
 
 ```sh
 python -m http.server 8875

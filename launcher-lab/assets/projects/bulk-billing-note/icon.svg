@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Bulk-billing access policy note">
+  <rect width="512" height="512" rx="92" fill="#f5eded"/>
+  <path d="M88 410h336M88 410V102" fill="none" stroke="#7e4b47" stroke-width="16" stroke-linecap="round"/>
+  <rect x="132" y="290" width="61" height="120" rx="8" fill="#a45f58"/><rect x="226" y="220" width="61" height="190" rx="8" fill="#8e4f49"/><rect x="320" y="255" width="61" height="155" rx="8" fill="#b4736d"/>
+  <circle cx="356" cy="132" r="66" fill="#fff" stroke="#8e4f49" stroke-width="14"/>
+  <path d="M356 96v72M320 132h72" stroke="#8e4f49" stroke-width="17" stroke-linecap="round"/>
+</svg>

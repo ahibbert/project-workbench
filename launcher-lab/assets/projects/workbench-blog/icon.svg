@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Aydin's Workbench notebook">
+  <rect width="512" height="512" rx="92" fill="#eef3ef"/>
+  <path d="M105 72h302v368H105z" fill="#fff" stroke="#4d7060" stroke-width="16"/>
+  <path d="M157 72v368M194 148h158M194 211h158M194 274h112M194 337h144" stroke="#8fa99d" stroke-width="14" stroke-linecap="round"/>
+  <g fill="#4d7060"><circle cx="132" cy="143" r="10"/><circle cx="132" cy="232" r="10"/><circle cx="132" cy="321" r="10"/></g>
+  <rect x="275" y="319" width="103" height="74" rx="16" fill="#4d7060"/><text x="326.5" y="368" text-anchor="middle" fill="#fff" font-family="Arial,sans-serif" font-size="34" font-weight="700">ASH</text>
+</svg>
