@@ -1,0 +1,246 @@
+{
+  "groups": [
+    {
+      "id": "apps-products",
+      "label": "Apps & products",
+      "shortLabel": "Apps",
+      "eyebrow": "Things people can use",
+      "description": "Small, focused products for families, readers, researchers and everyday decisions."
+    },
+    {
+      "id": "research-software",
+      "label": "Research software",
+      "shortLabel": "Research",
+      "eyebrow": "Models made tangible",
+      "description": "Packages and interactive tools that make distributional models, dependence and uncertainty easier to inspect."
+    },
+    {
+      "id": "games-experiments",
+      "label": "Games & experiments",
+      "shortLabel": "Games",
+      "eyebrow": "Play as a design tool",
+      "description": "Playable systems and prototypes used to explore interaction, pacing and world-building."
+    },
+    {
+      "id": "writing-publications",
+      "label": "Writing & publications",
+      "shortLabel": "Writing",
+      "eyebrow": "Work in words",
+      "description": "Research papers, public notes and slower investigations into data, modelling and AI-assisted work."
+    }
+  ],
+  "projects": [
+    {
+      "id": "little-now",
+      "group": "apps-products",
+      "title": "Little Now",
+      "type": "iPhone & iPad app",
+      "status": "Shipping",
+      "statusTone": "shipping",
+      "access": "Public website",
+      "featured": true,
+      "description": "Caregiver-led play for ages 1–5: one practical activity matched to the time, setup and interests available right now.",
+      "details": {
+        "Built for": "Caregivers who want a useful idea quickly, then want to put the phone away.",
+        "Current focus": "Preparing the first App Store release and its public activity-sharing flow."
+      },
+      "links": [
+        { "label": "Visit Little Now", "href": "https://little-now.aydins-workbench.com" },
+        { "label": "App Store", "href": "https://apps.apple.com/app/id6821227588" }
+      ]
+    },
+    {
+      "id": "panels",
+      "group": "apps-products",
+      "title": "Panels",
+      "type": "Reading app",
+      "status": "Private beta",
+      "statusTone": "private-beta",
+      "access": "Sign-in required",
+      "description": "A private reading workspace for organising, opening and working through visual publications.",
+      "details": {
+        "Built for": "A focused, library-like reading workflow.",
+        "Access": "The deployment is active but intentionally limited to approved accounts."
+      },
+      "links": [
+        { "label": "Open Panels", "href": "https://panels.aydins-workbench.com" }
+      ]
+    },
+    {
+      "id": "margin",
+      "group": "apps-products",
+      "title": "Margin",
+      "type": "Research discovery app",
+      "status": "Private beta",
+      "statusTone": "private-beta",
+      "access": "Sign-in required",
+      "description": "A calm, personal feed for discovering research and getting enough context to decide what deserves a closer read.",
+      "details": {
+        "Built for": "Researchers who want a quieter way to keep up with relevant work.",
+        "Access": "The current deployment is a private beta for approved accounts."
+      },
+      "links": [
+        { "label": "Open Margin", "href": "https://research.aydins-workbench.com" }
+      ]
+    },
+    {
+      "id": "panel-pilot",
+      "group": "apps-products",
+      "title": "Panel Pilot",
+      "type": "iPhone & iPad prototype",
+      "status": "In development",
+      "statusTone": "in-development",
+      "access": "No public build yet",
+      "description": "A local-first comic reader prototype exploring comfortable navigation, library management and a native reading experience.",
+      "details": {
+        "Current focus": "Release-readiness, device behaviour and validating the core reading flow.",
+        "Availability": "Pre-release work; no public download is currently offered."
+      },
+      "links": []
+    },
+    {
+      "id": "household-cash",
+      "group": "apps-products",
+      "title": "Household Cash",
+      "type": "Household tool",
+      "status": "Private",
+      "statusTone": "private",
+      "access": "Internal use",
+      "description": "A deliberately small shared view of household cash, designed around clarity rather than financial-dashboard complexity.",
+      "details": {
+        "Built for": "A private household workflow.",
+        "Availability": "Internal tool; financial details and the deployment remain private."
+      },
+      "links": []
+    },
+    {
+      "id": "gamlss-longitudinal",
+      "group": "research-software",
+      "title": "gamlss.longitudinal",
+      "type": "R package",
+      "status": "In development",
+      "statusTone": "in-development",
+      "access": "Open source",
+      "featured": true,
+      "description": "Tools for fitting longitudinal GAMLSS models with flexible margins and copula dependence.",
+      "details": {
+        "Built for": "Repeated-measures problems where changing scale, skewness, tails, quantiles or within-subject dependence matter.",
+        "Current focus": "Documentation, examples and practical modelling workflows."
+      },
+      "links": [
+        { "label": "Package site", "href": "https://gamlsslongitudinal.aydins-workbench.com" },
+        { "label": "Source", "href": "https://github.com/ahibbert/gamlss.longitudinal" },
+        { "label": "Visual explorer", "href": "https://gamlss.aydins-workbench.com/longitudinal/" }
+      ]
+    },
+    {
+      "id": "distribution-playground",
+      "group": "research-software",
+      "title": "Distribution Playground",
+      "type": "Interactive research tool",
+      "status": "Research preview",
+      "statusTone": "research-preview",
+      "access": "Public",
+      "featured": true,
+      "description": "Interactive GAMLSS distributions, copula dependence, quantile comparison and longitudinal simulation in one R-backed workbench.",
+      "details": {
+        "Built for": "Researchers, students and collaborators who need distribution shape and dependence to be visible.",
+        "Current focus": "Deepening worked examples, interpretation and export workflows."
+      },
+      "links": [
+        { "label": "Launch playground", "href": "https://gamlss.aydins-workbench.com" },
+        { "label": "Longitudinal explorer", "href": "https://gamlss.aydins-workbench.com/longitudinal/" }
+      ]
+    },
+    {
+      "id": "starfall-company",
+      "group": "games-experiments",
+      "title": "Starfall Company",
+      "type": "Tactics game",
+      "status": "In development",
+      "statusTone": "in-development",
+      "access": "Playable prototype",
+      "description": "A touch-first science-fantasy tactics game about positioning, pressure and keeping a small company alive.",
+      "details": {
+        "Current state": "The core loop is playable as a local MVP.",
+        "Current focus": "Combat feel, encounter pacing and a coherent route to a public build."
+      },
+      "links": []
+    },
+    {
+      "id": "copula-paper",
+      "group": "writing-publications",
+      "title": "Copula-based joint regression models for correlated data",
+      "type": "Research paper",
+      "status": "Under review",
+      "statusTone": "under-review",
+      "access": "Public preprint",
+      "description": "A bivariate comparison of copula-based, mixed-model and estimating-equation approaches for correlated regression.",
+      "details": {
+        "Question": "What can the different correlated-data strategies represent, and where do their trade-offs show up?",
+        "Availability": "The preprint and reproducible code are public."
+      },
+      "links": [
+        { "label": "Read on arXiv", "href": "https://arxiv.org/abs/2410.11892" },
+        { "label": "Reproducible code", "href": "https://github.com/ahibbert/bivariate-copula-for-correlated-data" }
+      ]
+    },
+    {
+      "id": "workbench-blog",
+      "group": "writing-publications",
+      "title": "Aydin's Workbench blog",
+      "type": "Public notes",
+      "status": "Live",
+      "statusTone": "live",
+      "access": "Public",
+      "featured": true,
+      "description": "Reproducible notes on Australian public data, modelling questions and projects while they are still taking shape.",
+      "details": {
+        "Approach": "Keep the data, caveats and reasoning visible rather than presenting a polished conclusion too early.",
+        "Format": "Short public drafts, updated as the analysis develops."
+      },
+      "links": [
+        { "label": "Read the blog", "href": "https://blog.aydins-workbench.com" },
+        { "label": "Publication profile", "href": "https://scholar.google.com/citations?hl=en&user=oTwuhNoAAAAJ" }
+      ]
+    },
+    {
+      "id": "llm-review-bench",
+      "group": "writing-publications",
+      "title": "LLM statistician review bench",
+      "type": "Research idea",
+      "status": "On hold",
+      "statusTone": "on-hold",
+      "access": "Concept",
+      "description": "A proposed benchmark comparing LLM-generated statistical reviews with paper reviews and expert expectations.",
+      "details": {
+        "Question": "What do language models reliably catch, miss or overstate when reviewing applied statistical work?",
+        "Next step": "Design a small, rubric-based benchmark before building any larger evaluation system."
+      },
+      "links": []
+    }
+  ],
+  "latestPosts": [
+    {
+      "title": "A First Pass At Australian Dwelling Prices",
+      "date": "11 June 2026",
+      "theme": "Housing, cost of living, ABS data",
+      "description": "A small reproducible look at ABS dwelling values, state mean prices and the housing-policy questions they raise.",
+      "href": "https://blog.aydins-workbench.com/posts/housing-prices-first-pass/"
+    },
+    {
+      "title": "Are NDIS Participant Outcomes Changing?",
+      "date": "10 June 2026",
+      "theme": "NDIS outcomes, disability, Australia",
+      "description": "A simpler look at national participant outcome levels and changes after plan reassessment.",
+      "href": "https://blog.aydins-workbench.com/posts/ndis-outcomes-spend-service-access/"
+    },
+    {
+      "title": "Did Bulk Billing Changes Shift Access?",
+      "date": "28 May 2026",
+      "theme": "Medicare, bulk billing, health policy",
+      "description": "An early reproducible look at whether expanded GP bulk-billing incentives changed access patterns.",
+      "href": "https://blog.aydins-workbench.com/posts/bulk-billing-changes-impact/"
+    }
+  ]
+}

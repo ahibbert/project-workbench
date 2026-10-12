@@ -1,240 +1,172 @@
-const blogSite = "https://blog.aydins-workbench.com";
-const gamlssLongitudinalSite = "https://gamlsslongitudinal.aydins-workbench.com";
-const gamlssPlaygroundSite = "https://gamlss.aydins-workbench.com";
-const longitudinalExplorerSite = `${gamlssPlaygroundSite}/longitudinal/`;
+const registryUrl = "projects.json";
 
-const projects = [
-  {
-    title: "gamlss.longitudinal",
-    type: "Package",
-    status: "In progress",
-    description:
-      "An R package for fitting longitudinal GAMLSS models with flexible margins and copula dependence.",
-    detail: {
-      why: "For longitudinal analysis where changing scale, skewness, tails, quantiles, or within-subject dependence matter.",
-      next: "Keep improving docs, examples, and practical workflow notes.",
-      audience: "People fitting flexible repeated-measures models in R.",
-    },
-    links: [
-      ["GitHub", "https://github.com/ahibbert/gamlss.longitudinal"],
-      ["Docs", `${gamlssLongitudinalSite}/articles/site-guide.html`],
-      ["Visual explorer", longitudinalExplorerSite],
-    ],
-  },
-  {
-    title: "Distribution Playground",
-    type: "Tool",
-    status: "In progress",
-    description:
-      "A shared R-backed home for GAMLSS distribution shapes, copula dependence, quantile comparison, and longitudinal simulation tools.",
-    detail: {
-      why: "To make distributional-regression ideas easier to inspect without regenerating examples by hand.",
-      next: "Review the hosted GAMLSS, Copula, Quantiles, and Longitudinal sub-tools, then deepen the examples and exports.",
-      audience: "Researchers, students, and applied collaborators who need distribution shape and dependence to be visible.",
-    },
-    links: [
-      ["Launch playground", gamlssPlaygroundSite],
-      ["GAMLSS", `${gamlssPlaygroundSite}/gamlss/`],
-      ["Copula", `${gamlssPlaygroundSite}/copula/`],
-      ["Quantiles", `${gamlssPlaygroundSite}/quantile/`],
-      ["Longitudinal", longitudinalExplorerSite],
-      ["GitHub", "https://github.com/ahibbert/gamlss-playground"],
-    ],
-  },
-  {
-    title: "Copula-based joint regression models for correlated data",
-    type: "Paper",
-    status: "Under review",
-    description:
-      "A bivariate comparison of copula-based, mixed model, and estimating equation approaches for correlated regression.",
-    detail: {
-      why: "To compare what different correlated-data regression strategies can and cannot capture.",
-      next: "Use it as the paper/code anchor for related modelling work.",
-      audience: "Statistical modelling readers, collaborators, and anyone evaluating correlated-data methods.",
-    },
-    links: [
-      ["arXiv", "https://arxiv.org/abs/2410.11892"],
-      ["Code", "https://github.com/ahibbert/bivariate-copula-for-correlated-data"],
-    ],
-  },
-  {
-    title: "LLM statistician review bench",
-    type: "Idea",
-    status: "Idea",
-    description:
-      "An experiment comparing LLM-generated statistical or biostatistical reviews against paper reviews and expert expectations.",
-    detail: {
-      why: "LLMs are already being used around analysis, but we need sharper ways to test what they catch, miss, and overstate.",
-      next: "Design a small benchmark using papers, reviews, and rubric-based scoring for statistical reasoning.",
-      audience: "Data scientists, statisticians, reviewers, and anyone trying to use AI without outsourcing judgement.",
-    },
-    links: [["Project brief", "#projects"]],
-  },
-];
-
-const latestPosts = [
-  {
-    title: "A First Pass At Australian Dwelling Prices",
-    type: "Blog post",
-    status: "Draft",
-    description:
-      "A small reproducible look at ABS dwelling values, state mean prices, and the housing policy questions they raise.",
-    detail: {
-      date: "11 June 2026",
-      theme: "Housing, cost of living, ABS data",
-      note: "A compact data question with caveats kept visible.",
-    },
-    links: [
-      ["Post", `${blogSite}/posts/housing-prices-first-pass/`],
-      ["More posts", `${blogSite}#posts`],
-    ],
-  },
-  {
-    title: "Are NDIS Participant Outcomes Changing?",
-    type: "Blog post",
-    status: "Draft",
-    description:
-      "A simpler look at national NDIS participant outcome levels and changes after plan reassessment.",
-    detail: {
-      date: "10 June 2026",
-      theme: "NDIS outcomes, disability, Australia",
-      note: "Descriptive movement is kept separate from causal interpretation.",
-    },
-    links: [
-      ["Post", `${blogSite}/posts/ndis-outcomes-spend-service-access/`],
-      ["More posts", `${blogSite}#posts`],
-    ],
-  },
-  {
-    title: "Did Bulk Billing Changes Shift Access?",
-    type: "Blog post",
-    status: "Draft",
-    description:
-      "An early reproducible look at whether expanded GP bulk billing incentives changed access patterns by age, socioeconomic area, geography, and PHN.",
-    detail: {
-      date: "28 May 2026",
-      theme: "Medicare, bulk billing, health policy",
-      note: "An early look at policy signal, timing artefact, and reporting noise.",
-    },
-    links: [
-      ["Post", `${blogSite}/posts/bulk-billing-changes-impact/`],
-      ["More posts", `${blogSite}#posts`],
-    ],
-  },
-];
-
-const statusClass = (status) => status.toLowerCase().replace(/\s+/g, "-");
+function element(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
 
 function createLinks(links) {
-  const wrapper = document.createElement("div");
-  wrapper.className = "card-links";
-
-  links.forEach(([label, href]) => {
-    const link = document.createElement("a");
+  const wrapper = element("div", "card-links");
+  links.forEach(({ label, href }) => {
+    const link = element("a", "", label);
     link.href = href;
-    link.textContent = label;
-    if (href.startsWith("http")) {
-      link.rel = "noreferrer";
-    }
+    if (href.startsWith("http")) link.rel = "noreferrer";
     wrapper.append(link);
   });
-
   return wrapper;
 }
 
-function createDetails(detail, summaryLabel = "Project brief") {
-  const details = document.createElement("details");
-  details.className = "project-details";
+function createDetails(details) {
+  const container = element("details", "project-details");
+  container.append(element("summary", "", "Project brief"));
 
-  const summary = document.createElement("summary");
-  summary.textContent = summaryLabel;
-  details.append(summary);
-
-  const grid = document.createElement("div");
-  grid.className = "detail-grid";
-
-  Object.entries(detail).forEach(([label, value]) => {
-    const row = document.createElement("div");
-    row.className = "detail-row";
-
-    const key = document.createElement("strong");
-    key.textContent = label;
-
-    const text = document.createElement("span");
-    text.textContent = value;
-
-    row.append(key, text);
+  const grid = element("div", "detail-grid");
+  Object.entries(details).forEach(([label, value]) => {
+    const row = element("div", "detail-row");
+    row.append(element("strong", "", label), element("span", "", value));
     grid.append(row);
   });
-
-  details.append(grid);
-  return details;
+  container.append(grid);
+  return container;
 }
 
-function createProjectCard(item, options = {}) {
-  const card = document.createElement("article");
-  card.className = "project-card";
+function createProjectCard(project) {
+  const card = element("article", `project-card${project.featured ? " featured" : ""}`);
+  card.dataset.group = project.group;
 
-  if (options.showDraftBanner) {
-    const banner = document.createElement("strong");
-    banner.className = "draft-banner";
-    banner.textContent = item.status === "Published" ? "PUBLISHED" : "WORK IN PROGRESS / DRAFT";
-    card.append(banner);
+  const top = element("div", "card-top");
+  top.append(element("h3", "", project.title), element("span", "type-chip", project.type));
+
+  const meta = element("div", "card-meta");
+  meta.append(
+    element("span", `status-chip ${project.statusTone}`, project.status),
+    element("span", "access-chip", project.access)
+  );
+
+  card.append(top, meta, element("p", "", project.description));
+  if (project.details) card.append(createDetails(project.details));
+
+  if (project.links.length > 0) {
+    card.append(createLinks(project.links));
+  } else {
+    card.append(element("span", "availability-note", project.access));
   }
-
-  const top = document.createElement("div");
-  top.className = "card-top";
-
-  const title = document.createElement("h3");
-  title.textContent = item.title;
-
-  const type = document.createElement("span");
-  type.className = "type-chip";
-  type.textContent = item.type;
-
-  top.append(title, type);
-
-  const status = document.createElement("span");
-  status.className = `status-chip ${statusClass(item.status)}`;
-  status.textContent = item.status;
-
-  const description = document.createElement("p");
-  description.textContent = item.description;
-
-  card.append(top, status, description);
-  if (item.detail) {
-    card.append(createDetails(item.detail, options.summaryLabel));
-  }
-  card.append(createLinks(item.links));
   return card;
 }
 
-function renderProjects() {
-  const projectGrid = document.querySelector("#project-grid");
-  const postsGrid = document.querySelector("#posts-grid");
-  projectGrid.replaceChildren(...projects.map((item) => createProjectCard(item)));
-  postsGrid.replaceChildren(
-    ...latestPosts.map((item) => createProjectCard(item, { summaryLabel: "Post details" }))
+function createGroup(group, projects) {
+  const section = element("section", "project-group");
+  section.id = group.id;
+  section.setAttribute("aria-labelledby", `${group.id}-title`);
+
+  const heading = element("div", "group-heading");
+  const titleBlock = element("div", "");
+  titleBlock.append(
+    element("span", "group-count", `${projects.length} ${projects.length === 1 ? "project" : "projects"}`),
+    element("h2", "", group.label)
   );
+  titleBlock.querySelector("h2").id = `${group.id}-title`;
+
+  const copy = element("div", "");
+  copy.append(element("p", "eyebrow", group.eyebrow), element("p", "", group.description));
+  heading.append(titleBlock, copy);
+
+  const grid = element("div", "card-grid");
+  grid.append(...projects.map(createProjectCard));
+  section.append(heading, grid);
+  return section;
+}
+
+function createPostCard(post) {
+  const card = element("article", "post-card");
+  card.append(
+    element("h3", "", post.title),
+    element("p", "post-meta", `${post.date} · ${post.theme}`),
+    element("p", "", post.description)
+  );
+  const link = element("a", "post-link", "Read the note");
+  link.href = post.href;
+  link.rel = "noreferrer";
+  card.append(link);
+  return card;
+}
+
+function setupFilters(registry) {
+  const filters = document.querySelector("#project-filters");
+  const result = document.querySelector("#filter-result");
+  let activeFilter = "all";
+
+  const options = [{ id: "all", shortLabel: "All" }, ...registry.groups];
+  const buttons = options.map((option) => {
+    const button = element("button", "filter-button", option.shortLabel);
+    button.type = "button";
+    button.dataset.filter = option.id;
+    button.setAttribute("aria-pressed", option.id === activeFilter ? "true" : "false");
+    button.addEventListener("click", () => {
+      activeFilter = option.id;
+      buttons.forEach((item) => item.setAttribute("aria-pressed", item === button ? "true" : "false"));
+      renderGroups(registry, activeFilter);
+      const visible = activeFilter === "all"
+        ? registry.projects.length
+        : registry.projects.filter((project) => project.group === activeFilter).length;
+      result.textContent = `${visible} ${visible === 1 ? "project" : "projects"} shown`;
+    });
+    return button;
+  });
+
+  filters.replaceChildren(...buttons);
+  result.textContent = `${registry.projects.length} projects shown`;
+}
+
+function renderGroups(registry, filter = "all") {
+  const container = document.querySelector("#project-groups");
+  const groups = registry.groups.filter((group) => filter === "all" || group.id === filter);
+  const sections = groups.map((group) => {
+    const projects = registry.projects.filter((project) => project.group === group.id);
+    return createGroup(group, projects);
+  });
+  container.replaceChildren(...sections);
+}
+
+function renderPosts(posts) {
+  document.querySelector("#posts-grid").replaceChildren(...posts.map(createPostCard));
+}
+
+function scrollToInitialHash() {
+  if (!location.hash) return;
+  const target = document.querySelector(location.hash);
+  if (target) requestAnimationFrame(() => target.scrollIntoView());
+}
+
+async function loadRegistry() {
+  const response = await fetch(registryUrl, { cache: "no-store" });
+  if (!response.ok) throw new Error(`Project registry returned ${response.status}`);
+  const registry = await response.json();
+  renderGroups(registry);
+  renderPosts(registry.latestPosts);
+  setupFilters(registry);
+  scrollToInitialHash();
+}
+
+function showRegistryError(error) {
+  const note = element("p", "error-note", "The project registry could not be loaded. Please refresh or try again shortly.");
+  document.querySelector("#project-groups").replaceChildren(note);
+  console.error(error);
 }
 
 function setupMapTooltips() {
   const visual = document.querySelector(".workbench-visual");
   const tooltip = document.querySelector("#map-tooltip");
   const links = document.querySelectorAll(".map-link");
-
-  if (!visual || !tooltip || links.length === 0) {
-    return;
-  }
+  if (!visual || !tooltip || links.length === 0) return;
 
   function positionTooltip(link) {
     const visualRect = visual.getBoundingClientRect();
     const circleRect = link.querySelector(".node-disc").getBoundingClientRect();
-    const left = circleRect.left - visualRect.left + circleRect.width / 2;
-    const top = circleRect.top - visualRect.top - 10;
-
-    tooltip.style.left = `${left}px`;
-    tooltip.style.top = `${Math.max(48, top)}px`;
+    tooltip.style.left = `${circleRect.left - visualRect.left + circleRect.width / 2}px`;
+    tooltip.style.top = `${Math.max(48, circleRect.top - visualRect.top - 10)}px`;
   }
 
   function showTooltip(link) {
@@ -256,5 +188,5 @@ function setupMapTooltips() {
   });
 }
 
-renderProjects();
 setupMapTooltips();
+loadRegistry().catch(showRegistryError);

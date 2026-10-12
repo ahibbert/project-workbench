@@ -5,10 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta
       name="description"
-      content="A playful project workbench for research software, statistical modelling, data questions, writing, and experiments."
+      content="Apps, research software, games and data tools by Aydin Hibbert—built to make complicated things more usable."
     >
-    <title>Aydin's Workbench</title>
-    <link rel="stylesheet" href="styles.css?v=20261001-longitudinal">
+    <meta name="theme-color" content="#faf7f1">
+    <title>Aydin's Workbench — apps, research software and experiments</title>
+    <link rel="stylesheet" href="styles.css?v=20261013-portfolio">
   </head>
   <body>
     <a class="skip-link" href="#projects">Skip to projects</a>
@@ -18,176 +19,150 @@
         <span class="brand-mark" aria-hidden="true">ASH</span>
         <span>Aydin's Workbench</span>
       </a>
-      <nav class="nav-links" aria-label="Main pages">
-        <a href="#top">Home</a>
-        <a href="https://blog.aydins-workbench.com">Blog</a>
-        <a href="https://gamlss.aydins-workbench.com">Distribution Playground</a>
-        <a href="https://gamlss.aydins-workbench.com/longitudinal/">Longitudinal Explorer</a>
-        <a href="https://gamlsslongitudinal.aydins-workbench.com">gamlss.longitudinal</a>
+      <nav class="nav-links" aria-label="Main navigation">
+        <a href="#apps-products">Apps</a>
+        <a href="#research-software">Research</a>
+        <a href="#games-experiments">Games</a>
+        <a href="#writing-publications">Writing</a>
+        <a href="#about">About</a>
       </nav>
     </header>
 
     <main id="top">
       <section class="hero section-band" aria-labelledby="intro-title">
         <div class="hero-copy">
-          <p class="eyebrow">Research software / data questions / statistical models</p>
-          <h1 id="intro-title">A playful workbench for things I am building, testing, and thinking through.</h1>
+          <p class="eyebrow">Apps / research software / games / data tools</p>
+          <h1 id="intro-title">Complicated things, made more usable.</h1>
           <p class="intro">
-            I work around statistical modelling, applied data analysis, research software,
-            and writing that tries to make technical ideas more usable. This is a home for
-            finished work, active drafts, and a few experiments that are still finding their shape.
+            I build focused software and experiments across family life, reading,
+            statistical modelling and play. This is the live map: what you can use now,
+            what is shipping next and what is still being worked out.
           </p>
           <div class="hero-actions" aria-label="Primary links">
-            <a class="button primary" href="#projects">Browse featured work</a>
-            <a class="button" href="https://blog.aydins-workbench.com">Blog</a>
-            <a class="button" href="https://gamlss.aydins-workbench.com">Distribution Playground</a>
-            <a class="button" href="https://gamlss.aydins-workbench.com/longitudinal/">Longitudinal Explorer</a>
-            <a class="button" href="https://gamlsslongitudinal.aydins-workbench.com">gamlss.longitudinal</a>
+            <a class="button primary" href="#apps-products">Explore apps</a>
+            <a class="button" href="#research-software">Research software</a>
+            <a class="button" href="https://blog.aydins-workbench.com">Read the blog</a>
           </div>
+          <dl class="hero-key">
+            <div><dt>Public</dt><dd>Useful now</dd></div>
+            <div><dt>Shipping</dt><dd>Release in motion</dd></div>
+            <div><dt>Private</dt><dd>Visible, access limited</dd></div>
+          </dl>
         </div>
 
-        <div class="workbench-visual" aria-label="Interactive workbench map">
-          <svg
-            class="workbench-map"
-            id="workbench-map"
-            viewBox="0 0 720 520"
-            role="img"
-            aria-labelledby="workbench-map-title workbench-map-desc"
-          >
-            <title id="workbench-map-title">Clickable work map</title>
-            <desc id="workbench-map-desc">
-              Four linked circles for the Distribution Playground, gamlss.longitudinal,
-              the blog, and publication profiles.
-            </desc>
+        <div class="workbench-visual" aria-label="Interactive map of the four work areas">
+          <svg class="workbench-map" viewBox="0 0 720 520" role="img" aria-labelledby="workbench-map-title workbench-map-desc">
+            <title id="workbench-map-title">Aydin's work map</title>
+            <desc id="workbench-map-desc">Four linked circles navigate to apps and products, research software, games and experiments, and writing and publications.</desc>
             <path class="map-thread" d="M170 160 L390 120 L540 300 L275 374 Z M390 120 L275 374" />
-            <a
-              class="map-link"
-              href="https://gamlss.aydins-workbench.com"
-              data-tooltip="Distribution Playground: GAMLSS, copula, quantile, and longitudinal tools"
-              aria-label="Open Distribution Playground"
-            >
-              <g class="map-node" style="--node-color: #2f5f91">
+            <a class="map-link" href="#apps-products" data-tooltip="Apps & products — focused tools for real situations" aria-label="Go to apps and products">
+              <g class="map-node" style="--node-color: #b4473f">
                 <circle class="node-shadow" cx="390" cy="120" r="58"></circle>
                 <circle class="node-disc" cx="390" cy="120" r="58"></circle>
-                <g class="map-icon distribution-icon" aria-hidden="true">
-                  <path d="M350 146 H430"></path>
-                  <path d="M354 145 C365 145 368 92 390 92 C412 92 415 145 426 145"></path>
-                  <path d="M363 145 C374 145 377 113 390 113 C403 113 406 145 417 145"></path>
-                  <path d="M365 132 H415"></path>
+                <g class="map-icon app-icon" aria-hidden="true">
+                  <rect x="365" y="82" width="50" height="76" rx="9"></rect>
+                  <path d="M383 146 H397"></path>
+                  <path d="M378 99 H402 M378 112 H402 M378 125 H393"></path>
                 </g>
               </g>
             </a>
-            <a
-              class="map-link"
-              href="https://gamlsslongitudinal.aydins-workbench.com"
-              data-tooltip="gamlss.longitudinal: package homepage and workflows"
-              aria-label="Open gamlss.longitudinal homepage"
-            >
-              <g class="map-node" style="--node-color: #587366">
+            <a class="map-link" href="#research-software" data-tooltip="Research software — flexible models made visible" aria-label="Go to research software">
+              <g class="map-node" style="--node-color: #2f5f91">
                 <circle class="node-shadow" cx="170" cy="160" r="50"></circle>
                 <circle class="node-disc" cx="170" cy="160" r="50"></circle>
-                <g class="map-icon longitudinal-icon" aria-hidden="true">
-                  <path d="M138 179 C150 151 161 176 174 144 C187 112 199 145 204 127"></path>
-                  <circle cx="140" cy="178" r="4"></circle>
-                  <circle cx="158" cy="164" r="4"></circle>
-                  <circle cx="174" cy="144" r="4"></circle>
-                  <circle cx="192" cy="134" r="4"></circle>
-                  <path d="M137 190 H206"></path>
-                  <path d="M137 128 V190"></path>
+                <g class="map-icon distribution-icon" aria-hidden="true">
+                  <path d="M136 184 H204"></path>
+                  <path d="M140 183 C150 183 154 132 170 132 C186 132 190 183 200 183"></path>
+                  <path d="M146 183 C154 183 159 151 170 151 C181 151 186 183 194 183"></path>
                 </g>
               </g>
             </a>
-            <a
-              class="map-link"
-              href="https://blog.aydins-workbench.com"
-              data-tooltip="Blog: notes, drafts, and project-adjacent thinking"
-              aria-label="Open the blog"
-            >
-              <g class="map-node" style="--node-color: #b4473f">
+            <a class="map-link" href="#games-experiments" data-tooltip="Games & experiments — interaction through play" aria-label="Go to games and experiments">
+              <g class="map-node" style="--node-color: #b7832f">
                 <circle class="node-shadow" cx="540" cy="300" r="50"></circle>
                 <circle class="node-disc" cx="540" cy="300" r="50"></circle>
-                <g class="map-icon writing-icon" aria-hidden="true">
-                  <path d="M509 326 H555"></path>
-                  <path d="M513 316 H552"></path>
-                  <path d="M516 306 H548"></path>
-                  <path d="M553 269 L570 286 L537 319 L520 324 L525 307 Z"></path>
-                  <path d="M548 274 L565 291"></path>
+                <g class="map-icon game-icon" aria-hidden="true">
+                  <path d="M505 305 C506 282 521 276 540 287 C559 276 574 282 575 305 L570 325 C568 333 560 334 555 327 L547 317 H533 L525 327 C520 334 512 333 510 325 Z"></path>
+                  <path d="M519 299 V313 M512 306 H526"></path>
+                  <circle cx="559" cy="301" r="3"></circle>
+                  <circle cx="565" cy="309" r="3"></circle>
                 </g>
               </g>
             </a>
-            <a
-              class="map-link"
-              href="https://scholar.google.com/citations?hl=en&amp;user=oTwuhNoAAAAJ"
-              data-tooltip="Papers: publication list on Google Scholar"
-              aria-label="Open publication list on Google Scholar"
-            >
-              <g class="map-node" style="--node-color: #b7832f">
+            <a class="map-link" href="#writing-publications" data-tooltip="Writing & publications — evidence, caveats and work in progress" aria-label="Go to writing and publications">
+              <g class="map-node" style="--node-color: #587366">
                 <circle class="node-shadow" cx="275" cy="374" r="54"></circle>
                 <circle class="node-disc" cx="275" cy="374" r="54"></circle>
-                <g class="map-icon scholar-icon" aria-hidden="true">
-                  <path d="M234 364 L275 344 L316 364 L275 384 Z"></path>
-                  <path d="M250 374 V391 C260 400 291 400 300 391 V374"></path>
-                  <path d="M316 364 V389"></path>
-                  <circle cx="316" cy="396" r="4"></circle>
+                <g class="map-icon writing-icon" aria-hidden="true">
+                  <path d="M244 400 H290"></path>
+                  <path d="M248 390 H287"></path>
+                  <path d="M251 380 H283"></path>
+                  <path d="M288 343 L305 360 L272 393 L255 398 L260 381 Z"></path>
+                  <path d="M283 348 L300 365"></path>
                 </g>
               </g>
             </a>
           </svg>
           <div class="map-tooltip" id="map-tooltip" role="status" aria-live="polite"></div>
           <div class="map-caption">
-            <strong>Work map</strong>
-            <span>Hover or tap a circle to jump into the main threads.</span>
+            <strong>Four connected areas</strong>
+            <span>Choose a circle to jump into that part of the workbench.</span>
           </div>
         </div>
       </section>
 
       <section class="section" id="projects" aria-labelledby="projects-title">
-        <div class="section-heading">
-          <p class="eyebrow">Featured work</p>
-          <h2 id="projects-title">Project launcher</h2>
-          <p>
-            A mix of packages, papers, tools, writing, and project-shaped ideas.
-            Expand a card for the short project brief, or jump straight to the useful thing.
-          </p>
+        <div class="section-heading launcher-heading">
+          <div>
+            <p class="eyebrow">Current work</p>
+            <h2 id="projects-title">Project launcher</h2>
+          </div>
+          <p>Status is part of the story. Public links go to something useful; private and pre-release projects are described without exposing internal work.</p>
         </div>
-        <div class="card-grid" id="project-grid"></div>
+
+        <div class="filter-bar" aria-label="Filter projects">
+          <span class="filter-label">Show</span>
+          <div class="filter-buttons" id="project-filters"></div>
+          <span class="filter-result" id="filter-result" aria-live="polite"></span>
+        </div>
+
+        <div class="project-groups" id="project-groups">
+          <p class="loading-note">Loading the workbench…</p>
+        </div>
+        <noscript><p class="error-note">JavaScript is needed to load the project registry.</p></noscript>
+
+        <div class="status-legend" aria-label="Project status guide">
+          <strong>Status guide</strong>
+          <span><i class="legend-dot live"></i>Live or public preview</span>
+          <span><i class="legend-dot shipping"></i>Shipping</span>
+          <span><i class="legend-dot building"></i>In development</span>
+          <span><i class="legend-dot private"></i>Private or limited access</span>
+        </div>
       </section>
 
       <section class="section muted-band" id="latest-posts" aria-labelledby="posts-title">
-        <div class="section-heading">
-          <p class="eyebrow">Latest writing</p>
-          <h2 id="posts-title">Recent blog posts</h2>
-          <p>
-            The newest notes from the combined blog: public data questions, modelling
-            work, and project-adjacent writing.
-          </p>
+        <div class="section-heading posts-heading">
+          <div>
+            <p class="eyebrow">Latest writing</p>
+            <h2 id="posts-title">Notes from the workbench</h2>
+          </div>
+          <p>Reproducible looks at public data and modelling questions, published early enough that assumptions and changes remain visible.</p>
         </div>
-        <div class="data-toolbar">
-          <a class="button primary" href="https://blog.aydins-workbench.com#posts">See more posts</a>
-          <a class="button" href="https://github.com/ahibbert/blog">Blog repo</a>
-          <span class="draft-notice">Most notes are public drafts unless they explicitly say otherwise.</span>
-        </div>
-        <div class="card-grid data-grid" id="posts-grid"></div>
+        <div class="card-grid posts-grid" id="posts-grid"></div>
+        <a class="button primary posts-more" href="https://blog.aydins-workbench.com#posts">See all posts</a>
       </section>
 
-      <section class="section bio-section" id="bio" aria-labelledby="bio-title">
+      <section class="section bio-section" id="about" aria-labelledby="bio-title">
         <div class="bio-card">
           <div>
-            <p class="eyebrow">Bio</p>
-            <h2 id="bio-title">A little context, without turning this into a CV page.</h2>
+            <p class="eyebrow">About</p>
+            <h2 id="bio-title">One workbench, several kinds of problem.</h2>
           </div>
+          <p>I am interested in practical statistical modelling, research software and products that help people make a useful next move. The common thread is turning a complicated system into something calmer and more legible.</p>
           <p>
-            I am interested in practical statistical modelling, research software, and
-            data work that makes uncertainty, dependence, and model behaviour easier to
-            reason about. I tend to enjoy projects that sit between analysis, tooling,
-            communication, and applied problem-solving.
-          </p>
-          <p>
-            For publications and scholarly identifiers, see my
-            <a class="text-link" href="https://orcid.org/0009-0002-6621-8793">ORCID</a>
-            or
-            <a class="text-link" href="https://scholar.google.com/citations?hl=en&amp;user=oTwuhNoAAAAJ">Google Scholar</a>
-            profiles.
+            For scholarly work, see my <a class="text-link" href="https://orcid.org/0009-0002-6621-8793">ORCID</a> or
+            <a class="text-link" href="https://scholar.google.com/citations?hl=en&amp;user=oTwuhNoAAAAJ">Google Scholar</a>.
+            For ongoing analysis, visit the <a class="text-link" href="https://blog.aydins-workbench.com">blog</a>.
           </p>
         </div>
       </section>
@@ -195,9 +170,10 @@
 
     <footer class="site-footer">
       <span>Built as a living workbench.</span>
+      <span>Statuses checked 13 October 2026.</span>
       <a href="#top">Back to top</a>
     </footer>
 
-    <script src="script.js?v=20261001-longitudinal"></script>
+    <script src="script.js?v=20261013-portfolio"></script>
   </body>
 </html>
