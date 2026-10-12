@@ -62,6 +62,22 @@ window.launcherData = {
       summary: "Large editorial panels make every project feel tangible and considered.",
       strength: "Strongest visual storytelling and clearest project previews.",
       risk: "Takes more scrolling and gives less of an overview."
+    },
+    {
+      id: "workbench-gallery",
+      number: "06",
+      label: "Workbench gallery",
+      summary: "An orderly editorial grid, but every panel still feels like a physical object on a shared work surface.",
+      strength: "Combines the gallery's clarity with the desk's warmth and personality.",
+      risk: "Needs enough variation to avoid feeling like a conventional card grid."
+    },
+    {
+      id: "project-folios",
+      number: "07",
+      label: "Project folios",
+      summary: "Clear, stacked folders turn each project into a compact dossier that can open without losing the page structure.",
+      strength: "Fast to scan, highly scalable and naturally suited to inline detail.",
+      risk: "More editorial than playful unless the paper details carry enough character."
     }
   ],
   projects: [

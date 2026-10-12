@@ -14,7 +14,8 @@ try {
   await page.goto("http://127.0.0.1:8875/", { waitUntil: "networkidle" });
 
   assert.equal(await page.locator("h1").count(), 1);
-  assert.equal(await page.getByRole("tab").count(), 5);
+  assert.equal(await page.getByRole("tab").count(), 7);
+  assert.equal(await page.locator(".detail-mode").count(), 3);
   assert.equal(await page.locator(".taxonomy-card").count(), 3);
   assert.equal(await page.locator("#concept-stage [data-project-id]").count(), 14);
   assert.equal(await page.locator("#inspector-title").textContent(), "Little Now");
@@ -24,7 +25,9 @@ try {
     ["Workbench desk", "workbench-desk"],
     ["Studio shelves", "studio-shelves"],
     ["Project constellation", "constellation"],
-    ["Product gallery", "product-gallery"]
+    ["Product gallery", "product-gallery"],
+    ["Workbench gallery", "workbench-gallery"],
+    ["Project folios", "project-folios"]
   ];
 
   for (const [, id] of conceptNames) {
@@ -41,6 +44,18 @@ try {
   await page.getByRole("tab", { name: /Studio shelves/ }).click();
   await page.locator('[data-project-id="starfall-company"]').click();
   assert.equal(await page.locator("#inspector-title").textContent(), "Starfall Company");
+
+  await page.getByRole("button", { name: /Desk dossier/ }).click();
+  await page.locator('[data-project-id="little-now"]').click();
+  assert.equal(await page.locator("#project-dialog").getAttribute("open"), "");
+  assert.equal(await page.locator("#dialog-inspector-title").textContent(), "Little Now");
+  await page.getByRole("button", { name: "Close project dossier" }).click();
+  assert.equal(await page.locator("#project-dialog").getAttribute("open"), null);
+
+  await page.getByRole("button", { name: /Inline sheet/ }).click();
+  await page.locator('[data-project-id="housing-note"]').click();
+  assert.equal(await page.locator("#inline-inspector").isVisible(), true);
+  assert.equal(await page.locator("#inline-inspector-title").textContent(), "A First Pass At Australian Dwelling Prices");
 
   await page.setViewportSize({ width: 390, height: 844 });
   for (const [, id] of conceptNames) {
@@ -59,7 +74,7 @@ try {
   );
   assert.equal(unnamedControls, 0);
 
-  console.log("All five launcher concepts passed desktop and mobile interaction checks.");
+  console.log("All seven launcher concepts and three detail treatments passed desktop and mobile interaction checks.");
 } finally {
   await browser.close();
 }

@@ -7,7 +7,7 @@ const edgePath = process.env.EDGE_PATH;
 const output = process.env.SHOT_DIR ?? resolve("launcher-lab-shots");
 const requireFromModules = createRequire(resolve(modules, "playwright", "package.json"));
 const { chromium } = requireFromModules("playwright");
-const concepts = ["map-drawer", "workbench-desk", "studio-shelves", "constellation", "product-gallery"];
+const concepts = ["map-drawer", "workbench-desk", "studio-shelves", "constellation", "product-gallery", "workbench-gallery", "project-folios"];
 
 await mkdir(output, { recursive: true });
 const browser = await chromium.launch({ headless: true, executablePath: edgePath });
@@ -19,7 +19,15 @@ try {
     await page.locator(`[role="tab"][data-concept="${concept}"]`).click();
     await page.locator(".prototype-frame").screenshot({ path: resolve(output, `${concept}-stage.png`) });
   }
-  console.log(`Captured ${concepts.length} concept stages in ${output}.`);
+  await page.locator('[role="tab"][data-concept="workbench-gallery"]').click();
+  await page.getByRole("button", { name: /Desk dossier/ }).click();
+  await page.locator('[data-project-id="little-now"]').click();
+  await page.locator("#project-dialog").screenshot({ path: resolve(output, "detail-desk-dossier.png") });
+  await page.getByRole("button", { name: "Close project dossier" }).click();
+  await page.getByRole("button", { name: /Inline sheet/ }).click();
+  await page.locator('[data-project-id="housing-note"]').click();
+  await page.locator(".prototype-frame").screenshot({ path: resolve(output, "detail-inline-sheet.png") });
+  console.log(`Captured ${concepts.length} concept stages and two detail treatments in ${output}.`);
 } finally {
   await browser.close();
 }

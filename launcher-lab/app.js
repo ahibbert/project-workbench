@@ -1,11 +1,32 @@
 const { groups, concepts, projects } = window.launcherData;
 const groupLookup = Object.fromEntries(groups.map((group) => [group.id, group]));
 
-const requestedConcept = new URL(location.href).searchParams.get("concept");
+const detailModes = [
+  {
+    id: "side",
+    label: "Side inspector",
+    description: "Persistent context: the project stays beside the launcher while you browse."
+  },
+  {
+    id: "dialog",
+    label: "Desk dossier",
+    description: "Focused context: the project opens as a centred paper dossier over the workbench."
+  },
+  {
+    id: "inline",
+    label: "Inline sheet",
+    description: "Continuous context: details unfold below the launcher without covering anything."
+  }
+];
+
+const initialUrl = new URL(location.href);
+const requestedConcept = initialUrl.searchParams.get("concept");
+const requestedDetail = initialUrl.searchParams.get("detail");
 const state = {
   concept: concepts.some((concept) => concept.id === requestedConcept) ? requestedConcept : concepts[0].id,
   group: "all",
-  selected: "little-now"
+  selected: "little-now",
+  detail: detailModes.some((mode) => mode.id === requestedDetail) ? requestedDetail : "side"
 };
 
 const artifactShapes = {
@@ -72,7 +93,10 @@ function createProjectControl(project, className, options = {}) {
 function selectProject(id) {
   state.selected = id;
   renderStage();
-  renderInspector();
+  renderInspector({ openDialog: state.detail === "dialog" });
+  if (state.detail === "inline") {
+    document.querySelector("#inline-inspector").scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
 }
 
 function renderTaxonomy() {
@@ -144,6 +168,27 @@ function renderFilters() {
   wrapper.replaceChildren(...buttons);
   const count = visibleProjects().length;
   document.querySelector("#project-count").textContent = `${count} ${count === 1 ? "entry" : "entries"}`;
+}
+
+function renderDetailModes() {
+  const wrapper = document.querySelector("#detail-modes");
+  const buttons = detailModes.map((mode) => {
+    const button = el("button", "detail-mode", mode.label);
+    button.type = "button";
+    button.dataset.detail = mode.id;
+    button.setAttribute("aria-pressed", String(mode.id === state.detail));
+    button.addEventListener("click", () => {
+      state.detail = mode.id;
+      const url = new URL(location.href);
+      url.searchParams.set("detail", mode.id);
+      history.replaceState(null, "", url);
+      renderDetailModes();
+      renderInspector();
+    });
+    return button;
+  });
+  wrapper.replaceChildren(...buttons);
+  document.querySelector("#detail-description").textContent = detailModes.find((mode) => mode.id === state.detail).description;
 }
 
 function createStageHeader(label, note) {
@@ -326,6 +371,81 @@ function renderProductGallery(items) {
   return stage;
 }
 
+function renderWorkbenchGallery(items) {
+  const stage = el("div", "workbench-gallery-concept");
+  stage.append(createStageHeader("Curated workbench", "Editorial clarity, tactile materials and no sideways scrolling."));
+  const surface = el("div", "workbench-gallery");
+
+  groups.forEach((group) => {
+    const groupItems = items.filter((project) => project.group === group.id);
+    if (!groupItems.length) return;
+    const section = el("section", "workbench-gallery-group");
+    section.style.setProperty("--group-color", group.color);
+    const heading = el("div", "workbench-gallery-heading");
+    heading.append(el("h3", "", group.label), el("span", "", group.description));
+    const grid = el("div", "workbench-gallery-grid");
+
+    groupItems.forEach((project, index) => {
+      const button = el("button", `workbench-gallery-card${state.selected === project.id ? " is-selected" : ""}`);
+      button.type = "button";
+      button.dataset.projectId = project.id;
+      button.style.setProperty("--accent", project.accent);
+      button.style.setProperty("--tilt", `${[-0.45, 0.35, -0.2, 0.5][index % 4]}deg`);
+      const visual = el("span", "workbench-gallery-visual");
+      visual.append(createArtifact(project, "medium"));
+      const copy = el("span", "workbench-gallery-copy");
+      copy.append(
+        el("small", "", `${project.status} · ${project.type}`),
+        el("strong", "", project.title),
+        el("span", "", project.description)
+      );
+      button.append(visual, copy);
+      button.addEventListener("click", () => selectProject(project.id));
+      grid.append(button);
+    });
+    section.append(heading, grid);
+    surface.append(section);
+  });
+  stage.append(surface);
+  return stage;
+}
+
+function renderProjectFolios(items) {
+  const stage = el("div", "folios-concept");
+  stage.append(createStageHeader("Project folios", "A tidy index of folders that opens into the chosen detail treatment."));
+  const stack = el("div", "folio-stack");
+
+  groups.forEach((group) => {
+    const groupItems = items.filter((project) => project.group === group.id);
+    if (!groupItems.length) return;
+    const section = el("section", "folio-group");
+    section.style.setProperty("--group-color", group.color);
+    const heading = el("div", "folio-group-heading");
+    heading.append(el("h3", "", group.label), el("span", "", `${groupItems.length} ${groupItems.length === 1 ? "folio" : "folios"}`));
+    const rows = el("div", "folio-rows");
+
+    groupItems.forEach((project, index) => {
+      const button = el("button", `folio-row${state.selected === project.id ? " is-selected" : ""}`);
+      button.type = "button";
+      button.dataset.projectId = project.id;
+      button.style.setProperty("--accent", project.accent);
+      button.append(el("span", "folio-number", String(index + 1).padStart(2, "0")), createArtifact(project, "small"));
+      const identity = el("span", "folio-identity");
+      identity.append(el("strong", "", project.title), el("small", "", project.type));
+      const summary = el("span", "folio-summary", project.description);
+      const stateLabel = el("span", "folio-state");
+      stateLabel.append(el("strong", "", project.status), el("small", "", project.access));
+      button.append(identity, summary, stateLabel, el("span", "folio-arrow", "Open"));
+      button.addEventListener("click", () => selectProject(project.id));
+      rows.append(button);
+    });
+    section.append(heading, rows);
+    stack.append(section);
+  });
+  stage.append(stack);
+  return stage;
+}
+
 function renderStage() {
   ensureVisibleSelection();
   const items = visibleProjects();
@@ -334,7 +454,9 @@ function renderStage() {
     "workbench-desk": renderWorkbenchDesk,
     "studio-shelves": renderStudioShelves,
     constellation: renderConstellation,
-    "product-gallery": renderProductGallery
+    "product-gallery": renderProductGallery,
+    "workbench-gallery": renderWorkbenchGallery,
+    "project-folios": renderProjectFolios
   };
   const stage = document.querySelector("#concept-stage");
   const content = renderers[state.concept](items);
@@ -342,17 +464,14 @@ function renderStage() {
   stage.replaceChildren(content);
 }
 
-function renderInspector() {
-  const project = projectById(state.selected);
-  const inspector = document.querySelector("#project-inspector");
-  inspector.style.setProperty("--accent", project.accent);
-
+function createInspectorFragment(project, titleId) {
+  const fragment = document.createDocumentFragment();
   const visual = el("div", "inspector-visual");
   visual.append(createArtifact(project, "large"));
 
   const group = el("span", "inspector-group", groupLookup[project.group].label);
   const title = el("h2", "", project.title);
-  title.id = "inspector-title";
+  title.id = titleId;
   const meta = el("div", "inspector-meta");
   meta.append(el("span", "", project.status), el("span", "", project.access), el("span", "", project.type));
 
@@ -372,12 +491,47 @@ function renderInspector() {
     links.append(el("span", "", "No public link yet"));
   }
 
-  inspector.replaceChildren(visual, group, title, meta, description, focus, links);
+  fragment.append(visual, group, title, meta, description, focus, links);
+  return fragment;
 }
+
+function renderInspector({ openDialog = false } = {}) {
+  const project = projectById(state.selected);
+  const side = document.querySelector("#project-inspector");
+  const inline = document.querySelector("#inline-inspector");
+  const dialog = document.querySelector("#project-dialog");
+  const dialogContent = document.querySelector("#dialog-inspector");
+
+  document.body.dataset.detail = state.detail;
+  [side, inline, dialog].forEach((surface) => surface.style.setProperty("--accent", project.accent));
+
+  if (state.detail !== "dialog" && dialog.open) dialog.close();
+  side.hidden = state.detail !== "side";
+  inline.hidden = state.detail !== "inline";
+  side.replaceChildren();
+  inline.replaceChildren();
+  dialogContent.replaceChildren();
+
+  if (state.detail === "side") {
+    side.append(createInspectorFragment(project, "inspector-title"));
+  } else if (state.detail === "inline") {
+    inline.append(createInspectorFragment(project, "inline-inspector-title"));
+  } else {
+    dialogContent.append(createInspectorFragment(project, "dialog-inspector-title"));
+    if (openDialog && !dialog.open) dialog.showModal();
+  }
+}
+
+const dialog = document.querySelector("#project-dialog");
+document.querySelector("#dialog-close").addEventListener("click", () => dialog.close());
+dialog.addEventListener("click", (event) => {
+  if (event.target === dialog) dialog.close();
+});
 
 renderTaxonomy();
 renderConceptTabs();
 renderConceptSummary();
 renderFilters();
+renderDetailModes();
 renderStage();
 renderInspector();

@@ -75,10 +75,32 @@
           <output id="project-count" aria-live="polite"></output>
         </div>
 
+        <div class="detail-treatment" aria-labelledby="detail-treatment-label">
+          <div>
+            <span class="eyebrow" id="detail-treatment-label">When a project is selected</span>
+            <strong>Detail treatment</strong>
+          </div>
+          <div id="detail-modes"></div>
+          <p id="detail-description" aria-live="polite"></p>
+        </div>
+
         <div class="prototype-frame">
-          <div id="concept-stage" tabindex="-1" aria-live="polite"></div>
+          <div class="stage-column">
+            <div id="concept-stage" tabindex="-1" aria-live="polite"></div>
+            <section class="inline-inspector" id="inline-inspector" aria-label="Selected project details"></section>
+          </div>
           <aside class="project-inspector" id="project-inspector" aria-labelledby="inspector-title"></aside>
         </div>
+
+        <dialog class="project-dialog" id="project-dialog" aria-label="Selected project dossier">
+          <div class="dialog-sheet">
+            <div class="dialog-bar">
+              <span>Project dossier</span>
+              <button type="button" id="dialog-close" aria-label="Close project dossier">Close</button>
+            </div>
+            <div id="dialog-inspector"></div>
+          </div>
+        </dialog>
       </section>
 
       <section class="compare-section" id="compare" aria-labelledby="compare-title">
