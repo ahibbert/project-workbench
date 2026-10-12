@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Five local project-launcher concepts for Aydin's Workbench.">
+    <title>Launcher Lab — Aydin's Workbench</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#concept-stage">Skip to prototype</a>
+
+    <header class="lab-header">
+      <a class="brand" href="#top">
+        <span class="brand-mark" aria-hidden="true">ASH</span>
+        <span>Aydin's Workbench</span>
+      </a>
+      <span class="prototype-badge">Local launcher study</span>
+      <nav aria-label="Prototype sections">
+        <a href="#concepts">Concepts</a>
+        <a href="#taxonomy">Taxonomy</a>
+        <a href="#compare">Compare</a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="lab-intro" aria-labelledby="page-title">
+        <div>
+          <p class="eyebrow">Five directions · one shared dataset</p>
+          <h1 id="page-title">Project launcher lab</h1>
+        </div>
+        <div class="intro-copy">
+          <p>
+            Switch between five interaction models without changing the underlying projects.
+            The point is to notice what becomes easier to understand—and what becomes noisier.
+          </p>
+          <p class="local-note">Prototype only. External project links are real; no version is published.</p>
+        </div>
+      </section>
+
+      <section class="taxonomy" id="taxonomy" aria-labelledby="taxonomy-title">
+        <div class="taxonomy-heading">
+          <p class="eyebrow">Proposed information architecture</p>
+          <h2 id="taxonomy-title">Three parts of the workbench</h2>
+        </div>
+        <div class="taxonomy-grid" id="taxonomy-grid"></div>
+      </section>
+
+      <section class="concept-workspace" id="concepts" aria-labelledby="concepts-title">
+        <div class="concept-heading">
+          <div>
+            <p class="eyebrow">Choose a direction</p>
+            <h2 id="concepts-title">Same projects, different behaviour</h2>
+          </div>
+          <p>Use the numbered tabs, then select projects inside each prototype. The details panel stays consistent so the launcher itself is what changes.</p>
+        </div>
+
+        <div class="concept-tabs" id="concept-tabs" role="tablist" aria-label="Launcher concepts"></div>
+
+        <div class="concept-summary" aria-live="polite">
+          <div>
+            <span class="concept-number" id="concept-number"></span>
+            <h3 id="concept-name"></h3>
+            <p id="concept-summary"></p>
+          </div>
+          <dl>
+            <div><dt>Strength</dt><dd id="concept-strength"></dd></div>
+            <div><dt>Watch for</dt><dd id="concept-risk"></dd></div>
+          </dl>
+        </div>
+
+        <div class="project-filter" aria-label="Filter the active prototype">
+          <span>Show</span>
+          <div id="group-filters"></div>
+          <output id="project-count" aria-live="polite"></output>
+        </div>
+
+        <div class="prototype-frame">
+          <div id="concept-stage" tabindex="-1" aria-live="polite"></div>
+          <aside class="project-inspector" id="project-inspector" aria-labelledby="inspector-title"></aside>
+        </div>
+      </section>
+
+      <section class="compare-section" id="compare" aria-labelledby="compare-title">
+        <div>
+          <p class="eyebrow">Decision prompts</p>
+          <h2 id="compare-title">What should win?</h2>
+        </div>
+        <div class="question-grid">
+          <article><span>01</span><h3>Can I understand the range quickly?</h3><p>The launcher should reveal three bodies of work without needing instructions.</p></article>
+          <article><span>02</span><h3>Does it reward curiosity?</h3><p>Exploration should reveal relationships and personality, not merely add motion.</p></article>
+          <article><span>03</span><h3>Will it still work after ten more projects?</h3><p>The winning system needs a graceful route from today’s portfolio to the next one.</p></article>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <span>Local design study · 13 October 2026</span>
+      <a href="#top">Back to top</a>
+    </footer>
+
+    <script src="projects.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

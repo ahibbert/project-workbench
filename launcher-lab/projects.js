@@ -1,0 +1,275 @@
+window.launcherData = {
+  groups: [
+    {
+      id: "software",
+      label: "Software",
+      short: "Software",
+      description: "Apps, tools, readers and games outside the formal statistics work.",
+      color: "#b4473f"
+    },
+    {
+      id: "research",
+      label: "Research",
+      short: "Research",
+      description: "Statistical software, modelling tools, papers and research experiments.",
+      color: "#2f5f91"
+    },
+    {
+      id: "writing",
+      label: "Writing",
+      short: "Writing",
+      description: "Public notes and less-formal analysis from the workbench blog.",
+      color: "#587366"
+    }
+  ],
+  concepts: [
+    {
+      id: "map-drawer",
+      number: "01",
+      label: "Map + drawer",
+      summary: "A navigable overview that opens one project at a time for closer inspection.",
+      strength: "Best balance of personality, orientation and detail.",
+      risk: "Needs careful positioning as the project list grows."
+    },
+    {
+      id: "workbench-desk",
+      number: "02",
+      label: "Workbench desk",
+      summary: "Projects become papers, devices and objects arranged across a working surface.",
+      strength: "Most memorable and closest to the workbench metaphor.",
+      risk: "The deliberate mess can become harder to scan."
+    },
+    {
+      id: "studio-shelves",
+      number: "03",
+      label: "Studio shelves",
+      summary: "Three orderly shelves hold compact project covers with room to expand.",
+      strength: "Easy to browse, understand and extend.",
+      risk: "Less surprising than the more spatial concepts."
+    },
+    {
+      id: "constellation",
+      number: "04",
+      label: "Project constellation",
+      summary: "A network foregrounds the relationships between projects and ideas.",
+      strength: "Best at showing how the work connects.",
+      risk: "Visitors may need a moment before they know where to begin."
+    },
+    {
+      id: "product-gallery",
+      number: "05",
+      label: "Product gallery",
+      summary: "Large editorial panels make every project feel tangible and considered.",
+      strength: "Strongest visual storytelling and clearest project previews.",
+      risk: "Takes more scrolling and gives less of an overview."
+    }
+  ],
+  projects: [
+    {
+      id: "little-now",
+      group: "software",
+      title: "Little Now",
+      type: "iPhone & iPad app",
+      status: "Shipping",
+      access: "Public website",
+      visual: "phone",
+      accent: "#e97962",
+      featured: true,
+      description: "One practical, caregiver-led play idea matched to the time, setup and interests available right now.",
+      focus: "Preparing the first App Store release and public activity-sharing flow.",
+      links: [
+        { label: "Visit site", href: "https://little-now.aydins-workbench.com" },
+        { label: "App Store", href: "https://apps.apple.com/app/id6821227588" }
+      ],
+      related: ["workbench-blog"]
+    },
+    {
+      id: "panels",
+      group: "software",
+      title: "Panels",
+      type: "Reading app",
+      status: "Private beta",
+      access: "Sign-in required",
+      visual: "reader",
+      accent: "#7d5c99",
+      description: "A private reading workspace for organising, opening and working through visual publications.",
+      focus: "A focused, library-like reading workflow for approved accounts.",
+      links: [{ label: "Open sign-in", href: "https://panels.aydins-workbench.com" }],
+      related: ["panel-pilot"]
+    },
+    {
+      id: "margin",
+      group: "software",
+      title: "Margin",
+      type: "Research discovery app",
+      status: "Private beta",
+      access: "Sign-in required",
+      visual: "feed",
+      accent: "#466d67",
+      description: "A calm personal feed for discovering research and deciding what deserves a closer read.",
+      focus: "Testing a quieter, context-first research discovery experience.",
+      links: [{ label: "Open sign-in", href: "https://research.aydins-workbench.com" }],
+      related: ["workbench-blog", "llm-review-bench"]
+    },
+    {
+      id: "panel-pilot",
+      group: "software",
+      title: "Panel Pilot",
+      type: "Native reader prototype",
+      status: "In development",
+      access: "No public build",
+      visual: "comic",
+      accent: "#d07a3d",
+      description: "A local-first comic reader exploring comfortable navigation, libraries and native reading behaviour.",
+      focus: "Release-readiness, device behaviour and the core reading loop.",
+      links: [],
+      related: ["panels"]
+    },
+    {
+      id: "household-cash",
+      group: "software",
+      title: "Household Cash",
+      type: "Household tool",
+      status: "Private",
+      access: "Internal use",
+      visual: "cash",
+      accent: "#4d7c59",
+      description: "A deliberately small shared view of household cash, built around clarity instead of dashboard complexity.",
+      focus: "A private household workflow using fictional data in public previews.",
+      links: [],
+      related: []
+    },
+    {
+      id: "starfall-company",
+      group: "software",
+      title: "Starfall Company",
+      type: "Tactics game",
+      status: "Playable MVP",
+      access: "Local prototype",
+      visual: "game",
+      accent: "#bb7d27",
+      description: "A touch-first science-fantasy tactics game about positioning, pressure and keeping a small company alive.",
+      focus: "Combat feel, encounter pacing and a route towards a public build.",
+      links: [],
+      related: []
+    },
+    {
+      id: "gamlss-longitudinal",
+      group: "research",
+      title: "gamlss.longitudinal",
+      type: "R package",
+      status: "In development",
+      access: "Open source",
+      visual: "trajectories",
+      accent: "#3970a8",
+      featured: true,
+      description: "Flexible longitudinal GAMLSS models with changing margins and copula dependence.",
+      focus: "Documentation, examples and practical modelling workflows.",
+      links: [
+        { label: "Package site", href: "https://gamlsslongitudinal.aydins-workbench.com" },
+        { label: "Source", href: "https://github.com/ahibbert/gamlss.longitudinal" }
+      ],
+      related: ["distribution-playground", "copula-paper"]
+    },
+    {
+      id: "distribution-playground",
+      group: "research",
+      title: "Distribution Playground",
+      type: "Interactive research tool",
+      status: "Research preview",
+      access: "Public",
+      visual: "distribution",
+      accent: "#285f91",
+      featured: true,
+      description: "Interactive distributions, dependence, quantile comparison and longitudinal simulation in one workbench.",
+      focus: "Deeper worked examples, interpretation and export workflows.",
+      links: [{ label: "Launch tool", href: "https://gamlss.aydins-workbench.com" }],
+      related: ["gamlss-longitudinal", "copula-paper"]
+    },
+    {
+      id: "copula-paper",
+      group: "research",
+      title: "Copula-based joint regression models",
+      type: "Research paper",
+      status: "Under review",
+      access: "Public preprint",
+      visual: "paper",
+      accent: "#547a9b",
+      description: "A comparison of copula-based, mixed-model and estimating-equation approaches for correlated regression.",
+      focus: "Understanding what each modelling strategy represents and where its trade-offs appear.",
+      links: [{ label: "Read preprint", href: "https://arxiv.org/abs/2410.11892" }],
+      related: ["gamlss-longitudinal", "distribution-playground"]
+    },
+    {
+      id: "llm-review-bench",
+      group: "research",
+      title: "LLM statistician review bench",
+      type: "Research concept",
+      status: "On hold",
+      access: "Concept",
+      visual: "benchmark",
+      accent: "#746294",
+      description: "A proposed benchmark comparing model-generated statistical reviews with expert expectations.",
+      focus: "Define a small rubric-based benchmark before building a larger evaluation system.",
+      links: [],
+      related: ["margin"]
+    },
+    {
+      id: "workbench-blog",
+      group: "writing",
+      title: "Aydin's Workbench blog",
+      type: "Public notes",
+      status: "Live",
+      access: "Public",
+      visual: "blog",
+      accent: "#547766",
+      featured: true,
+      description: "Reproducible notes on Australian public data, modelling questions and projects while they are still taking shape.",
+      focus: "Keep the data, caveats and reasoning visible rather than polishing too early.",
+      links: [{ label: "Read the blog", href: "https://blog.aydins-workbench.com" }],
+      related: ["housing-note", "ndis-note", "bulk-billing-note"]
+    },
+    {
+      id: "housing-note",
+      group: "writing",
+      title: "A First Pass At Australian Dwelling Prices",
+      type: "Data note",
+      status: "Public draft",
+      access: "Public",
+      visual: "housing",
+      accent: "#a96547",
+      description: "A reproducible look at ABS dwelling values, state mean prices and the policy questions they raise.",
+      focus: "Housing, cost of living and public data.",
+      links: [{ label: "Read note", href: "https://blog.aydins-workbench.com/posts/housing-prices-first-pass/" }],
+      related: ["workbench-blog"]
+    },
+    {
+      id: "ndis-note",
+      group: "writing",
+      title: "Are NDIS Participant Outcomes Changing?",
+      type: "Data note",
+      status: "Public draft",
+      access: "Public",
+      visual: "outcomes",
+      accent: "#4b7d74",
+      description: "A simpler look at national participant outcome levels and changes after plan reassessment.",
+      focus: "Descriptive movement kept separate from causal interpretation.",
+      links: [{ label: "Read note", href: "https://blog.aydins-workbench.com/posts/ndis-outcomes-spend-service-access/" }],
+      related: ["workbench-blog"]
+    },
+    {
+      id: "bulk-billing-note",
+      group: "writing",
+      title: "Did Bulk Billing Changes Shift Access?",
+      type: "Policy note",
+      status: "Public draft",
+      access: "Public",
+      visual: "health",
+      accent: "#8f554f",
+      description: "An early look at whether expanded GP bulk-billing incentives changed access patterns.",
+      focus: "Policy signal, timing artefacts and reporting noise.",
+      links: [{ label: "Read note", href: "https://blog.aydins-workbench.com/posts/bulk-billing-changes-impact/" }],
+      related: ["workbench-blog"]
+    }
+  ]
+};
