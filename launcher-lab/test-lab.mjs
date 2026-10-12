@@ -18,7 +18,10 @@ try {
   assert.equal(await page.locator(".detail-mode").count(), 3);
   assert.equal(await page.locator(".taxonomy-card").count(), 3);
   assert.equal(await page.locator("#concept-stage [data-project-id]").count(), 14);
-  assert.equal(await page.locator("#inspector-title").textContent(), "Little Now");
+  assert.equal(await page.locator("#project-inspector").isVisible(), false);
+  assert.equal(await page.locator("[data-project-id][aria-expanded=true]").count(), 0);
+  assert.equal(await page.locator(".artifact-real").count(), 6);
+  assert.equal(await page.locator(".artifact-real img").evaluateAll((images) => images.every((image) => image.complete && image.naturalWidth > 0)), true);
 
   const conceptNames = [
     ["Map + drawer", "map-drawer"],
@@ -54,11 +57,15 @@ try {
 
   await page.getByRole("button", { name: /Inline sheet/ }).click();
   await page.getByRole("tab", { name: /Workbench desk/ }).click();
+  assert.equal(await page.locator(".desk-inline-sheet .project-media-item").count(), 2);
   await page.locator('[data-project-id="housing-note"]').click();
   assert.equal(await page.locator("#inline-inspector").isVisible(), false);
   assert.equal(await page.locator(".desk-inline-sheet").isVisible(), true);
   assert.equal(await page.locator("#desk-inline-title").textContent(), "A First Pass At Australian Dwelling Prices");
   assert.equal(await page.locator('[data-project-id="housing-note"] + .desk-inline-sheet').count(), 1);
+  await page.locator('[data-project-id="housing-note"]').click();
+  assert.equal(await page.locator(".desk-inline-sheet").count(), 0);
+  await page.locator('[data-project-id="housing-note"]').click();
 
   await page.getByRole("tab", { name: /Product gallery/ }).click();
   assert.equal(await page.locator("#inline-inspector").isVisible(), true);

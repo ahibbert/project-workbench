@@ -89,6 +89,11 @@ window.launcherData = {
       status: "Shipping",
       access: "Public website",
       visual: "phone",
+      icon: "assets/projects/little-now/icon.webp",
+      media: [
+        { src: "assets/projects/little-now/screen-01.webp", alt: "Little Now recommendation screen in its App Store presentation", label: "App Store capture · recommendation" },
+        { src: "assets/projects/little-now/screen-02.webp", alt: "Little Now activity details screen in its App Store presentation", label: "App Store capture · activity details" }
+      ],
       accent: "#e97962",
       featured: true,
       description: "One practical, caregiver-led play idea matched to the time, setup and interests available right now.",
@@ -107,6 +112,7 @@ window.launcherData = {
       status: "Private beta",
       access: "Sign-in required",
       visual: "reader",
+      icon: "assets/projects/panels/icon.webp",
       accent: "#7d5c99",
       description: "A private reading workspace for organising, opening and working through visual publications.",
       focus: "A focused, library-like reading workflow for approved accounts.",
@@ -121,6 +127,10 @@ window.launcherData = {
       status: "Private beta",
       access: "Sign-in required",
       visual: "feed",
+      icon: "assets/projects/margin/icon.webp",
+      media: [
+        { src: "assets/projects/margin/brand-preview.webp", alt: "Margin brand preview with its research-network motif", label: "Current brand preview" }
+      ],
       accent: "#466d67",
       description: "A calm personal feed for discovering research and deciding what deserves a closer read.",
       focus: "Testing a quieter, context-first research discovery experience.",
@@ -135,6 +145,7 @@ window.launcherData = {
       status: "In development",
       access: "No public build",
       visual: "comic",
+      icon: "assets/projects/panel-pilot/icon.webp",
       accent: "#d07a3d",
       description: "A local-first comic reader exploring comfortable navigation, libraries and native reading behaviour.",
       focus: "Release-readiness, device behaviour and the core reading loop.",
@@ -149,6 +160,10 @@ window.launcherData = {
       status: "Private",
       access: "Internal use",
       visual: "cash",
+      icon: "assets/projects/household-cash/icon.webp",
+      media: [
+        { src: "assets/projects/household-cash/brand-preview.webp", alt: "Household Cash current visual identity", label: "Current brand preview" }
+      ],
       accent: "#4d7c59",
       description: "A deliberately small shared view of household cash, built around clarity instead of dashboard complexity.",
       focus: "A private household workflow using fictional data in public previews.",
@@ -163,6 +178,11 @@ window.launcherData = {
       status: "Playable MVP",
       access: "Local prototype",
       visual: "game",
+      icon: "assets/projects/starfall-company/icon.webp",
+      media: [
+        { src: "assets/projects/starfall-company/gameplay-concept.webp", alt: "Starfall Company Heart of Glass tactical encounter concept", label: "Gameplay direction · Heart of Glass" },
+        { src: "assets/projects/starfall-company/colony-concept.webp", alt: "Starfall Company Ilex colony building concept", label: "Gameplay direction · Ilex colony" }
+      ],
       accent: "#bb7d27",
       description: "A touch-first science-fantasy tactics game about positioning, pressure and keeping a small company alive.",
       focus: "Combat feel, encounter pacing and a route towards a public build.",
@@ -177,6 +197,9 @@ window.launcherData = {
       status: "In development",
       access: "Open source",
       visual: "trajectories",
+      media: [
+        { src: "assets/projects/gamlss-longitudinal/optimizer-benchmark.webp", alt: "Optimizer benchmark output from the gamlss.longitudinal project", label: "Research output · optimiser benchmark" }
+      ],
       accent: "#3970a8",
       featured: true,
       description: "Flexible longitudinal GAMLSS models with changing margins and copula dependence.",

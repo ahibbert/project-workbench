@@ -25,7 +25,7 @@ const requestedDetail = initialUrl.searchParams.get("detail");
 const state = {
   concept: concepts.some((concept) => concept.id === requestedConcept) ? requestedConcept : concepts[0].id,
   group: "all",
-  selected: "little-now",
+  selected: null,
   detail: detailModes.some((mode) => mode.id === requestedDetail) ? requestedDetail : "side"
 };
 
@@ -62,8 +62,8 @@ function projectById(id) {
 }
 
 function ensureVisibleSelection() {
-  if (!visibleProjects().some((project) => project.id === state.selected)) {
-    state.selected = visibleProjects()[0]?.id ?? projects[0].id;
+  if (state.selected && !visibleProjects().some((project) => project.id === state.selected)) {
+    state.selected = null;
   }
 }
 
@@ -71,7 +71,15 @@ function createArtifact(project, size = "medium") {
   const artifact = el("div", `artifact artifact-${project.visual} artifact-${size}`);
   artifact.style.setProperty("--accent", project.accent);
   artifact.setAttribute("aria-hidden", "true");
-  artifact.innerHTML = artifactShapes[project.visual] ?? artifactShapes.blog;
+  if (project.icon) {
+    artifact.classList.add("artifact-real");
+    const image = el("img");
+    image.src = project.icon;
+    image.alt = "";
+    artifact.append(image);
+  } else {
+    artifact.innerHTML = artifactShapes[project.visual] ?? artifactShapes.blog;
+  }
   return artifact;
 }
 
@@ -80,6 +88,7 @@ function createProjectControl(project, className, options = {}) {
   button.type = "button";
   button.dataset.projectId = project.id;
   button.setAttribute("aria-label", `Inspect ${project.title}`);
+  button.setAttribute("aria-expanded", String(state.selected === project.id));
   if (options.artifact !== false) button.append(createArtifact(project, options.artifactSize ?? "small"));
 
   const copy = el("span", "project-control-copy");
@@ -91,10 +100,10 @@ function createProjectControl(project, className, options = {}) {
 }
 
 function selectProject(id) {
-  state.selected = id;
+  state.selected = state.selected === id ? null : id;
   renderStage();
   renderInspector({ openDialog: state.detail === "dialog" });
-  if (state.detail === "inline") {
+  if (state.detail === "inline" && state.selected) {
     const inlineTarget = document.querySelector(".desk-inline-sheet") ?? document.querySelector("#inline-inspector");
     inlineTarget.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }
@@ -284,7 +293,7 @@ function renderWorkbenchDesk(items) {
         const sheet = el("article", "desk-inline-sheet");
         sheet.style.setProperty("--accent", project.accent);
         sheet.setAttribute("aria-labelledby", "desk-inline-title");
-        sheet.append(createInspectorFragment(project, "desk-inline-title"));
+        sheet.append(createInspectorFragment(project, "desk-inline-title", { includeMedia: true }));
         unit.append(sheet);
       }
       objects.append(unit);
@@ -477,7 +486,26 @@ function renderStage() {
   stage.replaceChildren(content);
 }
 
-function createInspectorFragment(project, titleId) {
+function createProjectMedia(project) {
+  if (!project.media?.length) return null;
+  const media = el("section", "project-media");
+  media.setAttribute("aria-label", `${project.title} visuals`);
+  media.append(el("strong", "project-media-heading", project.media.length === 1 ? "Project visual" : "Project visuals"));
+  const grid = el("div", `project-media-grid${project.media.length === 1 ? " project-media-grid-single" : ""}`);
+  project.media.forEach((item) => {
+    const figure = el("figure", "project-media-item");
+    const image = el("img");
+    image.src = item.src;
+    image.alt = item.alt;
+    image.loading = "lazy";
+    figure.append(image, el("figcaption", "", item.label));
+    grid.append(figure);
+  });
+  media.append(grid);
+  return media;
+}
+
+function createInspectorFragment(project, titleId, { includeMedia = false } = {}) {
   const fragment = document.createDocumentFragment();
   const visual = el("div", "inspector-visual");
   visual.append(createArtifact(project, "large"));
@@ -505,6 +533,10 @@ function createInspectorFragment(project, titleId) {
   }
 
   fragment.append(visual, group, title, meta, description, focus, links);
+  if (includeMedia) {
+    const media = createProjectMedia(project);
+    if (media) fragment.append(media);
+  }
   return fragment;
 }
 
@@ -515,7 +547,18 @@ function renderInspector({ openDialog = false } = {}) {
   const dialog = document.querySelector("#project-dialog");
   const dialogContent = document.querySelector("#dialog-inspector");
 
-  document.body.dataset.detail = state.detail;
+  document.body.dataset.detail = project ? state.detail : "none";
+
+  if (!project) {
+    if (dialog.open) dialog.close();
+    side.hidden = true;
+    inline.hidden = true;
+    side.replaceChildren();
+    inline.replaceChildren();
+    dialogContent.replaceChildren();
+    return;
+  }
+
   [side, inline, dialog].forEach((surface) => surface.style.setProperty("--accent", project.accent));
 
   if (state.detail !== "dialog" && dialog.open) dialog.close();
@@ -529,9 +572,9 @@ function renderInspector({ openDialog = false } = {}) {
   if (state.detail === "side") {
     side.append(createInspectorFragment(project, "inspector-title"));
   } else if (state.detail === "inline" && !usesDeskInline) {
-    inline.append(createInspectorFragment(project, "inline-inspector-title"));
+    inline.append(createInspectorFragment(project, "inline-inspector-title", { includeMedia: true }));
   } else {
-    dialogContent.append(createInspectorFragment(project, "dialog-inspector-title"));
+    dialogContent.append(createInspectorFragment(project, "dialog-inspector-title", { includeMedia: true }));
     if (openDialog && !dialog.open) dialog.showModal();
   }
 }

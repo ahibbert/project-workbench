@@ -26,7 +26,6 @@ try {
   await page.getByRole("button", { name: "Close project dossier" }).click();
   await page.getByRole("button", { name: /Inline sheet/ }).click();
   await page.locator('[role="tab"][data-concept="workbench-desk"]').click();
-  await page.locator('[data-project-id="housing-note"]').click();
   await page.locator(".prototype-frame").screenshot({ path: resolve(output, "detail-inline-sheet.png") });
   console.log(`Captured ${concepts.length} concept stages and two detail treatments in ${output}.`);
 } finally {
