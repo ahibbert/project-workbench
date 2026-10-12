@@ -15,7 +15,7 @@ const detailModes = [
   {
     id: "inline",
     label: "Inline sheet",
-    description: "Continuous context: details unfold below the launcher without covering anything."
+    description: "Continuous context: details unfold beside the selected work on the workbench, or below the launcher elsewhere."
   }
 ];
 
@@ -95,7 +95,8 @@ function selectProject(id) {
   renderStage();
   renderInspector({ openDialog: state.detail === "dialog" });
   if (state.detail === "inline") {
-    document.querySelector("#inline-inspector").scrollIntoView({ block: "nearest", behavior: "smooth" });
+    const inlineTarget = document.querySelector(".desk-inline-sheet") ?? document.querySelector("#inline-inspector");
+    inlineTarget.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }
 }
 
@@ -132,6 +133,7 @@ function renderConceptTabs() {
       renderConceptTabs();
       renderConceptSummary();
       renderStage();
+      renderInspector();
       document.querySelector("#concept-stage").focus({ preventScroll: true });
     });
     return button;
@@ -183,6 +185,7 @@ function renderDetailModes() {
       url.searchParams.set("detail", mode.id);
       history.replaceState(null, "", url);
       renderDetailModes();
+      renderStage();
       renderInspector();
     });
     return button;
@@ -261,7 +264,7 @@ function renderMapDrawer(items) {
 
 function renderWorkbenchDesk(items) {
   const stage = el("div", "desk-concept");
-  stage.append(createStageHeader("Open workbench", "Projects feel like objects being actively handled."));
+  stage.append(createStageHeader("Open workbench", "A clean studio surface for projects being actively handled."));
   const board = el("div", "desk-board");
 
   groups.forEach((group) => {
@@ -272,9 +275,19 @@ function renderWorkbenchDesk(items) {
     zone.append(el("h3", "", group.label));
     const objects = el("div", "desk-objects");
     groupItems.forEach((project, index) => {
+      const hasInlineSheet = state.detail === "inline" && state.selected === project.id;
+      const unit = el("div", `desk-project-unit${hasInlineSheet ? " has-inline-sheet" : ""}`);
       const object = createProjectControl(project, `desk-object desk-object-${project.visual}`, { artifactSize: "medium" });
-      object.style.setProperty("--tilt", `${[-2.5, 1.5, -1, 2.25, -1.75, 0.75][index % 6]}deg`);
-      objects.append(object);
+      object.style.setProperty("--tilt", `${[-1.2, 0.8, -0.55, 1, -0.75, 0.45][index % 6]}deg`);
+      unit.append(object);
+      if (hasInlineSheet) {
+        const sheet = el("article", "desk-inline-sheet");
+        sheet.style.setProperty("--accent", project.accent);
+        sheet.setAttribute("aria-labelledby", "desk-inline-title");
+        sheet.append(createInspectorFragment(project, "desk-inline-title"));
+        unit.append(sheet);
+      }
+      objects.append(unit);
     });
     zone.append(objects);
     board.append(zone);
@@ -506,15 +519,16 @@ function renderInspector({ openDialog = false } = {}) {
   [side, inline, dialog].forEach((surface) => surface.style.setProperty("--accent", project.accent));
 
   if (state.detail !== "dialog" && dialog.open) dialog.close();
+  const usesDeskInline = state.detail === "inline" && state.concept === "workbench-desk";
   side.hidden = state.detail !== "side";
-  inline.hidden = state.detail !== "inline";
+  inline.hidden = state.detail !== "inline" || usesDeskInline;
   side.replaceChildren();
   inline.replaceChildren();
   dialogContent.replaceChildren();
 
   if (state.detail === "side") {
     side.append(createInspectorFragment(project, "inspector-title"));
-  } else if (state.detail === "inline") {
+  } else if (state.detail === "inline" && !usesDeskInline) {
     inline.append(createInspectorFragment(project, "inline-inspector-title"));
   } else {
     dialogContent.append(createInspectorFragment(project, "dialog-inspector-title"));

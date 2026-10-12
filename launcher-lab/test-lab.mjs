@@ -53,7 +53,14 @@ try {
   assert.equal(await page.locator("#project-dialog").getAttribute("open"), null);
 
   await page.getByRole("button", { name: /Inline sheet/ }).click();
+  await page.getByRole("tab", { name: /Workbench desk/ }).click();
   await page.locator('[data-project-id="housing-note"]').click();
+  assert.equal(await page.locator("#inline-inspector").isVisible(), false);
+  assert.equal(await page.locator(".desk-inline-sheet").isVisible(), true);
+  assert.equal(await page.locator("#desk-inline-title").textContent(), "A First Pass At Australian Dwelling Prices");
+  assert.equal(await page.locator('[data-project-id="housing-note"] + .desk-inline-sheet').count(), 1);
+
+  await page.getByRole("tab", { name: /Product gallery/ }).click();
   assert.equal(await page.locator("#inline-inspector").isVisible(), true);
   assert.equal(await page.locator("#inline-inspector-title").textContent(), "A First Pass At Australian Dwelling Prices");
 
