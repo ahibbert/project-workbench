@@ -27,10 +27,13 @@ try {
 
   const heroShell = await page.locator(".hero-shell").boundingBox();
   const projectShell = await page.locator(".projects-section").boundingBox();
+  const aboutShell = await page.locator(".about-section").boundingBox();
   const header = await page.locator(".site-header").boundingBox();
-  assert.ok(heroShell.width <= 1241, `Hero shell is too wide: ${heroShell.width}`);
-  assert.ok(projectShell.width <= 1021, `Project shell is too wide: ${projectShell.width}`);
-  assert.ok(heroShell.width > projectShell.width, "Hero should have more breathing room than the project cards.");
+  assert.ok(heroShell.width <= 1201, `Hero shell is too wide: ${heroShell.width}`);
+  assert.ok(projectShell.width <= 1201, `Project shell is too wide: ${projectShell.width}`);
+  assert.ok(aboutShell.width <= 1201, `About shell is too wide: ${aboutShell.width}`);
+  assert.equal(Math.round(heroShell.width), Math.round(projectShell.width), "Hero and project launcher should share one width.");
+  assert.equal(Math.round(heroShell.width), Math.round(aboutShell.width), "Hero and About should share one width.");
   assert.equal(Math.round(header.width), 1440, "Header background should span the viewport.");
   const headingLines = await page.locator("h1 span").evaluateAll((lines) => lines.map((line) => ({
     width: line.getBoundingClientRect().width,

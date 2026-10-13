@@ -18,7 +18,7 @@ Project and post content lives in `projects.json`. The registry is grouped into:
 one reveals its status, links and real project imagery. On wide screens the detail
 sheet opens beside the cards, while narrow screens place it directly below the
 selected card. `index.html` contains the page narrative and `styles.css` contains
-the presentation layer. Full-width colour bands wrap a centred 980px content shell.
+the presentation layer. Full-width colour bands wrap a consistent centred 1200px content shell.
 
 Validate the registry before publishing:
 
