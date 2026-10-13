@@ -145,8 +145,8 @@ h3 { margin: 0; line-height: 1.12; }
 .workbench-visual {
   position: relative;
   min-width: 0;
-  min-height: 410px;
-  height: min(57vh, 540px);
+  min-height: 360px;
+  height: min(410px, 48vw);
   border: 1px solid var(--ink);
   border-radius: var(--radius);
   overflow: hidden;
@@ -189,7 +189,7 @@ h3 { margin: 0; line-height: 1.12; }
   position: absolute;
   right: 1rem;
   bottom: 1rem;
-  max-width: 16rem;
+  max-width: 13rem;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   padding: 0.7rem;
@@ -201,6 +201,8 @@ h3 { margin: 0; line-height: 1.12; }
 
 .projects-band { width: 100%; background: #f7f8f6; }
 .projects-section, .posts-section, .about-section { padding-block: clamp(3rem, 7vw, 5.5rem); }
+.projects-section { padding-bottom: clamp(2.5rem, 4vw, 4rem); }
+.about-section { padding-top: clamp(2rem, 3vw, 3rem); padding-bottom: clamp(2.5rem, 4vw, 4rem); }
 .section-heading {
   display: grid;
   grid-template-columns: minmax(250px, 0.8fr) minmax(300px, 1fr);
@@ -376,7 +378,7 @@ h3 { margin: 0; line-height: 1.12; }
 @media (max-width: 860px) {
   .hero, .section-heading, .bio-card { grid-template-columns: 1fr; }
   .hero { min-height: auto; }
-  .workbench-visual { height: 440px; }
+  .workbench-visual { height: 400px; }
   .project-objects { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .zone-content.has-sheet { grid-template-columns: minmax(220px, 0.72fr) minmax(340px, 1.28fr); }
   .posts-grid { grid-template-columns: 1fr; }
@@ -389,7 +391,7 @@ h3 { margin: 0; line-height: 1.12; }
   h1 { font-size: clamp(2.85rem, 14vw, 3.7rem); line-height: 0.96; }
   .hero-actions { display: grid; grid-template-columns: 1fr; }
   .button { width: 100%; }
-  .workbench-visual { min-height: 330px; height: 390px; }
+  .workbench-visual { min-height: 320px; height: 350px; }
   .workbench-map { padding-top: 2.5rem; }
   .map-caption { top: 0.7rem; right: 0.7rem; bottom: auto; left: 0.7rem; max-width: none; }
   .zone-heading { display: block; }

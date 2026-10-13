@@ -32,8 +32,11 @@ try {
     width: line.getBoundingClientRect().width,
     parentWidth: line.parentElement.getBoundingClientRect().width,
   })));
-  assert.equal(headingLines.length, 3);
+  assert.equal(headingLines.length, 4);
   assert.ok(headingLines.every(({ width, parentWidth }) => width <= parentWidth), `Hero heading overflows: ${JSON.stringify(headingLines)}`);
+  const heroCopy = await page.locator(".hero-copy").boundingBox();
+  const heroVisual = await page.locator(".workbench-visual").boundingBox();
+  assert.ok(heroVisual.height <= heroCopy.height + 1, `Hero illustration should not be taller than its copy: ${heroVisual.height} > ${heroCopy.height}`);
 
   const marginButton = page.getByRole("button", { name: "Open Margin" });
   await marginButton.click();
