@@ -197,7 +197,8 @@ window.launcherData = {
       status: "In development",
       access: "Open source",
       visual: "trajectories",
-      icon: "assets/projects/gamlss-longitudinal/icon.svg",
+      icon: "assets/projects/gamlss-longitudinal/r-output.webp",
+      iconKind: "thumbnail",
       media: [
         { src: "assets/projects/gamlss-longitudinal/optimizer-benchmark.webp", alt: "Optimizer benchmark output from the gamlss.longitudinal project", label: "Research output · optimiser benchmark" }
       ],
@@ -219,7 +220,11 @@ window.launcherData = {
       status: "Research preview",
       access: "Public",
       visual: "distribution",
-      icon: "assets/projects/distribution-playground/icon.svg",
+      icon: "assets/projects/distribution-playground/live-plot.webp",
+      iconKind: "thumbnail",
+      media: [
+        { src: "assets/projects/distribution-playground/live-plot-detail.webp", alt: "Live Box-Cox Power Exponential density plot from Distribution Playground", label: "Live tool output · density explorer" }
+      ],
       accent: "#285f91",
       featured: true,
       description: "Interactive distributions, dependence, quantile comparison and longitudinal simulation in one workbench.",
@@ -235,7 +240,11 @@ window.launcherData = {
       status: "Under review",
       access: "Public preprint",
       visual: "paper",
-      icon: "assets/projects/copula-paper/icon.svg",
+      icon: "assets/projects/copula-paper/paper-page.webp",
+      iconKind: "thumbnail",
+      media: [
+        { src: "assets/projects/copula-paper/paper-page-detail.webp", alt: "Title page of the copula-based correlated regression preprint", label: "Preprint · title page" }
+      ],
       accent: "#547a9b",
       description: "A comparison of copula-based, mixed-model and estimating-equation approaches for correlated regression.",
       focus: "Understanding what each modelling strategy represents and where its trade-offs appear.",
@@ -250,8 +259,10 @@ window.launcherData = {
       status: "In progress",
       access: "Working manuscript",
       visual: "paper",
-      icon: "assets/projects/gamlss-longitudinal-paper/icon.svg",
+      icon: "assets/projects/gamlss-longitudinal-paper/manuscript-output.webp",
+      iconKind: "thumbnail",
       media: [
+        { src: "assets/projects/gamlss-longitudinal-paper/manuscript-output-detail.webp", alt: "Treatment-effect table prepared for the longitudinal GAMLSS manuscript", label: "Manuscript output · treatment effects" },
         { src: "assets/projects/gamlss-longitudinal/optimizer-benchmark.webp", alt: "Optimizer benchmark output supporting the longitudinal GAMLSS manuscript", label: "Manuscript output · optimiser benchmark" }
       ],
       accent: "#64558a",
@@ -268,7 +279,11 @@ window.launcherData = {
       status: "Live",
       access: "Public",
       visual: "blog",
-      icon: "assets/projects/workbench-blog/icon.svg",
+      icon: "assets/projects/workbench-blog/chart-collage.webp",
+      iconKind: "thumbnail",
+      media: [
+        { src: "assets/projects/workbench-blog/chart-collage-detail.webp", alt: "A collage of charts from Aydin's Workbench data notes", label: "Published work · selected charts" }
+      ],
       accent: "#547766",
       featured: true,
       description: "Reproducible notes on Australian public data, modelling questions and projects while they are still taking shape.",
@@ -284,7 +299,11 @@ window.launcherData = {
       status: "Public draft",
       access: "Public",
       visual: "housing",
-      icon: "assets/projects/housing-note/icon.svg",
+      icon: "assets/projects/housing-note/chart.webp",
+      iconKind: "thumbnail",
+      media: [
+        { src: "assets/projects/housing-note/chart-detail.webp", alt: "Mean dwelling price chart from the Australian housing data note", label: "Published chart · dwelling prices" }
+      ],
       accent: "#a96547",
       description: "A reproducible look at ABS dwelling values, state mean prices and the policy questions they raise.",
       focus: "Housing, cost of living and public data.",
@@ -299,7 +318,11 @@ window.launcherData = {
       status: "Public draft",
       access: "Public",
       visual: "outcomes",
-      icon: "assets/projects/ndis-note/icon.svg",
+      icon: "assets/projects/ndis-note/chart.webp",
+      iconKind: "thumbnail",
+      media: [
+        { src: "assets/projects/ndis-note/chart-detail.webp", alt: "NDIS outcome scores and payments per participant chart", label: "Published chart · participant outcomes" }
+      ],
       accent: "#4b7d74",
       description: "A simpler look at national participant outcome levels and changes after plan reassessment.",
       focus: "Descriptive movement kept separate from causal interpretation.",
@@ -314,7 +337,11 @@ window.launcherData = {
       status: "Public draft",
       access: "Public",
       visual: "health",
-      icon: "assets/projects/bulk-billing-note/icon.svg",
+      icon: "assets/projects/bulk-billing-note/chart.webp",
+      iconKind: "thumbnail",
+      media: [
+        { src: "assets/projects/bulk-billing-note/chart-detail.webp", alt: "National bulk-billing rate time-series chart", label: "Published chart · bulk-billing rate" }
+      ],
       accent: "#8f554f",
       description: "An early look at whether expanded GP bulk-billing incentives changed access patterns.",
       focus: "Policy signal, timing artefacts and reporting noise.",

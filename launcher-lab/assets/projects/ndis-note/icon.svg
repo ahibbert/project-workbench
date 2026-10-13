@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="NDIS participant outcomes data note">
-  <rect width="512" height="512" rx="92" fill="#edf4f2"/>
-  <path d="M91 407h330M91 407V102" fill="none" stroke="#3f6e66" stroke-width="16" stroke-linecap="round"/>
-  <path d="M118 351l72-48 66 18 66-86 72-52" fill="none" stroke="#4b8379" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
-  <g fill="#fff" stroke="#4b8379" stroke-width="13"><circle cx="118" cy="351" r="19"/><circle cx="190" cy="303" r="19"/><circle cx="256" cy="321" r="19"/><circle cx="322" cy="235" r="19"/><circle cx="394" cy="183" r="19"/></g>
-  <path d="M342 116h68M376 82v68" stroke="#b4473f" stroke-width="15" stroke-linecap="round"/>
-</svg>

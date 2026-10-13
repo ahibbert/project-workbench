@@ -73,6 +73,7 @@ function createArtifact(project, size = "medium") {
   artifact.setAttribute("aria-hidden", "true");
   if (project.icon) {
     artifact.classList.add("artifact-real");
+    if (project.iconKind) artifact.classList.add(`artifact-${project.iconKind}`);
     const image = el("img");
     image.src = project.icon;
     image.alt = "";

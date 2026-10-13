@@ -24,6 +24,8 @@ try {
   assert.equal(await page.locator("#project-inspector").isVisible(), false);
   assert.equal(await page.locator("[data-project-id][aria-expanded=true]").count(), 0);
   assert.equal(await page.locator(".artifact-real").count(), 14);
+  assert.equal(await page.locator(".artifact-thumbnail").count(), 8);
+  assert.ok((await page.locator("body").boundingBox()).width <= 981, "desktop canvas should stay capped near 980px");
   await page.waitForFunction(() => [...document.querySelectorAll(".artifact-real img")].every((image) => image.complete && image.naturalWidth > 0));
   assert.equal(await page.locator(".artifact-real img").evaluateAll((images) => images.every((image) => image.complete && image.naturalWidth > 0)), true);
 
@@ -67,6 +69,7 @@ try {
   assert.equal(await page.locator(".desk-inline-sheet").isVisible(), true);
   assert.equal(await page.locator("#desk-inline-title").textContent(), "A First Pass At Australian Dwelling Prices");
   assert.equal(await page.locator(".desk-zone-blogs .desk-inline-sheet").count(), 1);
+  assert.equal(await page.locator(".desk-zone-blogs .desk-inline-sheet .project-media-item").count(), 1);
   const selectedCardBox = await page.locator('[data-project-id="housing-note"]').boundingBox();
   const inlineSheetBox = await page.locator(".desk-zone-blogs .desk-inline-sheet").boundingBox();
   assert.ok(inlineSheetBox.x > selectedCardBox.x, "inline sheet should open to the right of the selected card");

@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Correlated-data research paper">
-  <rect width="512" height="512" rx="92" fill="#eef2f6"/>
-  <path d="M128 72h205l70 70v298H128z" fill="#fff" stroke="#4a708f" stroke-width="16"/>
-  <path d="M333 72v78h70" fill="#dce8f2" stroke="#4a708f" stroke-width="16"/>
-  <g fill="#2f5f91"><circle cx="202" cy="304" r="17"/><circle cx="236" cy="267" r="16"/><circle cx="270" cy="280" r="15"/><circle cx="309" cy="226" r="17"/><circle cx="342" cy="247" r="14"/></g>
-  <path d="M179 334l176-132" stroke="#b4473f" stroke-width="13" stroke-linecap="round"/>
-  <path d="M176 181h112M176 215h76" stroke="#8aa4b9" stroke-width="13" stroke-linecap="round"/>
-</svg>

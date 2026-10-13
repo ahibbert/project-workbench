@@ -1,9 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Longitudinal GAMLSS manuscript in progress">
-  <rect width="512" height="512" rx="92" fill="#f1eef7"/>
-  <path d="M105 68h235l67 67v309H105z" fill="#fff" stroke="#64558a" stroke-width="16"/>
-  <path d="M340 68v76h67" fill="#e4ddf0" stroke="#64558a" stroke-width="16"/>
-  <path d="M151 337c42-93 77-45 112-112 31-58 64-29 100-83" fill="none" stroke="#64558a" stroke-width="17" stroke-linecap="round"/>
-  <path d="M151 286c51 19 82 52 126 33 43-19 52-54 87-45" fill="none" stroke="#9a8ab8" stroke-width="13" stroke-linecap="round"/>
-  <path d="M151 385h212" stroke="#c4bbd6" stroke-width="13" stroke-linecap="round"/>
-  <circle cx="370" cy="378" r="52" fill="#64558a"/><text x="370" y="399" text-anchor="middle" fill="#fff" font-family="Georgia,serif" font-size="62" font-weight="700">R</text>
-</svg>

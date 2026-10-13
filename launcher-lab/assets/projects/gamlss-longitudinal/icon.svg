@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Longitudinal trajectories and dependence">
-  <rect width="512" height="512" rx="92" fill="#eef4fa"/>
-  <path d="M92 402V96M92 402h334" fill="none" stroke="#244f7c" stroke-width="18" stroke-linecap="round"/>
-  <path d="M112 318c62-96 116-70 163-132 46-61 88-47 132-89" fill="none" stroke="#2f70ad" stroke-width="20" stroke-linecap="round"/>
-  <path d="M112 246c54 25 106 68 157 49 51-20 91-72 138-58" fill="none" stroke="#7399bc" stroke-width="16" stroke-linecap="round"/>
-  <g fill="#fff" stroke="#244f7c" stroke-width="11"><circle cx="112" cy="318" r="17"/><circle cx="275" cy="186" r="17"/><circle cx="407" cy="97" r="17"/></g>
-  <text x="305" y="382" fill="#244f7c" font-family="Georgia,serif" font-size="70" font-style="italic">ρ(t)</text>
-</svg>
