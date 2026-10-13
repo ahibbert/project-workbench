@@ -1,5 +1,88 @@
 const registryUrl = "projects.json";
 
+const groupColours = {
+  research: "#2f5f91",
+  apps: "#b4473f",
+  blogs: "#587366"
+};
+
+const projectVisuals = {
+  "little-now": {
+    icon: "assets/projects/little-now/icon.webp",
+    accent: "#e97962",
+    media: [
+      ["assets/projects/little-now/screen-01.webp", "Little Now recommendation screen in its App Store presentation", "App Store capture · recommendation"],
+      ["assets/projects/little-now/screen-02.webp", "Little Now activity details screen in its App Store presentation", "App Store capture · activity details"]
+    ]
+  },
+  panels: { icon: "assets/projects/panels/icon.webp", accent: "#4b5965" },
+  margin: {
+    icon: "assets/projects/margin/icon.webp",
+    accent: "#567563",
+    media: [["assets/projects/margin/brand-preview.webp", "Margin research discovery brand preview", "Current brand preview"]]
+  },
+  "panel-pilot": { icon: "assets/projects/panel-pilot/icon.webp", accent: "#2a62a2" },
+  "household-cash": {
+    icon: "assets/projects/household-cash/icon.webp",
+    accent: "#1d7355",
+    media: [["assets/projects/household-cash/brand-preview.webp", "Household Cash current visual identity", "Current brand preview"]]
+  },
+  "starfall-company": {
+    icon: "assets/projects/starfall-company/icon.webp",
+    accent: "#bb7d27",
+    media: [
+      ["assets/projects/starfall-company/gameplay-concept.webp", "Starfall Company tactical encounter concept", "Gameplay direction · Heart of Glass"],
+      ["assets/projects/starfall-company/colony-concept.webp", "Starfall Company colony building concept", "Gameplay direction · Ilex colony"]
+    ]
+  },
+  "gamlss-longitudinal": {
+    icon: "assets/projects/gamlss-longitudinal/r-output.webp",
+    accent: "#3970a8",
+    media: [["assets/projects/gamlss-longitudinal/optimizer-benchmark.webp", "Optimizer benchmark output from gamlss.longitudinal", "Research output · optimiser benchmark"]]
+  },
+  "distribution-playground": {
+    icon: "assets/projects/distribution-playground/live-plot.webp",
+    accent: "#285f91",
+    media: [["assets/projects/distribution-playground/live-plot-detail.webp", "Live density plot from Distribution Playground", "Live tool output · density explorer"]]
+  },
+  "copula-paper": {
+    icon: "assets/projects/copula-paper/paper-page.webp",
+    accent: "#547a9b",
+    media: [["assets/projects/copula-paper/paper-page-detail.webp", "Title page of the copula-based correlated regression preprint", "Preprint · title page"]]
+  },
+  "gamlss-longitudinal-paper": {
+    icon: "assets/projects/gamlss-longitudinal-paper/manuscript-output.webp",
+    accent: "#64558a",
+    media: [
+      ["assets/projects/gamlss-longitudinal-paper/manuscript-output-detail.webp", "Treatment-effect table prepared for the longitudinal GAMLSS manuscript", "Manuscript output · treatment effects"],
+      ["assets/projects/gamlss-longitudinal/optimizer-benchmark.webp", "Optimizer benchmark supporting the longitudinal GAMLSS manuscript", "Manuscript output · optimiser benchmark"]
+    ]
+  },
+  "workbench-blog": {
+    icon: "assets/projects/workbench-blog/chart-collage.webp",
+    accent: "#547766",
+    media: [["assets/projects/workbench-blog/chart-collage-detail.webp", "Charts from Aydin's Workbench data notes", "Published work · selected charts"]]
+  },
+  "housing-note": {
+    icon: "assets/projects/housing-note/chart.webp",
+    accent: "#a96547",
+    media: [["assets/projects/housing-note/chart-detail.webp", "Mean dwelling price chart from the Australian housing data note", "Published chart · dwelling prices"]]
+  },
+  "ndis-note": {
+    icon: "assets/projects/ndis-note/chart.webp",
+    accent: "#4b7d74",
+    media: [["assets/projects/ndis-note/chart-detail.webp", "NDIS outcome scores and payments per participant chart", "Published chart · participant outcomes"]]
+  },
+  "bulk-billing-note": {
+    icon: "assets/projects/bulk-billing-note/chart.webp",
+    accent: "#8f554f",
+    media: [["assets/projects/bulk-billing-note/chart-detail.webp", "National bulk-billing rate time-series chart", "Published chart · bulk-billing rate"]]
+  }
+};
+
+let registry;
+let selectedProjectId = null;
+
 function element(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -7,186 +90,183 @@ function element(tag, className, text) {
   return node;
 }
 
-function createLinks(links) {
-  const wrapper = element("div", "card-links");
-  links.forEach(({ label, href }) => {
-    const link = element("a", "", label);
-    link.href = href;
-    if (href.startsWith("http")) link.rel = "noreferrer";
-    wrapper.append(link);
+function enrichedProject(project) {
+  const visual = projectVisuals[project.id] ?? {};
+  return { ...project, ...visual };
+}
+
+function projectById(id) {
+  return registry.projects.find((project) => project.id === id);
+}
+
+function createThumbnail(project) {
+  const frame = element("span", "project-thumbnail");
+  frame.style.setProperty("--accent", project.accent);
+  const image = element("img");
+  image.src = project.icon;
+  image.alt = "";
+  image.loading = "lazy";
+  frame.append(image);
+  return frame;
+}
+
+function createProjectButton(project, index) {
+  const button = element("button", `project-object${selectedProjectId === project.id ? " is-selected" : ""}`);
+  button.type = "button";
+  button.dataset.projectId = project.id;
+  button.setAttribute("aria-expanded", String(selectedProjectId === project.id));
+  button.setAttribute("aria-label", `${selectedProjectId === project.id ? "Close" : "Open"} ${project.title}`);
+  button.style.setProperty("--tilt", `${[-0.8, 0.55, -0.35, 0.7, -0.5, 0.3][index % 6]}deg`);
+
+  const copy = element("span", "project-object-copy");
+  copy.append(element("strong", "", project.title), element("small", "", project.status));
+  button.append(createThumbnail(project), copy);
+  button.addEventListener("click", () => selectProject(project.id));
+  return button;
+}
+
+function createMedia(project) {
+  if (!project.media?.length) return null;
+  const media = element("section", "project-media");
+  media.setAttribute("aria-label", `${project.title} visuals`);
+  media.append(element("strong", "project-media-heading", project.media.length === 1 ? "Project visual" : "Project visuals"));
+  const grid = element("div", `project-media-grid${project.media.length === 1 ? " project-media-grid-single" : ""}`);
+  project.media.forEach(([src, alt, label]) => {
+    const figure = element("figure", "project-media-item");
+    const image = element("img");
+    image.src = src;
+    image.alt = alt;
+    image.loading = "lazy";
+    figure.append(image, element("figcaption", "", label));
+    grid.append(figure);
   });
-  return wrapper;
+  media.append(grid);
+  return media;
 }
 
-function createDetails(details) {
-  const container = element("details", "project-details");
-  container.append(element("summary", "", "Project brief"));
+function createProjectSheet(project) {
+  const sheet = element("article", "project-sheet");
+  const titleId = `project-sheet-${project.id}`;
+  sheet.setAttribute("aria-labelledby", titleId);
+  sheet.style.setProperty("--accent", project.accent);
 
-  const grid = element("div", "detail-grid");
-  Object.entries(details).forEach(([label, value]) => {
-    const row = element("div", "detail-row");
-    row.append(element("strong", "", label), element("span", "", value));
-    grid.append(row);
-  });
-  container.append(grid);
-  return container;
-}
+  const header = element("div", "sheet-header");
+  header.append(element("span", "sheet-group", registry.groups.find((group) => group.id === project.group).label));
+  const close = element("button", "sheet-close", "Close");
+  close.type = "button";
+  close.addEventListener("click", () => selectProject(project.id));
+  header.append(close);
 
-function createProjectCard(project) {
-  const card = element("article", `project-card${project.featured ? " featured" : ""}`);
-  card.dataset.group = project.group;
+  const title = element("h3", "", project.title);
+  title.id = titleId;
+  const meta = element("div", "sheet-meta");
+  meta.append(element("span", "", project.status), element("span", "", project.access), element("span", "", project.type));
+  sheet.append(header, title, meta, element("p", "sheet-description", project.description));
 
-  const top = element("div", "card-top");
-  top.append(element("h3", "", project.title), element("span", "type-chip", project.type));
-
-  const meta = element("div", "card-meta");
-  meta.append(
-    element("span", `status-chip ${project.statusTone}`, project.status),
-    element("span", "access-chip", project.access)
-  );
-
-  card.append(top, meta, element("p", "", project.description));
-  if (project.details) card.append(createDetails(project.details));
-
-  if (project.links.length > 0) {
-    card.append(createLinks(project.links));
-  } else {
-    card.append(element("span", "availability-note", project.access));
-  }
-  return card;
-}
-
-function createGroup(group, projects) {
-  const section = element("section", "project-group");
-  section.id = group.id;
-  section.setAttribute("aria-labelledby", `${group.id}-title`);
-
-  const heading = element("div", "group-heading");
-  const titleBlock = element("div", "");
-  titleBlock.append(
-    element("span", "group-count", `${projects.length} ${projects.length === 1 ? "project" : "projects"}`),
-    element("h2", "", group.label)
-  );
-  titleBlock.querySelector("h2").id = `${group.id}-title`;
-
-  const copy = element("div", "");
-  copy.append(element("p", "eyebrow", group.eyebrow), element("p", "", group.description));
-  heading.append(titleBlock, copy);
-
-  const grid = element("div", "card-grid");
-  grid.append(...projects.map(createProjectCard));
-  section.append(heading, grid);
-  return section;
-}
-
-function createPostCard(post) {
-  const card = element("article", "post-card");
-  card.append(
-    element("h3", "", post.title),
-    element("p", "post-meta", `${post.date} · ${post.theme}`),
-    element("p", "", post.description)
-  );
-  const link = element("a", "post-link", "Read the note");
-  link.href = post.href;
-  link.rel = "noreferrer";
-  card.append(link);
-  return card;
-}
-
-function setupFilters(registry) {
-  const filters = document.querySelector("#project-filters");
-  const result = document.querySelector("#filter-result");
-  let activeFilter = "all";
-
-  const options = [{ id: "all", shortLabel: "All" }, ...registry.groups];
-  const buttons = options.map((option) => {
-    const button = element("button", "filter-button", option.shortLabel);
-    button.type = "button";
-    button.dataset.filter = option.id;
-    button.setAttribute("aria-pressed", option.id === activeFilter ? "true" : "false");
-    button.addEventListener("click", () => {
-      activeFilter = option.id;
-      buttons.forEach((item) => item.setAttribute("aria-pressed", item === button ? "true" : "false"));
-      renderGroups(registry, activeFilter);
-      const visible = activeFilter === "all"
-        ? registry.projects.length
-        : registry.projects.filter((project) => project.group === activeFilter).length;
-      result.textContent = `${visible} ${visible === 1 ? "project" : "projects"} shown`;
+  if (project.details && Object.keys(project.details).length) {
+    const details = element("div", "sheet-details");
+    Object.entries(project.details).forEach(([label, value]) => {
+      const row = element("div", "");
+      row.append(element("strong", "", label), element("p", "", value));
+      details.append(row);
     });
-    return button;
-  });
+    sheet.append(details);
+  }
 
-  filters.replaceChildren(...buttons);
-  result.textContent = `${registry.projects.length} projects shown`;
+  const links = element("div", "sheet-links");
+  if (project.links.length) {
+    project.links.forEach(({ label, href }) => {
+      const link = element("a", "", label);
+      link.href = href;
+      link.rel = "noreferrer";
+      links.append(link);
+    });
+  } else {
+    links.append(element("span", "", "No public link yet"));
+  }
+  sheet.append(links);
+
+  const media = createMedia(project);
+  if (media) sheet.append(media);
+  return sheet;
 }
 
-function renderGroups(registry, filter = "all") {
+function renderWorkbench() {
   const container = document.querySelector("#project-groups");
-  const groups = registry.groups.filter((group) => filter === "all" || group.id === filter);
-  const sections = groups.map((group) => {
-    const projects = registry.projects.filter((project) => project.group === group.id);
-    return createGroup(group, projects);
+  const zones = registry.groups.map((group) => {
+    const groupProjects = registry.projects.filter((project) => project.group === group.id).map(enrichedProject);
+    const selected = groupProjects.find((project) => project.id === selectedProjectId);
+    const isCompact = Boolean(selected && matchMedia("(max-width: 680px)").matches);
+    const ordered = selected ? [selected, ...groupProjects.filter((project) => project.id !== selected.id)] : groupProjects;
+
+    const zone = element("section", "project-zone");
+    zone.id = group.id;
+    zone.style.setProperty("--group-color", groupColours[group.id]);
+    zone.setAttribute("aria-labelledby", `${group.id}-title`);
+
+    const heading = element("div", "zone-heading");
+    const title = element("h2", "", group.label);
+    title.id = `${group.id}-title`;
+    heading.append(title, element("p", "", group.description));
+
+    const content = element("div", `zone-content${selected ? " has-sheet" : ""}`);
+    const objects = element("div", "project-objects");
+    ordered.forEach((project, index) => {
+      const unit = element("div", "project-unit");
+      unit.append(createProjectButton(project, index));
+      if (isCompact && selected?.id === project.id) unit.append(createProjectSheet(project));
+      objects.append(unit);
+    });
+    content.append(objects);
+    if (selected && !isCompact) content.append(createProjectSheet(selected));
+    zone.append(heading, content);
+    return zone;
   });
-  container.replaceChildren(...sections);
+  container.replaceChildren(...zones);
+}
+
+function selectProject(id) {
+  selectedProjectId = selectedProjectId === id ? null : id;
+  renderWorkbench();
+  if (selectedProjectId) {
+    document.querySelector(".project-sheet")?.scrollIntoView({ block: matchMedia("(max-width: 680px)").matches ? "start" : "nearest", behavior: "smooth" });
+  }
 }
 
 function renderPosts(posts) {
-  document.querySelector("#posts-grid").replaceChildren(...posts.map(createPostCard));
-}
-
-function scrollToInitialHash() {
-  if (!location.hash) return;
-  const target = document.querySelector(location.hash);
-  if (target) requestAnimationFrame(() => target.scrollIntoView());
+  const cards = posts.map((post) => {
+    const card = element("article", "post-card");
+    card.append(
+      element("h3", "", post.title),
+      element("p", "post-meta", `${post.date} · ${post.theme}`),
+      element("p", "", post.description)
+    );
+    const link = element("a", "post-link", "Read the note");
+    link.href = post.href;
+    link.rel = "noreferrer";
+    card.append(link);
+    return card;
+  });
+  document.querySelector("#posts-grid").replaceChildren(...cards);
 }
 
 async function loadRegistry() {
   const response = await fetch(registryUrl, { cache: "no-store" });
   if (!response.ok) throw new Error(`Project registry returned ${response.status}`);
-  const registry = await response.json();
-  renderGroups(registry);
+  registry = await response.json();
+  renderWorkbench();
   renderPosts(registry.latestPosts);
-  setupFilters(registry);
-  scrollToInitialHash();
+  if (location.hash) requestAnimationFrame(() => document.querySelector(location.hash)?.scrollIntoView());
 }
 
 function showRegistryError(error) {
-  const note = element("p", "error-note", "The project registry could not be loaded. Please refresh or try again shortly.");
-  document.querySelector("#project-groups").replaceChildren(note);
+  document.querySelector("#project-groups").replaceChildren(element("p", "error-note", "The project registry could not be loaded. Please refresh or try again shortly."));
   console.error(error);
 }
 
-function setupMapTooltips() {
-  const visual = document.querySelector(".workbench-visual");
-  const tooltip = document.querySelector("#map-tooltip");
-  const links = document.querySelectorAll(".map-link");
-  if (!visual || !tooltip || links.length === 0) return;
+const compactQuery = matchMedia("(max-width: 680px)");
+compactQuery.addEventListener("change", () => {
+  if (registry && selectedProjectId) renderWorkbench();
+});
 
-  function positionTooltip(link) {
-    const visualRect = visual.getBoundingClientRect();
-    const circleRect = link.querySelector(".node-disc").getBoundingClientRect();
-    tooltip.style.left = `${circleRect.left - visualRect.left + circleRect.width / 2}px`;
-    tooltip.style.top = `${Math.max(48, circleRect.top - visualRect.top - 10)}px`;
-  }
-
-  function showTooltip(link) {
-    tooltip.textContent = link.dataset.tooltip;
-    positionTooltip(link);
-    tooltip.classList.add("is-visible");
-  }
-
-  function hideTooltip() {
-    tooltip.classList.remove("is-visible");
-  }
-
-  links.forEach((link) => {
-    link.addEventListener("pointerenter", () => showTooltip(link));
-    link.addEventListener("pointermove", () => positionTooltip(link));
-    link.addEventListener("pointerleave", hideTooltip);
-    link.addEventListener("focus", () => showTooltip(link));
-    link.addEventListener("blur", hideTooltip);
-  });
-}
-
-setupMapTooltips();
 loadRegistry().catch(showRegistryError);

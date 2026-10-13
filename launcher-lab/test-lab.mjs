@@ -25,7 +25,9 @@ try {
   assert.equal(await page.locator("[data-project-id][aria-expanded=true]").count(), 0);
   assert.equal(await page.locator(".artifact-real").count(), 14);
   assert.equal(await page.locator(".artifact-thumbnail").count(), 8);
-  assert.ok((await page.locator("body").boundingBox()).width <= 981, "desktop canvas should stay capped near 980px");
+  assert.ok((await page.locator(".page-shell").first().boundingBox()).width <= 981, "inner content should stay capped near 980px");
+  assert.ok((await page.locator("body").boundingBox()).width >= 1439, "page chrome should span the desktop viewport");
+  assert.ok((await page.locator(".lab-header").boundingBox()).width >= 1439, "header bar should span the desktop viewport");
   await page.waitForFunction(() => [...document.querySelectorAll(".artifact-real img")].every((image) => image.complete && image.naturalWidth > 0));
   assert.equal(await page.locator(".artifact-real img").evaluateAll((images) => images.every((image) => image.complete && image.naturalWidth > 0)), true);
 

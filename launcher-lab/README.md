@@ -22,9 +22,10 @@ output, R plots, a preprint title page, manuscript output and charts from the
 published notes. Inline and dossier details show the same sourced media with
 explicit labels.
 
-On wide monitors the full page is capped at 980px and centred, preserving the
-compact left-hand launcher and right-hand detail sheet. At phone widths, the
-detail sheet still opens directly below the selected card.
+On wide monitors the content is capped at 980px and centred, preserving the
+compact left-hand launcher and right-hand detail sheet. Section colours, the
+header bar and the footer bar continue to the viewport edges. At phone widths,
+the detail sheet still opens directly below the selected card.
 
 The prototype uses the three-part taxonomy: Research, Apps and Blogs. Serve this
 folder over HTTP and open `index.html`; no build is needed.

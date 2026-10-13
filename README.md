@@ -1,7 +1,6 @@
 # Project Workbench
 
-A static portfolio/workbench landing page for apps, research software, games,
-data questions, writing, and experiments.
+A static portfolio/workbench landing page for research, apps and public data notes.
 
 Serve the directory locally so the browser can load the JSON project registry:
 
@@ -11,13 +10,15 @@ python3 -m http.server 8000
 
 Project and post content lives in `projects.json`. The registry is grouped into:
 
-- Apps & products
-- Research software
-- Games & experiments
-- Writing & publications
+- Research — statistical software and publications
+- Apps — products, tools, readers and games
+- Blogs — public notes and less-formal analysis
 
-`script.js` renders the registry and provides accessible group filters. `index.html`
-contains the page narrative and `styles.css` contains the presentation layer.
+`script.js` renders the interactive workbench. No project is open initially; selecting
+one reveals its status, links and real project imagery. On wide screens the detail
+sheet opens beside the cards, while narrow screens place it directly below the
+selected card. `index.html` contains the page narrative and `styles.css` contains
+the presentation layer. Full-width colour bands wrap a centred 980px content shell.
 
 Validate the registry before publishing:
 

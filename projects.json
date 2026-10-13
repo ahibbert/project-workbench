@@ -1,38 +1,31 @@
 {
   "groups": [
     {
-      "id": "apps-products",
-      "label": "Apps & products",
+      "id": "research",
+      "label": "Research",
+      "shortLabel": "Research",
+      "eyebrow": "Statistical software and publications",
+      "description": "Research software, modelling tools, papers and formal statistical work."
+    },
+    {
+      "id": "apps",
+      "label": "Apps",
       "shortLabel": "Apps",
       "eyebrow": "Things people can use",
-      "description": "Small, focused products for families, readers, researchers and everyday decisions."
+      "description": "Apps, tools, readers and games outside the formal statistics work."
     },
     {
-      "id": "research-software",
-      "label": "Research software",
-      "shortLabel": "Research",
-      "eyebrow": "Models made tangible",
-      "description": "Packages and interactive tools that make distributional models, dependence and uncertainty easier to inspect."
-    },
-    {
-      "id": "games-experiments",
-      "label": "Games & experiments",
-      "shortLabel": "Games",
-      "eyebrow": "Play as a design tool",
-      "description": "Playable systems and prototypes used to explore interaction, pacing and world-building."
-    },
-    {
-      "id": "writing-publications",
-      "label": "Writing & publications",
-      "shortLabel": "Writing",
-      "eyebrow": "Work in words",
-      "description": "Research papers, public notes and slower investigations into data, modelling and AI-assisted work."
+      "id": "blogs",
+      "label": "Blogs",
+      "shortLabel": "Blogs",
+      "eyebrow": "Notes from the workbench",
+      "description": "Public notes and less-formal analysis from the workbench blog."
     }
   ],
   "projects": [
     {
       "id": "little-now",
-      "group": "apps-products",
+      "group": "apps",
       "title": "Little Now",
       "type": "iPhone & iPad app",
       "status": "Shipping",
@@ -51,7 +44,7 @@
     },
     {
       "id": "panels",
-      "group": "apps-products",
+      "group": "apps",
       "title": "Panels",
       "type": "Reading app",
       "status": "Private beta",
@@ -68,7 +61,7 @@
     },
     {
       "id": "margin",
-      "group": "apps-products",
+      "group": "apps",
       "title": "Margin",
       "type": "Research discovery app",
       "status": "Private beta",
@@ -85,7 +78,7 @@
     },
     {
       "id": "panel-pilot",
-      "group": "apps-products",
+      "group": "apps",
       "title": "Panel Pilot",
       "type": "iPhone & iPad prototype",
       "status": "In development",
@@ -100,7 +93,7 @@
     },
     {
       "id": "household-cash",
-      "group": "apps-products",
+      "group": "apps",
       "title": "Household Cash",
       "type": "Household tool",
       "status": "Private",
@@ -115,7 +108,7 @@
     },
     {
       "id": "gamlss-longitudinal",
-      "group": "research-software",
+      "group": "research",
       "title": "gamlss.longitudinal",
       "type": "R package",
       "status": "In development",
@@ -135,7 +128,7 @@
     },
     {
       "id": "distribution-playground",
-      "group": "research-software",
+      "group": "research",
       "title": "Distribution Playground",
       "type": "Interactive research tool",
       "status": "Research preview",
@@ -154,7 +147,7 @@
     },
     {
       "id": "starfall-company",
-      "group": "games-experiments",
+      "group": "apps",
       "title": "Starfall Company",
       "type": "Tactics game",
       "status": "In development",
@@ -169,7 +162,7 @@
     },
     {
       "id": "copula-paper",
-      "group": "writing-publications",
+      "group": "research",
       "title": "Copula-based joint regression models for correlated data",
       "type": "Research paper",
       "status": "Under review",
@@ -187,7 +180,7 @@
     },
     {
       "id": "workbench-blog",
-      "group": "writing-publications",
+      "group": "blogs",
       "title": "Aydin's Workbench blog",
       "type": "Public notes",
       "status": "Live",
@@ -205,19 +198,68 @@
       ]
     },
     {
-      "id": "llm-review-bench",
-      "group": "writing-publications",
-      "title": "LLM statistician review bench",
-      "type": "Research idea",
-      "status": "On hold",
-      "statusTone": "on-hold",
-      "access": "Concept",
-      "description": "A proposed benchmark comparing LLM-generated statistical reviews with paper reviews and expert expectations.",
+      "id": "gamlss-longitudinal-paper",
+      "group": "research",
+      "title": "Longitudinal GAMLSS Models With Copula Dependence in R",
+      "type": "Paper in progress",
+      "status": "In progress",
+      "statusTone": "in-development",
+      "access": "Working manuscript",
+      "description": "A paper describing longitudinal GAMLSS models with flexible margins and first-order copula dependence in R.",
       "details": {
-        "Question": "What do language models reliably catch, miss or overstate when reviewing applied statistical work?",
-        "Next step": "Design a small, rubric-based benchmark before building any larger evaluation system."
+        "Current focus": "Developing the manuscript, package examples, validation and reproducible reviewer materials."
       },
-      "links": []
+      "links": [
+        { "label": "Package source", "href": "https://github.com/ahibbert/gamlss.longitudinal" }
+      ]
+    },
+    {
+      "id": "housing-note",
+      "group": "blogs",
+      "title": "A First Pass At Australian Dwelling Prices",
+      "type": "Data note",
+      "status": "Public draft",
+      "statusTone": "live",
+      "access": "Public",
+      "description": "A reproducible look at ABS dwelling values, state mean prices and the policy questions they raise.",
+      "details": {
+        "Current focus": "Housing, cost of living and public data."
+      },
+      "links": [
+        { "label": "Read note", "href": "https://blog.aydins-workbench.com/posts/housing-prices-first-pass/" }
+      ]
+    },
+    {
+      "id": "ndis-note",
+      "group": "blogs",
+      "title": "Are NDIS Participant Outcomes Changing?",
+      "type": "Data note",
+      "status": "Public draft",
+      "statusTone": "live",
+      "access": "Public",
+      "description": "A simpler look at national participant outcome levels and changes after plan reassessment.",
+      "details": {
+        "Current focus": "Descriptive movement kept separate from causal interpretation."
+      },
+      "links": [
+        { "label": "Read note", "href": "https://blog.aydins-workbench.com/posts/ndis-outcomes-spend-service-access/" }
+      ]
+    },
+    {
+      "id": "bulk-billing-note",
+      "group": "blogs",
+      "title": "Did Bulk Billing Changes Shift Access?",
+      "type": "Policy note",
+      "status": "Public draft",
+      "statusTone": "live",
+      "access": "Public",
+      "description": "An early look at whether expanded GP bulk-billing incentives changed access patterns.",
+      "details": {
+        "Current focus": "Policy signal, timing artefacts and reporting noise."
+      },
+      "links": [
+        { "label": "Read note", "href": "https://blog.aydins-workbench.com/posts/bulk-billing-changes-impact/" }
+      ]
     }
   ],
   "latestPosts": [
