@@ -19,8 +19,13 @@ try {
   await desktop.getByRole("button", { name: "Open Margin" }).click();
   await desktop.locator("#apps").screenshot({ path: resolve(output, "apps-open-desktop.png") });
 
+  const medium = await browser.newPage({ viewport: { width: 980, height: 800 }, deviceScaleFactor: 1 });
+  await medium.goto(siteUrl, { waitUntil: "networkidle" });
+  await medium.screenshot({ path: resolve(output, "home-medium.png"), fullPage: false });
+
   const mobile = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1 });
   await mobile.goto(siteUrl, { waitUntil: "networkidle" });
+  await mobile.screenshot({ path: resolve(output, "home-mobile.png"), fullPage: false });
   await mobile.getByRole("button", { name: "Open Little Now" }).click();
   await mobile.locator("#apps").screenshot({ path: resolve(output, "apps-open-mobile.png") });
   console.log(`Captured production homepage previews in ${output}.`);

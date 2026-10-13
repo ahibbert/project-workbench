@@ -233,29 +233,11 @@ function selectProject(id) {
   }
 }
 
-function renderPosts(posts) {
-  const cards = posts.map((post) => {
-    const card = element("article", "post-card");
-    card.append(
-      element("h3", "", post.title),
-      element("p", "post-meta", `${post.date} · ${post.theme}`),
-      element("p", "", post.description)
-    );
-    const link = element("a", "post-link", "Read the note");
-    link.href = post.href;
-    link.rel = "noreferrer";
-    card.append(link);
-    return card;
-  });
-  document.querySelector("#posts-grid").replaceChildren(...cards);
-}
-
 async function loadRegistry() {
   const response = await fetch(registryUrl, { cache: "no-store" });
   if (!response.ok) throw new Error(`Project registry returned ${response.status}`);
   registry = await response.json();
   renderWorkbench();
-  renderPosts(registry.latestPosts);
   if (location.hash) requestAnimationFrame(() => document.querySelector(location.hash)?.scrollIntoView());
 }
 

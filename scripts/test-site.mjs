@@ -17,13 +17,23 @@ try {
 
   assert.equal(await page.locator(".project-zone").count(), 3);
   assert.equal(await page.locator(".project-object").count(), 14);
-  assert.equal(await page.locator(".post-card").count(), 3);
+  assert.equal(await page.locator("#latest-posts").count(), 0, "The duplicate notes section should be removed.");
+  assert.equal(await page.getByRole("link", { name: "LinkedIn", exact: true }).count(), 1);
   assert.equal(await page.locator(".project-sheet").count(), 0, "No project should be open by default.");
 
-  const shell = await page.locator(".site-shell").first().boundingBox();
+  const heroShell = await page.locator(".hero-shell").boundingBox();
+  const projectShell = await page.locator(".projects-section").boundingBox();
   const header = await page.locator(".site-header").boundingBox();
-  assert.ok(shell.width <= 981, `Content shell is too wide: ${shell.width}`);
+  assert.ok(heroShell.width <= 1241, `Hero shell is too wide: ${heroShell.width}`);
+  assert.ok(projectShell.width <= 1021, `Project shell is too wide: ${projectShell.width}`);
+  assert.ok(heroShell.width > projectShell.width, "Hero should have more breathing room than the project cards.");
   assert.equal(Math.round(header.width), 1440, "Header background should span the viewport.");
+  const headingLines = await page.locator("h1 span").evaluateAll((lines) => lines.map((line) => ({
+    width: line.getBoundingClientRect().width,
+    parentWidth: line.parentElement.getBoundingClientRect().width,
+  })));
+  assert.equal(headingLines.length, 3);
+  assert.ok(headingLines.every(({ width, parentWidth }) => width <= parentWidth), `Hero heading overflows: ${JSON.stringify(headingLines)}`);
 
   const marginButton = page.getByRole("button", { name: "Open Margin" });
   await marginButton.click();
@@ -59,7 +69,7 @@ try {
   assert.deepEqual(accessibility, {
     h1s: 1,
     mains: 1,
-    navs: 2,
+    navs: 1,
     skippedHeading: false,
     unnamedLinks: 0,
     unnamedButtons: 0,
