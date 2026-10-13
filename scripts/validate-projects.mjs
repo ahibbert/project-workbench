@@ -24,10 +24,12 @@ for (const group of registry.groups) {
 }
 
 assert(!projectIds.includes("llm-review-bench"), "The abandoned LLM review bench must not be listed.");
+assert(!projectIds.includes("workbench-blog"), "The blog index must not duplicate its individual notes.");
+assert(projectIds.includes("lived-patterns"), "Lived Patterns is missing.");
 assert(projectIds.includes("gamlss-longitudinal-paper"), "The longitudinal GAMLSS paper is missing.");
 
 const script = readFileSync(new URL("../script.js", import.meta.url), "utf8");
-const assetPaths = [...script.matchAll(/assets\/projects\/[a-z0-9-]+\/[a-z0-9-]+\.webp/g)].map((match) => match[0]);
+const assetPaths = [...script.matchAll(/assets\/projects\/[a-z0-9-]+\/[a-z0-9-]+\.(?:webp|png)/g)].map((match) => match[0]);
 assert(assetPaths.length > 0, "No project imagery is registered.");
 for (const path of new Set(assetPaths)) {
   assert(existsSync(new URL(`../${path}`, import.meta.url)), `Missing project image: ${path}`);

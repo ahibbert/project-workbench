@@ -177,6 +177,7 @@ h3 { margin: 0; line-height: 1.12; }
   stroke-width: 5;
   pointer-events: none;
 }
+.map-icon circle { fill: var(--surface); stroke: none; }
 .map-label {
   fill: var(--ink);
   font: 800 22px ui-sans-serif, system-ui, sans-serif;

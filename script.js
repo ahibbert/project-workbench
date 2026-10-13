@@ -7,6 +7,11 @@ const groupColours = {
 };
 
 const projectVisuals = {
+  "lived-patterns": {
+    icon: "assets/projects/lived-patterns/icon.png",
+    accent: "#1f5a45",
+    media: [["assets/projects/lived-patterns/brand-preview.png", "Lived Patterns brand artwork reading Your symptoms, in context", "Current product identity"]]
+  },
   "little-now": {
     icon: "assets/projects/little-now/icon.webp",
     accent: "#e97962",
@@ -57,11 +62,6 @@ const projectVisuals = {
       ["assets/projects/gamlss-longitudinal-paper/manuscript-output-detail.webp", "Treatment-effect table prepared for the longitudinal GAMLSS manuscript", "Manuscript output · treatment effects"],
       ["assets/projects/gamlss-longitudinal/optimizer-benchmark.webp", "Optimizer benchmark supporting the longitudinal GAMLSS manuscript", "Manuscript output · optimiser benchmark"]
     ]
-  },
-  "workbench-blog": {
-    icon: "assets/projects/workbench-blog/chart-collage.webp",
-    accent: "#547766",
-    media: [["assets/projects/workbench-blog/chart-collage-detail.webp", "Charts from Aydin's Workbench data notes", "Published work · selected charts"]]
   },
   "housing-note": {
     icon: "assets/projects/housing-note/chart.webp",

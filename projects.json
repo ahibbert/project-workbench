@@ -12,17 +12,33 @@
       "label": "Apps",
       "shortLabel": "Apps",
       "eyebrow": "Things people can use",
-      "description": "Apps, tools, readers and games outside the formal statistics work."
+      "description": "Apps, tools, readers and games for health, family life, research and play."
     },
     {
       "id": "blogs",
       "label": "Blogs",
       "shortLabel": "Blogs",
-      "eyebrow": "Notes from the workbench",
-      "description": "Public notes and less-formal analysis from the workbench blog."
+      "eyebrow": "Public-interest data and notes",
+      "description": "Public-interest analysis of health, access, services and everyday policy questions."
     }
   ],
   "projects": [
+    {
+      "id": "lived-patterns",
+      "group": "apps",
+      "title": "Lived Patterns",
+      "type": "iPhone & Apple Watch app",
+      "status": "In development",
+      "statusTone": "in-development",
+      "access": "Private prototype",
+      "featured": true,
+      "description": "An evidence-led, local-first app for adults tracking migraine, IBS or eczema symptoms in context.",
+      "details": {
+        "Built for": "People who want to look back across symptoms and daily context without turning association into a diagnosis or a claim of cause.",
+        "Current focus": "Evidence review, low-burden symptom capture, private on-device analysis and an Apple Watch companion."
+      },
+      "links": []
+    },
     {
       "id": "little-now",
       "group": "apps",
@@ -179,25 +195,6 @@
       ]
     },
     {
-      "id": "workbench-blog",
-      "group": "blogs",
-      "title": "Aydin's Workbench blog",
-      "type": "Public notes",
-      "status": "Live",
-      "statusTone": "live",
-      "access": "Public",
-      "featured": true,
-      "description": "Reproducible notes on Australian public data, modelling questions and projects while they are still taking shape.",
-      "details": {
-        "Approach": "Keep the data, caveats and reasoning visible rather than presenting a polished conclusion too early.",
-        "Format": "Short public drafts, updated as the analysis develops."
-      },
-      "links": [
-        { "label": "Read the blog", "href": "https://blog.aydins-workbench.com" },
-        { "label": "Publication profile", "href": "https://scholar.google.com/citations?hl=en&user=oTwuhNoAAAAJ" }
-      ]
-    },
-    {
       "id": "gamlss-longitudinal-paper",
       "group": "research",
       "title": "Longitudinal GAMLSS Models With Copula Dependence in R",
@@ -211,6 +208,22 @@
       },
       "links": [
         { "label": "Package source", "href": "https://github.com/ahibbert/gamlss.longitudinal" }
+      ]
+    },
+    {
+      "id": "bulk-billing-note",
+      "group": "blogs",
+      "title": "Did Bulk Billing Changes Shift Access?",
+      "type": "Policy note",
+      "status": "Public draft",
+      "statusTone": "live",
+      "access": "Public",
+      "description": "An early look at whether expanded GP bulk-billing incentives changed access patterns.",
+      "details": {
+        "Current focus": "Policy signal, timing artefacts and reporting noise."
+      },
+      "links": [
+        { "label": "Read note", "href": "https://blog.aydins-workbench.com/posts/bulk-billing-changes-impact/" }
       ]
     },
     {
@@ -243,22 +256,6 @@
       },
       "links": [
         { "label": "Read note", "href": "https://blog.aydins-workbench.com/posts/ndis-outcomes-spend-service-access/" }
-      ]
-    },
-    {
-      "id": "bulk-billing-note",
-      "group": "blogs",
-      "title": "Did Bulk Billing Changes Shift Access?",
-      "type": "Policy note",
-      "status": "Public draft",
-      "statusTone": "live",
-      "access": "Public",
-      "description": "An early look at whether expanded GP bulk-billing incentives changed access patterns.",
-      "details": {
-        "Current focus": "Policy signal, timing artefacts and reporting noise."
-      },
-      "links": [
-        { "label": "Read note", "href": "https://blog.aydins-workbench.com/posts/bulk-billing-changes-impact/" }
       ]
     }
   ],

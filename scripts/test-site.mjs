@@ -19,6 +19,10 @@ try {
   assert.equal(await page.locator(".project-object").count(), 14);
   assert.equal(await page.locator("#latest-posts").count(), 0, "The duplicate notes section should be removed.");
   assert.equal(await page.getByRole("link", { name: "LinkedIn", exact: true }).count(), 1);
+  assert.equal(await page.getByRole("link", { name: "Read the blog", exact: true }).count(), 0);
+  assert.equal(await page.locator("#apps .project-object").first().getAttribute("data-project-id"), "lived-patterns");
+  assert.equal(await page.locator("#blogs .project-object").first().getAttribute("data-project-id"), "bulk-billing-note");
+  assert.equal(await page.getByRole("button", { name: /Aydin's Workbench blog/ }).count(), 0);
   assert.equal(await page.locator(".project-sheet").count(), 0, "No project should be open by default.");
 
   const heroShell = await page.locator(".hero-shell").boundingBox();

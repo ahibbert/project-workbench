@@ -16,7 +16,7 @@ try {
   const desktop = await browser.newPage({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1 });
   await desktop.goto(siteUrl, { waitUntil: "networkidle" });
   await desktop.screenshot({ path: resolve(output, "home-desktop.png"), fullPage: true });
-  await desktop.getByRole("button", { name: "Open Margin" }).click();
+  await desktop.getByRole("button", { name: "Open Lived Patterns" }).click();
   await desktop.locator("#apps").screenshot({ path: resolve(output, "apps-open-desktop.png") });
 
   const medium = await browser.newPage({ viewport: { width: 980, height: 800 }, deviceScaleFactor: 1 });
