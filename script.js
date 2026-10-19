@@ -107,7 +107,6 @@ function createProjectButton(project, index) {
   button.dataset.projectId = project.id;
   button.setAttribute("aria-expanded", String(selectedProjectId === project.id));
   button.setAttribute("aria-label", `${selectedProjectId === project.id ? "Close" : "Open"} ${project.title}`);
-  button.style.setProperty("--tilt", `${[-0.8, 0.55, -0.35, 0.7, -0.5, 0.3][index % 6]}deg`);
 
   const copy = element("span", "project-object-copy");
   copy.append(element("strong", "", project.title), element("small", "", project.status));
