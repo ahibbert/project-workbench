@@ -64,6 +64,11 @@ const projectVisuals = {
     accent: "#4b7d74",
     media: [["assets/projects/ndis-note/chart-detail-20261020.webp", "Median national NDIS baseline outcome levels by participant cohort and theme", "Published chart · baseline participant outcomes"]]
   },
+  "ndis-spend-note": {
+    icon: "assets/projects/ndis-spend-note/payments-by-support-class.png",
+    accent: "#6c728f",
+    media: [["assets/projects/ndis-spend-note/payments-by-support-class.png", "Annual NDIS payments by support class to June 2026", "Published chart · payments by support class"]]
+  },
   "bulk-billing-note": {
     icon: "assets/projects/bulk-billing-note/chart-20261020.webp",
     accent: "#8f554f",
@@ -197,7 +202,14 @@ function renderWorkbench() {
     const heading = element("div", "zone-heading");
     const title = element("h2", "", group.label);
     title.id = `${group.id}-title`;
-    heading.append(title, element("p", "", group.description));
+    const summary = element("p", "", group.description);
+    if (group.href) {
+      summary.append(document.createTextNode(" "));
+      const groupLink = element("a", "zone-link", group.linkLabel || "Open section →");
+      groupLink.href = group.href;
+      summary.append(groupLink);
+    }
+    heading.append(title, summary);
 
     const content = element("div", `zone-content${selected ? " has-sheet" : ""}`);
     const objects = element("div", "project-objects");

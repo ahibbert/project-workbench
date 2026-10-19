@@ -14,7 +14,7 @@ assert(registry.groups.length === 3, "The workbench must contain Research, Apps 
 assert(groupIds.join(",") === "research,apps,blogs", "Work areas must be ordered Research, Apps, Blogs.");
 assert(new Set(groupIds).size === groupIds.length, "Group IDs must be unique.");
 assert(new Set(projectIds).size === projectIds.length, "Project IDs must be unique.");
-assert(registry.projects.length === 13, "The workbench must contain the 13 current projects.");
+assert(registry.projects.length === 14, "The workbench must contain the 14 current projects.");
 assert(registry.latestPosts.length > 0, "At least one current post is required.");
 
 for (const group of registry.groups) {
@@ -23,12 +23,16 @@ for (const group of registry.groups) {
   assert(html.includes(`href="#${group.id}"`), `Navigation is missing #${group.id}.`);
 }
 
+const blogsGroup = registry.groups.find((group) => group.id === "blogs");
+assert(blogsGroup?.href === "https://blog.aydins-workbench.com/", "The Blogs area must link to the full blog index.");
+
 assert(!projectIds.includes("llm-review-bench"), "The abandoned LLM review bench must not be listed.");
 assert(!projectIds.includes("workbench-blog"), "The blog index must not duplicate its individual notes.");
 const activeApps = registry.projects.filter((project) => project.group === "apps");
 assert(activeApps.map((project) => project.id).join(",") === "little-now,in-another-life,starfall-company,faintburn,panels,household-cash", "Only the six active apps should appear, with Little Now and In Another Life first.");
 assert(activeApps.find((project) => project.id === "household-cash")?.title === "Household Budget", "Use the Household Budget display name.");
 assert(projectIds.includes("gamlss-longitudinal-paper"), "The longitudinal GAMLSS paper is missing.");
+assert(projectIds.includes("ndis-spend-note"), "The NDIS spend and utilisation note is missing.");
 
 const script = readFileSync(new URL("../script.js", import.meta.url), "utf8");
 const assetPaths = [...script.matchAll(/assets\/projects\/[a-z0-9-]+\/[a-z0-9-]+\.(?:webp|png)/g)].map((match) => match[0]);

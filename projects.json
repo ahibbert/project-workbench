@@ -19,7 +19,9 @@
       "label": "Blogs",
       "shortLabel": "Blogs",
       "eyebrow": "Public-interest data and notes",
-      "description": "Public-interest analysis of health, access, services and everyday policy questions."
+      "description": "Public-interest analysis of health, access, services and everyday policy questions.",
+      "href": "https://blog.aydins-workbench.com/",
+      "linkLabel": "Browse all posts →"
     }
   ],
   "projects": [
@@ -196,12 +198,12 @@
     {
       "id": "bulk-billing-note",
       "group": "blogs",
-      "title": "Did Bulk Billing Changes Shift Access?",
+      "title": "Bulk Billing Rose After November 2025. Did GP Access Improve?",
       "type": "Policy note",
       "status": "Public draft",
       "statusTone": "live",
       "access": "Public",
-      "description": "An early look at whether expanded GP bulk-billing incentives changed access patterns.",
+      "description": "Billing changed sharply after the November 2025 GP incentives, especially for working-age adults. The evidence for more care is much weaker.",
       "details": {
         "Current focus": "Policy signal, timing artefacts and reporting noise."
       },
@@ -212,12 +214,12 @@
     {
       "id": "housing-note",
       "group": "blogs",
-      "title": "A First Pass At Australian Dwelling Prices",
+      "title": "Sydney's Housing Weakness Was Deepest in Expensive Houses",
       "type": "Data note",
       "status": "Public draft",
       "statusTone": "live",
       "access": "Public",
-      "description": "A reproducible look at ABS dwelling values, state mean prices and the policy questions they raise.",
+      "description": "Sydney's established-house median fell 4.0% in the June quarter, versus 1.8% for attached dwellings. Higher-value houses had fallen further from peak; the rest was less weak, not rising.",
       "details": {
         "Current focus": "Housing, cost of living and public data."
       },
@@ -228,41 +230,64 @@
     {
       "id": "ndis-note",
       "group": "blogs",
-      "title": "Are NDIS Participant Outcomes Changing?",
+      "title": "The Clearest Reported NDIS Outcome Gains Are in Early Childhood",
       "type": "Data note",
       "status": "Public draft",
       "statusTone": "live",
       "access": "Public",
-      "description": "A simpler look at national participant outcome levels and changes after plan reassessment.",
+      "description": "After one reassessment, most published NDIS outcome indicators move only a little. The larger gains are concentrated in communication and friendships among young children.",
       "details": {
         "Current focus": "Descriptive movement kept separate from causal interpretation."
       },
       "links": [
         { "label": "Read note", "href": "https://blog.aydins-workbench.com/posts/ndis-outcomes-spend-service-access/" }
       ]
+    },
+    {
+      "id": "ndis-spend-note",
+      "group": "blogs",
+      "title": "NDIS Payments Rose 12%; Published Utilisation Edged Down",
+      "type": "Data note",
+      "status": "Public draft",
+      "statusTone": "live",
+      "access": "Public",
+      "description": "Trailing-12-month NDIS payments rose by $5.6 billion to June 2026. Participant numbers and budgets increased, while the published national utilisation rate edged down.",
+      "details": {
+        "Current focus": "Separating participant growth, budgets and published utilisation in the latest annual movement."
+      },
+      "links": [
+        { "label": "Read note", "href": "https://blog.aydins-workbench.com/posts/ndis-budget-utilisation-prediction/" }
+      ]
     }
   ],
   "latestPosts": [
     {
-      "title": "A First Pass At Australian Dwelling Prices",
+      "title": "Sydney's Housing Weakness Was Deepest in Expensive Houses",
       "date": "11 June 2026",
       "theme": "Housing, cost of living, ABS data",
-      "description": "A small reproducible look at ABS dwelling values, state mean prices and the housing-policy questions they raise.",
+      "description": "Sydney's established-house median fell 4.0% in the June quarter, with the weakness concentrated in higher-value houses.",
       "href": "https://blog.aydins-workbench.com/posts/housing-prices-first-pass/"
     },
     {
-      "title": "Are NDIS Participant Outcomes Changing?",
+      "title": "The Clearest Reported NDIS Outcome Gains Are in Early Childhood",
       "date": "10 June 2026",
       "theme": "NDIS outcomes, disability, Australia",
-      "description": "A simpler look at national participant outcome levels and changes after plan reassessment.",
+      "description": "Most published outcome indicators move only a little after one reassessment; the larger gains are concentrated among young children.",
       "href": "https://blog.aydins-workbench.com/posts/ndis-outcomes-spend-service-access/"
     },
     {
-      "title": "Did Bulk Billing Changes Shift Access?",
+      "title": "Bulk Billing Rose After November 2025. Did GP Access Improve?",
       "date": "28 May 2026",
       "theme": "Medicare, bulk billing, health policy",
-      "description": "An early reproducible look at whether expanded GP bulk-billing incentives changed access patterns.",
+      "description": "Billing changed sharply after the November 2025 incentives, especially for working-age adults, but the evidence for more care is much weaker.",
       "href": "https://blog.aydins-workbench.com/posts/bulk-billing-changes-impact/"
+    },
+    {
+      "title": "NDIS Payments Rose 12%; Published Utilisation Edged Down",
+      "date": "26 May 2026",
+      "theme": "NDIS spending, budgets and utilisation",
+      "description": "Trailing-12-month payments rose by $5.6 billion to June 2026 as participant numbers and budgets increased.",
+      "href": "https://blog.aydins-workbench.com/posts/ndis-budget-utilisation-prediction/"
     }
   ]
 }

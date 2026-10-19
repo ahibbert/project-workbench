@@ -233,6 +233,7 @@ h3 { margin: 0; line-height: 1.12; }
   text-transform: uppercase;
 }
 .zone-heading p { max-width: 56ch; margin: 0; color: var(--muted); font-size: 0.75rem; text-align: right; }
+.zone-link { white-space: nowrap; }
 .zone-content { margin-top: 0.8rem; }
 .zone-content.has-sheet {
   display: grid;
