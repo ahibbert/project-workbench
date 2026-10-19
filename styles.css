@@ -274,6 +274,7 @@ h3 { margin: 0; line-height: 1.12; }
   background: #fff;
 }
 .project-thumbnail img { display: block; width: 100%; height: 100%; object-fit: contain; object-position: center; }
+#apps .project-thumbnail img { object-fit: cover; }
 .project-object-copy { display: grid; min-width: 0; text-align: left; }
 .project-object-copy strong { overflow-wrap: anywhere; font-size: 0.84rem; line-height: 1.25; }
 .project-object-copy small { margin-top: 0.3rem; color: var(--muted); font-size: 0.68rem; }
