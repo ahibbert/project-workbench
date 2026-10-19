@@ -24,28 +24,12 @@
   ],
   "projects": [
     {
-      "id": "lived-patterns",
-      "group": "apps",
-      "title": "Lived Patterns",
-      "type": "iPhone & Apple Watch app",
-      "status": "In development",
-      "statusTone": "in-development",
-      "access": "Private prototype",
-      "featured": true,
-      "description": "An evidence-led, local-first app for adults tracking migraine, IBS or eczema symptoms in context.",
-      "details": {
-        "Built for": "People who want to look back across symptoms and daily context without turning association into a diagnosis or a claim of cause.",
-        "Current focus": "Evidence review, low-burden symptom capture, private on-device analysis and an Apple Watch companion."
-      },
-      "links": []
-    },
-    {
       "id": "little-now",
       "group": "apps",
       "title": "Little Now",
       "type": "iPhone & iPad app",
-      "status": "Shipping",
-      "statusTone": "shipping",
+      "status": "Preparing for release",
+      "statusTone": "in-development",
       "access": "Public website",
       "featured": true,
       "description": "Caregiver-led play for ages 1–5: one practical activity matched to the time, setup and interests available right now.",
@@ -57,6 +41,52 @@
         { "label": "Visit Little Now", "href": "https://little-now.aydins-workbench.com" },
         { "label": "App Store", "href": "https://apps.apple.com/app/id6821227588" }
       ]
+    },
+    {
+      "id": "in-another-life",
+      "group": "apps",
+      "title": "In Another Life",
+      "type": "iPhone & iPad app",
+      "status": "Private beta",
+      "statusTone": "private-beta",
+      "access": "Pre-release",
+      "featured": true,
+      "description": "A small daily ritual for two: share the same animal-pair photo on both of your Home Screen widgets.",
+      "details": {
+        "Built for": "Two people who want a quiet moment of connection each day.",
+        "Current focus": "Private beta testing, paired widgets and preparing the first public release."
+      },
+      "links": []
+    },
+    {
+      "id": "starfall-company",
+      "group": "apps",
+      "title": "Starfall",
+      "type": "Tactics game",
+      "status": "In development",
+      "statusTone": "in-development",
+      "access": "Playable prototype",
+      "description": "A touch-first science-fantasy tactics game about positioning, pressure and keeping a small company alive.",
+      "details": {
+        "Current state": "The core loop is playable as a local MVP.",
+        "Current focus": "Combat feel, encounter pacing and a coherent route to a public build."
+      },
+      "links": []
+    },
+    {
+      "id": "faintburn",
+      "group": "apps",
+      "title": "Faintburn",
+      "type": "Space RPG",
+      "status": "In development",
+      "statusTone": "in-development",
+      "access": "Internal alpha",
+      "description": "A single-player space-career RPG for iOS: fly between regions, take contracts and find your own way through a living frontier.",
+      "details": {
+        "Built for": "Players who enjoy exploration, career progression and a persistent space adventure.",
+        "Current focus": "Flight feel, a living world and testing the experience on iPhone."
+      },
+      "links": []
     },
     {
       "id": "panels",
@@ -76,46 +106,14 @@
       ]
     },
     {
-      "id": "margin",
-      "group": "apps",
-      "title": "Margin",
-      "type": "Research discovery app",
-      "status": "Private beta",
-      "statusTone": "private-beta",
-      "access": "Sign-in required",
-      "description": "A calm, personal feed for discovering research and getting enough context to decide what deserves a closer read.",
-      "details": {
-        "Built for": "Researchers who want a quieter way to keep up with relevant work.",
-        "Access": "The current deployment is a private beta for approved accounts."
-      },
-      "links": [
-        { "label": "Open Margin", "href": "https://research.aydins-workbench.com" }
-      ]
-    },
-    {
-      "id": "panel-pilot",
-      "group": "apps",
-      "title": "Panel Pilot",
-      "type": "iPhone & iPad prototype",
-      "status": "In development",
-      "statusTone": "in-development",
-      "access": "No public build yet",
-      "description": "A local-first comic reader prototype exploring comfortable navigation, library management and a native reading experience.",
-      "details": {
-        "Current focus": "Release-readiness, device behaviour and validating the core reading flow.",
-        "Availability": "Pre-release work; no public download is currently offered."
-      },
-      "links": []
-    },
-    {
       "id": "household-cash",
       "group": "apps",
-      "title": "Household Cash",
+      "title": "Household Budget",
       "type": "Household tool",
       "status": "Private",
       "statusTone": "private",
       "access": "Internal use",
-      "description": "A deliberately small shared view of household cash, designed around clarity rather than financial-dashboard complexity.",
+      "description": "A small, private household budgeting tool for keeping shared cash, spending and reconciliation clear.",
       "details": {
         "Built for": "A private household workflow.",
         "Availability": "Internal tool; financial details and the deployment remain private."
@@ -160,21 +158,6 @@
         { "label": "Launch playground", "href": "https://gamlss.aydins-workbench.com" },
         { "label": "Longitudinal explorer", "href": "https://gamlss.aydins-workbench.com/longitudinal/" }
       ]
-    },
-    {
-      "id": "starfall-company",
-      "group": "apps",
-      "title": "Starfall Company",
-      "type": "Tactics game",
-      "status": "In development",
-      "statusTone": "in-development",
-      "access": "Playable prototype",
-      "description": "A touch-first science-fantasy tactics game about positioning, pressure and keeping a small company alive.",
-      "details": {
-        "Current state": "The core loop is playable as a local MVP.",
-        "Current focus": "Combat feel, encounter pacing and a coherent route to a public build."
-      },
-      "links": []
     },
     {
       "id": "copula-paper",

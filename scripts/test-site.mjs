@@ -16,11 +16,11 @@ try {
   await page.waitForSelector(".project-object");
 
   assert.equal(await page.locator(".project-zone").count(), 3);
-  assert.equal(await page.locator(".project-object").count(), 14);
+  assert.equal(await page.locator(".project-object").count(), 13);
   assert.equal(await page.locator("#latest-posts").count(), 0, "The duplicate notes section should be removed.");
   assert.equal(await page.getByRole("link", { name: "LinkedIn", exact: true }).count(), 1);
   assert.equal(await page.getByRole("link", { name: "Read the blog", exact: true }).count(), 0);
-  assert.equal(await page.locator("#apps .project-object").first().getAttribute("data-project-id"), "lived-patterns");
+  assert.equal(await page.locator("#apps .project-object").first().getAttribute("data-project-id"), "little-now");
   assert.equal(await page.locator("#blogs .project-object").first().getAttribute("data-project-id"), "bulk-billing-note");
   assert.equal(await page.getByRole("button", { name: /Aydin's Workbench blog/ }).count(), 0);
   assert.equal(await page.locator(".project-sheet").count(), 0, "No project should be open by default.");
@@ -45,18 +45,26 @@ try {
   const heroVisual = await page.locator(".workbench-visual").boundingBox();
   assert.ok(heroVisual.height <= heroCopy.height + 1, `Hero illustration should not be taller than its copy: ${heroVisual.height} > ${heroCopy.height}`);
 
-  const marginButton = page.getByRole("button", { name: "Open Margin" });
-  await marginButton.click();
+  const projectButton = page.getByRole("button", { name: "Open In Another Life" });
+  await projectButton.click();
   assert.equal(await page.locator(".project-sheet").count(), 1);
-  assert.equal(await page.locator(".project-sheet h3").textContent(), "Margin");
+  assert.equal(await page.locator(".project-sheet h3").textContent(), "In Another Life");
   const desktopPosition = await page.evaluate(() => {
     const selected = document.querySelector(".project-object.is-selected").getBoundingClientRect();
     const sheet = document.querySelector(".project-sheet").getBoundingClientRect();
     return { selectedRight: selected.right, sheetLeft: sheet.left };
   });
   assert.ok(desktopPosition.sheetLeft > desktopPosition.selectedRight, "Desktop detail sheet should open to the right of the cards.");
-  await page.getByRole("button", { name: "Close Margin" }).click();
+  await page.getByRole("button", { name: "Close In Another Life" }).click();
   assert.equal(await page.locator(".project-sheet").count(), 0);
+
+  for (const title of ["Little Now", "In Another Life", "Starfall", "Faintburn", "Panels", "Household Budget", "Did Bulk Billing Changes Shift Access?", "A First Pass At Australian Dwelling Prices", "Are NDIS Participant Outcomes Changing?"]) {
+    await page.getByRole("button", { name: `Open ${title}`, exact: true }).click();
+    await page.locator(".project-sheet img").evaluateAll((images) => Promise.all(images.map((image) => image.decode())));
+    const missingImages = await page.locator("img").evaluateAll((images) => images.filter((image) => image.complete && !image.naturalWidth).map((image) => image.src));
+    assert.deepEqual(missingImages, [], `Broken images in ${title}`);
+    await page.getByRole("button", { name: `Close ${title}`, exact: true }).click();
+  }
 
   const accessibility = await page.evaluate(() => {
     const headings = [...document.querySelectorAll("h1, h2, h3")].map((heading) => Number(heading.tagName[1]));

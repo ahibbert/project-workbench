@@ -7,76 +7,67 @@ const groupColours = {
 };
 
 const projectVisuals = {
-  "lived-patterns": {
-    icon: "assets/projects/lived-patterns/icon.png",
-    accent: "#1f5a45",
-    media: [["assets/projects/lived-patterns/brand-preview.png", "Lived Patterns brand artwork reading Your symptoms, in context", "Current product identity"]]
-  },
+  "in-another-life": { icon: "assets/projects/in-another-life/icon.webp", accent: "#9a6138" },
+  faintburn: { icon: "assets/projects/faintburn/icon.webp", accent: "#6558a6" },
   "little-now": {
     icon: "assets/projects/little-now/icon.webp",
     accent: "#e97962",
     media: [
-      ["assets/projects/little-now/screen-01.webp", "Little Now recommendation screen in its App Store presentation", "App Store capture · recommendation"],
-      ["assets/projects/little-now/screen-02.webp", "Little Now activity details screen in its App Store presentation", "App Store capture · activity details"]
+      ["assets/projects/little-now/screen-01.webp", "Little Now recommendation screen in its App Store presentation", "App Store capture Â· recommendation"],
+      ["assets/projects/little-now/screen-02.webp", "Little Now activity details screen in its App Store presentation", "App Store capture Â· activity details"]
     ]
   },
   panels: { icon: "assets/projects/panels/icon.webp", accent: "#4b5965" },
-  margin: {
-    icon: "assets/projects/margin/icon.webp",
-    accent: "#567563",
-    media: [["assets/projects/margin/brand-preview.webp", "Margin research discovery brand preview", "Current brand preview"]]
-  },
-  "panel-pilot": { icon: "assets/projects/panel-pilot/icon.webp", accent: "#2a62a2" },
   "household-cash": {
     icon: "assets/projects/household-cash/icon.webp",
     accent: "#1d7355",
-    media: [["assets/projects/household-cash/brand-preview.webp", "Household Cash current visual identity", "Current brand preview"]]
+    media: [["assets/projects/household-cash/brand-preview.webp", "Household Budget project artwork", "Current brand preview"]]
   },
   "starfall-company": {
     icon: "assets/projects/starfall-company/icon.webp",
     accent: "#bb7d27",
     media: [
-      ["assets/projects/starfall-company/gameplay-concept.webp", "Starfall Company tactical encounter concept", "Gameplay direction · Heart of Glass"],
-      ["assets/projects/starfall-company/colony-concept.webp", "Starfall Company colony building concept", "Gameplay direction · Ilex colony"]
+      ["assets/projects/starfall-company/gameplay-concept.webp", "Starfall Company tactical encounter concept", "Gameplay direction Â· Heart of Glass"],
+      ["assets/projects/starfall-company/colony-concept.webp", "Starfall Company colony building concept", "Gameplay direction Â· Ilex colony"]
     ]
   },
   "gamlss-longitudinal": {
     icon: "assets/projects/gamlss-longitudinal/r-output.webp",
     accent: "#3970a8",
-    media: [["assets/projects/gamlss-longitudinal/optimizer-benchmark.webp", "Optimizer benchmark output from gamlss.longitudinal", "Research output · optimiser benchmark"]]
+    media: [["assets/projects/gamlss-longitudinal/optimizer-benchmark.webp", "Optimizer benchmark output from gamlss.longitudinal", "Research output Â· optimiser benchmark"]]
   },
   "distribution-playground": {
     icon: "assets/projects/distribution-playground/live-plot.webp",
     accent: "#285f91",
-    media: [["assets/projects/distribution-playground/live-plot-detail.webp", "Live density plot from Distribution Playground", "Live tool output · density explorer"]]
+    media: [["assets/projects/distribution-playground/live-plot-detail.webp", "Live density plot from Distribution Playground", "Live tool output Â· density explorer"]]
   },
   "copula-paper": {
     icon: "assets/projects/copula-paper/paper-page.webp",
     accent: "#547a9b",
-    media: [["assets/projects/copula-paper/paper-page-detail.webp", "Title page of the copula-based correlated regression preprint", "Preprint · title page"]]
+    media: [["assets/projects/copula-paper/paper-page-detail.webp", "Title page of the copula-based correlated regression preprint", "Preprint Â· title page"]]
   },
   "gamlss-longitudinal-paper": {
     icon: "assets/projects/gamlss-longitudinal-paper/manuscript-output.webp",
     accent: "#64558a",
     media: [
-      ["assets/projects/gamlss-longitudinal-paper/manuscript-output-detail.webp", "Treatment-effect table prepared for the longitudinal GAMLSS manuscript", "Manuscript output · treatment effects"],
-      ["assets/projects/gamlss-longitudinal/optimizer-benchmark.webp", "Optimizer benchmark supporting the longitudinal GAMLSS manuscript", "Manuscript output · optimiser benchmark"]
+      ["assets/projects/gamlss-longitudinal-paper/manuscript-output-detail.webp", "Treatment-effect table prepared for the longitudinal GAMLSS manuscript", "Manuscript output Â· treatment effects"],
+      ["assets/projects/gamlss-longitudinal/optimizer-benchmark.webp", "Optimizer benchmark supporting the longitudinal GAMLSS manuscript", "Manuscript output Â· optimiser benchmark"]
     ]
   },
   "housing-note": {
-    icon: "assets/projects/housing-note/chart.webp",
+    icon: "assets/projects/housing-note/post-preview-20261020.webp",
     accent: "#a96547",
-    media: [["assets/projects/housing-note/chart-detail.webp", "Mean dwelling price chart from the Australian housing data note", "Published chart · dwelling prices"]]
+    media: [["assets/projects/housing-note/post-preview-detail-20261020.webp", "Title, introduction and publication details of the Australian dwelling prices post", "Published chart Â· dwelling prices"]]
   },
   "ndis-note": {
-    icon: "assets/projects/ndis-note/chart.webp",
+    icon: "assets/projects/ndis-note/chart-20261020.webp",
     accent: "#4b7d74",
-    media: [["assets/projects/ndis-note/chart-detail.webp", "NDIS outcome scores and payments per participant chart", "Published chart · participant outcomes"]]
+    media: [["assets/projects/ndis-note/chart-detail-20261020.webp", "Median national NDIS baseline outcome levels by participant cohort and theme", "Published chart Â· baseline participant outcomes"]]
   },
   "bulk-billing-note": {
-    icon: "assets/projects/bulk-billing-note/chart.webp",
+    icon: "assets/projects/bulk-billing-note/chart-20261020.webp",
     accent: "#8f554f",
-    media: [["assets/projects/bulk-billing-note/chart-detail.webp", "National bulk-billing rate time-series chart", "Published chart · bulk-billing rate"]]
+    media: [["assets/projects/bulk-billing-note/chart-detail-20261020.webp", "National bulk-billing rate time-series chart", "Published chart Â· bulk-billing rate"]]
   }
 };
 
